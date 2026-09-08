@@ -47,11 +47,12 @@ import {
 } from "../lib/sessionMetrics";
 import { exportFilename, timelineToMarkdown } from "../lib/exportSession";
 import type { TimelineItem } from "../lib/timeline";
-import { hasAskBlock } from "../lib/askBlock";
+import { isAskMessage } from "../lib/askBlock";
 import { ToolCard } from "./ToolCard";
 import { RichText } from "./RichText";
 import {
   getToolDiff,
+  isFileEditTool,
   type DiffLine,
   type ToolFileView,
 } from "../lib/toolCards";
@@ -81,7 +82,6 @@ import {
   IconCube,
   IconDownload,
   IconFile,
-  IconFolderPlus,
   IconFork,
   IconInfo,
   IconHistory,
@@ -186,8 +186,8 @@ export function Conversation({
   tab,
   showThinking = false,
   split = false,
-  paneIndex = 0,
-  paneCount = 1,
+  paneIndex: _paneIndex = 0,
+  paneCount: _paneCount = 1,
   onClose,
   onSessionSplit,
   terminalOpen = false,
@@ -252,6 +252,10 @@ export function Conversation({
     tab.backend === "claude" ? CLAUDE_EFFORT_LEVELS : [],
   );
   const [commandMenuOpen, setCommandMenuOpen] = useState(false);
+  // Compaction is a long, silent backend job: pi/claude re-summarize the whole
+  // history before answering. Without a visible in-progress state the UI looked
+  // idle, so /compact got sent again and again.
+  const [compacting, setCompacting] = useState(false);
   const [accessMode, setAccessMode] = useState<AccessMode>("workspace-write");
   const [agentMode, setAgentMode] = useState<AgentMode>("standard");
   const [toolRail, setToolRail] = useState<ToolGroup | null>(null);
@@ -286,6 +290,10 @@ export function Conversation({
   };
   // Set for one send by Cmd/Ctrl+Enter, then cleared.
   const steerOnceRef = useRef(false);
+  // ACP's prompt() runs a turn to completion, so Grok has no way to accept a
+  // mid-turn interjection: its steer() rejects outright. Offering the choice
+  // there only produced a failed send, so mid-turn messages queue instead.
+  const canSteer = tab.backend !== "grok";
   const [conversationView, setConversationView] = useState<
     "chat" | "trajectory" | "backend"
   >("chat");
@@ -375,11 +383,11 @@ export function Conversation({
         !(item.kind === "user" && isLocalCommandText(item.text)),
     )
     .filter((item, index, all) => {
-      if (item.kind !== "assistant" || !hasAskBlock(item.text)) return true;
+      if (item.kind !== "assistant" || !isAskMessage(item.text)) return true;
       for (let i = index - 1; i >= 0; i--) {
         const prev = all[i]!;
         if (prev.kind === "user" || prev.kind === "tool") return true;
-        if (prev.kind === "assistant" && hasAskBlock(prev.text)) return false;
+        if (prev.kind === "assistant" && isAskMessage(prev.text)) return false;
       }
       return true;
     });
@@ -482,6 +490,7 @@ export function Conversation({
 
   const loadModelMetadata = useCallback(() => {
     if (
+      modelMetadataLoadedRef.current ||
       modelMetadataRequestRef.current ||
       status === "starting" ||
       status === "stopped"
@@ -512,6 +521,14 @@ export function Conversation({
       });
     modelMetadataRequestRef.current = request;
   }, [status, tab.backend, tab.key]);
+
+  // Warm the model list as soon as the session is usable. The server caches
+  // catalogs per backend, so this is one cheap request that turns the model
+  // dropdown from a multi-second spinner into an instant open.
+  useEffect(() => {
+    if (status === "starting" || status === "stopped") return;
+    loadModelMetadata();
+  }, [loadModelMetadata, status]);
 
   const loadCommands = useCallback(() => {
     if (
@@ -581,7 +598,12 @@ export function Conversation({
     (force = false): Promise<boolean> => {
       if (usageRequestRef.current) return usageRequestRef.current;
       const request = api
-        .usage(tab.key, tab.backend, force)
+        .usage(
+          tab.key,
+          tab.backend,
+          force,
+          tab.sessionPath ?? timeline.state?.sessionFile,
+        )
         .then((result) => {
           setProviderUsage(result.ok ? result.usage : null);
           return result.ok;
@@ -596,7 +618,7 @@ export function Conversation({
       usageRequestRef.current = request;
       return request;
     },
-    [tab.backend, tab.key],
+    [tab.backend, tab.key, tab.sessionPath, timeline],
   );
 
   useEffect(() => {
@@ -630,7 +652,15 @@ export function Conversation({
       void refreshUsage(force).finally(schedule);
     };
 
-    void refreshUsage(running).finally(schedule);
+    // Defer the first poll on an idle session: usage is a CLI round-trip that
+    // competes with page-load requests for the browser's per-origin sockets,
+    // and it only feeds a composer chip. A running turn still asks at once.
+    if (running) void refreshUsage(true).finally(schedule);
+    else
+      timer = window.setTimeout(() => {
+        timer = undefined;
+        void refreshUsage(false).finally(schedule);
+      }, 1200);
     document.addEventListener("visibilitychange", refreshOnVisible);
     return () => {
       cancelled = true;
@@ -665,17 +695,22 @@ export function Conversation({
       return;
     }
     let cancelled = false;
-    void api
-      .contextUsage(tab.key)
-      .then((result) => {
-        if (!cancelled)
-          setExactContext(result.ok && result.data ? result.data : null);
-      })
-      .catch(() => {
-        if (!cancelled) setExactContext(null);
-      });
+    // Same reason as the usage poll: `claude` takes ~2s to count context, and
+    // on a page load that request sits in front of the sidebar and transcript.
+    const timer = window.setTimeout(() => {
+      void api
+        .contextUsage(tab.key)
+        .then((result) => {
+          if (!cancelled)
+            setExactContext(result.ok && result.data ? result.data : null);
+        })
+        .catch(() => {
+          if (!cancelled) setExactContext(null);
+        });
+    }, 1200);
     return () => {
       cancelled = true;
+      window.clearTimeout(timer);
     };
   }, [tab.key, tab.backend, streaming, timeline.items.length]);
 
@@ -697,10 +732,15 @@ export function Conversation({
     setConversationLabel(tab.key, displayTitle);
   }, [displayTitle, setConversationLabel, tab.key]);
 
+  // Runs after every render (streaming replies grow the transcript on each
+  // frame). Writing scrollTop unconditionally forced a synchronous layout and
+  // a scroll event per render, which is what made a typing reply judder --
+  // only write when the position actually has to move.
   useLayoutEffect(() => {
-    if (stickToBottom.current && scrollRef.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-    }
+    const el = scrollRef.current;
+    if (!stickToBottom.current || !el) return;
+    const bottom = el.scrollHeight - el.clientHeight;
+    if (Math.abs(el.scrollTop - bottom) > 1) el.scrollTop = bottom;
   });
 
   const onScroll = () => {
@@ -1064,14 +1104,24 @@ export function Conversation({
       return;
     }
     if (attachments.length === 0 && message === "/compact") {
-      const result = await api.compact(tab.key);
       setDraft("");
-      if (result.ok)
+      if (compacting) return;
+      setCompacting(true);
+      // No transcript notice here: the compacting strip above the composer is
+      // the single live status, and a second message in the transcript read
+      // as a duplicate with the Changes panel sandwiched between them.
+      const result = await api.compact(tab.key);
+      setCompacting(false);
+      if (result.ok) {
+        // pi answers a compaction with the rewritten history; showing it is
+        // the only way the transcript reflects what compaction actually did.
+        if (result.state && Array.isArray(result.messages))
+          timeline.hydrate(result.messages, result.state);
         timeline.appendNotice(
           "Conversation compacted — older history is now summarized.",
           "info",
         );
-      else
+      } else
         timeline.appendNotice(
           result.error ?? "Could not compact the conversation",
           "error",
@@ -1302,12 +1352,13 @@ export function Conversation({
       thinkingLevel: state?.thinkingLevel ?? undefined,
     };
     // Mid-turn, a new prompt waits its turn instead of being spliced into the
-    // running one — and stays cancellable while it waits. Backends without a
-    // queue keep the old steer behaviour.
-    const steerNow = steerOnceRef.current || midTurnMode === "steer";
+    // running one — and stays cancellable while it waits. Cmd/Ctrl+Enter
+    // still steers; Grok rejects steer while a turn is in flight.
+    const steerNow =
+      canSteer && (steerOnceRef.current || midTurnMode === "steer");
     steerOnceRef.current = false;
     const result = streaming
-      ? steerNow || tab.backend === "grok"
+      ? steerNow
         ? await api.steer(tab.key, outboundMessage, images)
         : await api.enqueue(tab.key, outboundMessage, images)
       : await api.prompt(tab.key, outboundMessage, promptOptions);
@@ -1433,7 +1484,7 @@ export function Conversation({
       draft.trim()
     ) {
       event.preventDefault();
-      steerOnceRef.current = true;
+      steerOnceRef.current = canSteer;
       void send(draft);
       return;
     }
@@ -1699,7 +1750,7 @@ export function Conversation({
   ) : null;
 
   const composer = (
-    <div className="composer">
+    <div className="composer" data-backend={tab.backend}>
       {!streaming && hasItems && tab.cwd && (
         <ChangesPanel
           sessionKey={tab.key}
@@ -1713,17 +1764,6 @@ export function Conversation({
         />
       )}
       {!hasItems && setupChips}
-      {hasItems && (
-        <WorkspacePicker
-          ref={workspacePickerRef}
-          cwd={tab.cwd}
-          backend={tab.backend}
-          disabled={configuring}
-          hideTrigger
-          onPick={(path) => configureSession(accessMode, agentMode, path)}
-          onViewWorkspace={openWorkspace}
-        />
-      )}
       {editingMessageId !== null && (
         <div className="composer__editing" role="status">
           <span>Editing message — press Enter to resend, Esc to cancel</span>
@@ -1778,11 +1818,22 @@ export function Conversation({
         </div>
       )}
       {streaming && todos.length > 0 && <TodoTracker tasks={todos} />}
+      {compacting && (
+        <div className="compacting-strip" role="status" aria-live="polite">
+          <p className="compacting-strip__hint">
+            Compacting the conversation — summarizing older history…
+          </p>
+          <div className="compacting-strip__bar" aria-hidden="true">
+            <span className="compacting-strip__fill" />
+          </div>
+        </div>
+      )}
       {queued.length > 0 && (
         <div className="queue-strip" aria-label="Queued messages">
           <p className="queue-strip__hint">
-            Waiting for this turn to finish — ⌘/Ctrl+Enter sends into the
-            running turn instead.
+            {canSteer
+              ? "Waiting for this turn to finish — ⌘/Ctrl+Enter sends into the running turn instead."
+              : "Waiting for this turn to finish — this agent cannot take a message mid-turn."}
           </p>
           {queued.map((item, index) => (
             <div key={item.id} className="queue-chip">
@@ -1899,6 +1950,14 @@ export function Conversation({
         </div>
         <div className="composer__row">
           <div className="composer__tools">
+            {/* Always-visible agent badge: pi/claude/grok sessions must be
+                tellable apart at a glance, not just in the sidebar. */}
+            <span
+              className="composer__backend-badge"
+              title={`This session runs on ${backendLabel(tab.backend)}`}
+            >
+              {backendLabel(tab.backend)}
+            </span>
             <details ref={addDetailsRef} className="add-disclosure">
               <summary className="composer__add" aria-label="Add">
                 <IconPlus />
@@ -1923,20 +1982,6 @@ export function Conversation({
                   onClick={() => {
                     if (addDetailsRef.current)
                       addDetailsRef.current.open = false;
-                    workspacePickerRef.current?.openBrowser();
-                  }}
-                >
-                  <span className="native-add-menu__icon">
-                    <IconFolderPlus />
-                  </span>
-                  <span>Add project</span>
-                  <em>Folder as workspace</em>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    if (addDetailsRef.current)
-                      addDetailsRef.current.open = false;
                     loadCommands();
                     setCommandMenuOpen(true);
                     setSlashIndex(0);
@@ -1953,7 +1998,7 @@ export function Conversation({
                 </button>
               </div>
             </details>
-            {streaming && (
+            {streaming && canSteer && (
               <div className="native-select native-select--chip native-select--mode">
                 <select
                   aria-label="What Enter does while the agent is working"
@@ -2210,6 +2255,19 @@ export function Conversation({
   return (
     <>
       <div className="conversation-header">
+        {/* Muted folder name at the top of active sessions; clicking it opens
+            the recent-workspaces menu, like the new-session chip. */}
+        <div className="conversation-header__workspace">
+          <WorkspacePicker
+            ref={workspacePickerRef}
+            cwd={tab.cwd}
+            backend={tab.backend}
+            disabled={configuring}
+            fullPath
+            onPick={(path) => configureSession(accessMode, agentMode, path)}
+            onViewWorkspace={openWorkspace}
+          />
+        </div>
         <div
           className="conversation-header__tabs"
           role="tablist"
@@ -2248,7 +2306,7 @@ export function Conversation({
             Backend log
           </button>
           <div className="conversation-header__tabs-actions">
-            <DeployButton />
+            <DeployButton cwd={tab.cwd} />
             {onClose && (
               <button
                 type="button"
@@ -2689,7 +2747,9 @@ const TimelineRow = memo(function TimelineRow({
     );
   }
   return (
-    <article className="tl tl--assistant">
+    <article
+      className={`tl tl--assistant${item.kind === "rationale" ? " tl--rationale" : ""}`}
+    >
       <span className={`tl__node${item.live ? " is-live" : ""}`} />
       <div>
         <RichText
@@ -2748,7 +2808,7 @@ function lastAnswerableAssistantId(items: TimelineItem[]): string | undefined {
     if (item.kind === "user" || item.kind === "tool") break;
     if (item.kind === "assistant") tail.push(item);
   }
-  return (tail.find((item) => hasAskBlock(item.text)) ?? tail[0])?.id;
+  return (tail.find((item) => isAskMessage(item.text)) ?? tail[0])?.id;
 }
 
 type ToolItem = Extract<TimelineItem, { kind: "tool" }>;
@@ -2758,7 +2818,7 @@ type ChatRow =
 
 function isExpandableActivity(item: TimelineItem): item is ToolItem {
   if (item.kind !== "tool") return false;
-  return !["edit", "write"].includes(item.name.toLowerCase());
+  return !isFileEditTool(item.name);
 }
 
 function buildChatRows(items: TimelineItem[], streaming: boolean): ChatRow[] {

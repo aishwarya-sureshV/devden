@@ -1,5 +1,5 @@
 import type { TimelineItem } from "./timeline.ts";
-import { hasAskBlock } from "./askBlock.ts";
+import { isAskMessage } from "./askBlock.ts";
 
 /**
  * "This session is waiting on you."
@@ -11,35 +11,34 @@ import { hasAskBlock } from "./askBlock.ts";
  * interrupted, which is exactly how it reads when you come back to it.
  */
 export function textAwaitsAnswer(text: string | undefined): boolean {
-  const body = (text ?? "").trim();
-  if (!body) return false;
-  // Trailing markdown (emphasis, a stray quote marker) must not hide the "?".
-  if (body.replace(/[*_`>\s]+$/g, "").endsWith("?")) return true;
-  // A numbered list of questions with a closing line after it — the shape
-  // CLARIFY_PROMPT asks for — still counts even when the message signs off.
-  const numberedQuestions = body
-    .split("\n")
-    .filter((line) => /^\s*\d+[.)]\s/.test(line) && line.includes("?"));
-  return numberedQuestions.length >= 2;
+ const body = (text ?? "").trim();
+ if (!body) return false;
+ // Trailing markdown (emphasis, a stray quote marker) must not hide the "?".
+ if (body.replace(/[*_`>\s]+$/g, "").endsWith("?")) return true;
+ // A numbered list of questions with a closing line after it — the shape
+ // CLARIFY_PROMPT asks for — still counts even when the message signs off.
+ const numberedQuestions = body
+  .split("\n")
+  .filter((line) => /^\s*\d+[.)]\s/.test(line) && line.includes("?"));
+ return numberedQuestions.length >= 2;
 }
 
 export function isAwaitingAnswer(
-  items: readonly TimelineItem[],
-  working: boolean,
+ items: readonly TimelineItem[],
+ working: boolean,
 ): boolean {
-  if (working) return false;
-  // Notices (mode switches, errors) are chrome, not conversation: a question
-  // followed by one still leaves the session waiting.
-  const last = [...items]
-    .reverse()
-    .find(
-      (item) =>
-        item.kind === "user" ||
-        item.kind === "assistant" ||
-        item.kind === "tool",
-    );
-  if (!last || last.kind !== "assistant") return false;
-  // An ask block is the model saying it stopped for an answer, so it counts
-  // even when the rendered card holds no trailing "?".
-  return hasAskBlock(last.text) || textAwaitsAnswer(last.text);
+ if (working) return false;
+ // Notices (mode switches, errors) are chrome, not conversation: a question
+ // followed by one still leaves the session waiting.
+ const last = [...items]
+  .reverse()
+  .find(
+   (item) =>
+    item.kind === "user" || item.kind === "assistant" || item.kind === "tool",
+  );
+ if (!last || last.kind !== "assistant") return false;
+ // An ask block (fenced or bare — some models drop the fence markers) is
+ // the model saying it stopped for an answer, so it counts even when the
+ // rendered card holds no trailing "?".
+ return isAskMessage(last.text) || textAwaitsAnswer(last.text);
 }

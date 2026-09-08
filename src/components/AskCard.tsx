@@ -160,6 +160,10 @@ export function AskCard({
                   className={`ask-card__option${isPicked ? " is-picked" : ""}${isOther ? " ask-card__option--other" : ""}`}
                   onClick={() => toggle(option.label)}
                   onKeyDown={(event) => {
+                    // Space and Enter activate the option row, but the free-text
+                    // input sits inside it: without this guard the row swallowed
+                    // every space the user typed.
+                    if (event.target !== event.currentTarget) return;
                     if (event.key === "Enter" || event.key === " ") {
                       event.preventDefault();
                       toggle(option.label);

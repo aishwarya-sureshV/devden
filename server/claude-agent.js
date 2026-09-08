@@ -277,6 +277,12 @@ function contentText(content) {
     .join("\n");
 }
 
+function stripSystemReminders(text) {
+  return text
+    .replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, "")
+    .trim();
+}
+
 function normalizeHistoryEntry(entry) {
   const timestamp = Date.parse(entry?.timestamp ?? "") || Date.now();
   const message = entry?.message;
@@ -298,6 +304,10 @@ function normalizeHistoryEntry(entry) {
     return [{ ...message, role: "assistant", content, timestamp }];
   }
   if (entry.type !== "user") return [];
+  // isMeta marks everything the harness injected as a user turn -- hook
+  // output, slash-command caveats, SessionStart banners. The user never
+  // typed it, so it must not come back as their message.
+  if (entry.isMeta) return [];
   const content = message.content;
   const text = typeof content === "string" ? content : contentText(content);
   if (/<local-command-caveat>|<command-name>|<command-message>/.test(text))
@@ -317,16 +327,23 @@ function normalizeHistoryEntry(entry) {
         timestamp,
       }));
   }
-  return [
-    {
-      role: "user",
-      content:
-        typeof content === "string"
-          ? [{ type: "text", text: content }]
-          : content,
-      timestamp,
-    },
-  ];
+  const parts =
+    typeof content === "string"
+      ? [{ type: "text", text: content }]
+      : Array.isArray(content)
+        ? content
+        : [];
+  // <system-reminder> blocks ride along inside a real user turn; strip them
+  // rather than dropping the turn.
+  const visible = parts
+    .map((part) =>
+      part?.type === "text" && typeof part.text === "string"
+        ? { ...part, text: stripSystemReminders(part.text) }
+        : part,
+    )
+    .filter((part) => part?.type !== "text" || part.text);
+  if (!visible.length) return [];
+  return [{ role: "user", content: visible, timestamp }];
 }
 
 export function messagesFromClaudeLog(contents) {
@@ -431,6 +448,20 @@ export class ClaudeAgentProcess {
           message: `cwd not found; opened in ${cwd} instead`,
         }),
       );
+    }
+    if (options.sessionPath && !existsSync(options.sessionPath)) {
+      // A saved session can vanish while the workbench still lists it (scratch
+      // cwd cleaned up, session deleted elsewhere). Resuming it made claude
+      // exit 1 with "No conversation found" and every getEntries() read throw
+      // ENOENT; open a fresh session instead and say so once.
+      queueMicrotask(() =>
+        this.emit({
+          type: "stderr",
+          sessionKey: this.sessionKey,
+          message: "that saved session no longer exists; started a fresh one",
+        }),
+      );
+      options = { ...options, sessionPath: undefined };
     }
     if (this.process) return { ok: true, state: await this.getState() };
     this.cwd = cwd || homedir();
@@ -637,6 +668,8 @@ export class ClaudeAgentProcess {
   async switchSession(sessionPath) {
     const sessionId = sessionIdFromPath(sessionPath);
     if (!sessionId) return { ok: false, error: "Invalid Claude session path." };
+    if (!existsSync(sessionPath))
+      return { ok: false, error: "That saved session no longer exists." };
     await this.terminateProcess(new Error("Claude session switched"));
     this.sessionId = sessionId;
     this.sessionFile = sessionPath;
@@ -692,7 +725,7 @@ export class ClaudeAgentProcess {
   }
 
   async getEntries() {
-    if (!this.sessionFile) return [];
+    if (!this.sessionFile || !existsSync(this.sessionFile)) return [];
     const contents = await readFile(this.sessionFile, "utf8");
     return contents
       .split("\n")
@@ -774,13 +807,19 @@ export class ClaudeAgentProcess {
    */
   sendControlRequest(request, timeoutMs = 30000) {
     if (!this.process)
-      return Promise.resolve({ ok: false, error: "Claude process is not running" });
+      return Promise.resolve({
+        ok: false,
+        error: "Claude process is not running",
+      });
     this.controlRequestSeq += 1;
     const requestId = `pi-web-${Date.now()}-${this.controlRequestSeq}`;
     return new Promise((resolve) => {
       const timer = setTimeout(() => {
         this.pendingControlRequests.delete(requestId);
-        resolve({ ok: false, error: `Claude did not answer "${request.subtype}" in time` });
+        resolve({
+          ok: false,
+          error: `Claude did not answer "${request.subtype}" in time`,
+        });
       }, timeoutMs);
       this.pendingControlRequests.set(requestId, { resolve, timer });
       const written = this.writeControl({
@@ -833,7 +872,9 @@ export class ClaudeAgentProcess {
     const expected = expectedSessionPath(this.cwd, this.sessionId);
     if (expected) candidates.push(expected);
     if (this.sessionId && this.sessionFile)
-      candidates.push(join(dirname(this.sessionFile), `${this.sessionId}.jsonl`));
+      candidates.push(
+        join(dirname(this.sessionFile), `${this.sessionId}.jsonl`),
+      );
     if (this.sessionFile) candidates.push(this.sessionFile);
     let contents = "";
     for (const candidate of candidates) {
@@ -976,7 +1017,8 @@ export class ClaudeAgentProcess {
    */
   enqueue(message, images) {
     const text = String(message ?? "");
-    if (!text.trim()) return Promise.resolve({ ok: false, error: "Empty message" });
+    if (!text.trim())
+      return Promise.resolve({ ok: false, error: "Empty message" });
     if (this.pendingTurns.length === 0)
       return this.prompt(text, images).then((result) =>
         result.ok ? { ok: true, data: { queued: false } } : result,
@@ -1004,7 +1046,10 @@ export class ClaudeAgentProcess {
     if (this.queuedMessages.length === before)
       return { ok: false, error: "That message is no longer queued" };
     this.emitQueue();
-    return { ok: true, data: { cancelled: before - this.queuedMessages.length } };
+    return {
+      ok: true,
+      data: { cancelled: before - this.queuedMessages.length },
+    };
   }
 
   /** Called when the agent goes idle: send the next waiting message, if any. */
@@ -1025,7 +1070,10 @@ export class ClaudeAgentProcess {
    * here so the UI can point at them.
    */
   async getSettings() {
-    const result = await this.sendControlRequest({ subtype: "get_settings" }, 15000);
+    const result = await this.sendControlRequest(
+      { subtype: "get_settings" },
+      15000,
+    );
     if (!result.ok) return result;
     const data = result.data ?? {};
     const sources = Array.isArray(data.sources) ? data.sources : [];
@@ -1055,8 +1103,8 @@ export class ClaudeAgentProcess {
           settings: entry?.settings ?? {},
         })),
         localSettings:
-          sources.find((entry) => entry?.source === "localSettings")?.settings ??
-          {},
+          sources.find((entry) => entry?.source === "localSettings")
+            ?.settings ?? {},
         // Where each scope lives on disk, so the UI can open the real file.
         files: {
           userSettings: join(homedir(), ".claude", "settings.json"),
@@ -1069,7 +1117,10 @@ export class ClaudeAgentProcess {
 
   /** Configured MCP servers and whether each one actually connected. */
   async getMcpServers() {
-    const result = await this.sendControlRequest({ subtype: "mcp_status" }, 15000);
+    const result = await this.sendControlRequest(
+      { subtype: "mcp_status" },
+      15000,
+    );
     if (!result.ok) return result;
     const servers = Array.isArray(result.data?.mcpServers)
       ? result.data.mcpServers

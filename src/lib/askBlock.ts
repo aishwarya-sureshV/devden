@@ -57,6 +57,22 @@ export function firstAsk(text: string | undefined): AskQuestion[] | null {
 }
 
 /**
+ * Questions from a message: the first ```ask fence, or — when the model kept
+ * the payload but dropped the fence markers (flash-tier models do this) — the
+ * bare JSON itself. Only a message that is exactly the payload matches here;
+ * JSON.parse fails fast on any surrounding prose, so ordinary replies that
+ * merely mention or quote the shape never become cards.
+ */
+export function messageAsk(text: string | undefined): AskQuestion[] | null {
+  return firstAsk(text) ?? parseAsk((text ?? "").trim());
+}
+
+/** Does this message carry the ask protocol, fenced or bare? */
+export function isAskMessage(text: string | undefined): boolean {
+  return hasAskBlock(text) || parseAsk((text ?? "").trim()) !== null;
+}
+
+/**
  * Parse an ask block's payload. Returns null for anything malformed — a
  * half-streamed fence, or a model that wrote prose in it — so callers fall
  * back to rendering the raw block rather than showing a broken card.

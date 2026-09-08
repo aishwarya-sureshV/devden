@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { createPortal } from "react-dom";
 import {
   api,
   type GitChange,
@@ -240,17 +239,18 @@ export function ChangesPanel({
       setOpenFile(null);
       setDiffs({});
       setPushed(null);
+      setFeedback(null);
       setReloadToken((token) => token + 1);
     }
   }, [streaming]);
 
-  // A success speaks for itself and clears itself; a failure stays until the
-  // user dismisses it, because it is the only place the git error is shown.
+  // The push receipt is a transient confirmation, not a fixture: clear it
+  // after 20s so the composer area returns to rest.
   useEffect(() => {
-    if (!feedback?.ok) return;
-    const timer = window.setTimeout(() => setFeedback(null), 5000);
+    if (!pushed) return;
+    const timer = window.setTimeout(() => setPushed(null), 20_000);
     return () => window.clearTimeout(timer);
-  }, [feedback]);
+  }, [pushed]);
 
   // Popover hygiene: a click anywhere else, or Escape, closes the Git menu.
   useEffect(() => {
@@ -666,39 +666,14 @@ export function ChangesPanel({
     </div>
   );
 
-  // Floating, not inline: git output is incidental to the card and belongs
-  // out of the transcript's flow, where it cannot reflow the controls that
-  // produced it or scroll away with the conversation.
-  const toast =
-    feedback &&
-    createPortal(
-      <div
-        className={`git-toast${feedback.ok ? "" : " is-error"}`}
-        role="status"
-        aria-live="polite"
-      >
-        <div className="git-toast__head">
-          <span className="git-toast__mark" aria-hidden>
-            {feedback.ok ? "✓" : "!"}
-          </span>
-          <strong>{feedback.title}</strong>
-          <button
-            type="button"
-            className="git-toast__close"
-            aria-label="Dismiss"
-            onClick={() => setFeedback(null)}
-          >
-            ×
-          </button>
-        </div>
-        {feedback.output && (
-          <pre className="git-toast__output">
-            {feedback.output.trim().slice(0, 800)}
-          </pre>
-        )}
-      </div>,
-      document.body,
-    );
+  // No floating toast: successes are said by the receipt card itself, and a
+  // failure renders as an inline line inside the card it came from.
+  const failure = feedback && !feedback.ok && (
+    <div className="changes__error" role="alert">
+      <strong>{feedback.title}</strong>
+      {feedback.output && <pre>{feedback.output.trim().slice(0, 800)}</pre>}
+    </div>
+  );
 
   // Branch + how far it has drifted from its upstream: the one line of repo
   // state worth showing even when the tree is clean.
@@ -714,7 +689,7 @@ export function ChangesPanel({
   );
 
   // Dismissing the card must not swallow a git error the user has not read.
-  if (!data?.repo || dismissed) return <>{toast}</>;
+  if (!data?.repo || dismissed) return <>{failure}</>;
 
   // Nothing to commit: collapse to a one-line repo bar so the Git menu (pull,
   // branches, stashes) stays reachable without a card's worth of chrome. The
@@ -763,7 +738,7 @@ export function ChangesPanel({
           <pre className="changes__output">{pushed.output.slice(0, 800)}</pre>
         )}
         {conflictBar}
-        {toast}
+        {failure}
       </section>
     );
   }
@@ -950,7 +925,7 @@ export function ChangesPanel({
           </button>
         </footer>
       )}
-      {toast}
+      {failure}
     </section>
   );
 }

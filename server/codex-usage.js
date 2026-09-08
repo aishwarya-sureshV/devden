@@ -1,110 +1,83 @@
-import { spawn } from 'node:child_process'
-import { homedir } from 'node:os'
+/**
+ * Codex plan/rate-limit reporting. Reads the signed-in user's snapshot
+ * through the app-server protocol -- no thread is started and no account
+ * state is mutated. Shared by the Pi agent (when it is driving an
+ * openai-codex model) and by the Codex agent itself.
+ */
+import { codexRequest } from "./codex-app-server.js";
 
-const REQUEST_TIMEOUT_MS = 15_000
-
-function resolveCodexExecutable() {
-  return process.env.PI_WEB_CODEX_BIN || 'codex'
+export function readCodexRateLimits() {
+  return codexRequest("account/rateLimits/read");
 }
 
-function rpcError(value) {
-  if (typeof value === 'string') return value
-  if (value && typeof value === 'object') {
-    if (typeof value.message === 'string') return value.message
-    try { return JSON.stringify(value) } catch { /* fall through */ }
-  }
-  return 'Unknown Codex app-server error'
+function usageWindowLabel(seconds) {
+  if (seconds <= 6 * 60 * 60) return "Current session";
+  if (seconds >= 6 * 24 * 60 * 60 && seconds <= 8 * 24 * 60 * 60)
+    return "Current week";
+  const hours = Math.round(seconds / 3600);
+  return hours >= 48
+    ? `${Math.round(hours / 24)} day limit`
+    : `${hours} hour limit`;
+}
+
+function formatResetTime(epochSeconds) {
+  if (!Number.isFinite(epochSeconds)) return undefined;
+  return new Intl.DateTimeFormat("en-US", {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    timeZoneName: "short",
+  }).format(new Date(epochSeconds * 1000));
 }
 
 /**
- * Read the signed-in user's Codex rate-limit snapshot through the documented
- * app-server protocol. This starts no thread or model turn and performs no
- * account mutation.
+ * The usage panel's shape, from Codex's rate limits. `modelId` only picks
+ * which limit bucket applies -- Spark models bill against their own.
  */
-export function readCodexRateLimits() {
-  return new Promise((resolve, reject) => {
-    const child = spawn(resolveCodexExecutable(), ['app-server', '--listen', 'stdio://'], {
-      cwd: homedir(),
-      env: process.env,
-      stdio: ['pipe', 'pipe', 'pipe'],
-    })
-    let stdout = ''
-    let stderr = ''
-    let settled = false
-
-    const finish = (error, result) => {
-      if (settled) return
-      settled = true
-      clearTimeout(timeout)
-      try { child.stdin.end() } catch { /* already closed */ }
-      try { child.kill() } catch { /* already exited */ }
-      if (error) reject(error)
-      else resolve(result)
-    }
-    const fail = (message) => {
-      const details = stderr.trim()
-      finish(new Error(details ? `${message}: ${details}` : message))
-    }
-    const send = (message) => {
-      if (settled || child.stdin.destroyed) return
-      child.stdin.write(`${JSON.stringify(message)}\n`)
-    }
-    const handleMessage = (message) => {
-      if (message?.id === 1) {
-        if (message.error) {
-          fail(`Codex app-server initialization failed: ${rpcError(message.error)}`)
-          return
-        }
-        send({ method: 'initialized', params: {} })
-        send({ method: 'account/rateLimits/read', id: 2 })
-        return
-      }
-      if (message?.id === 2) {
-        if (message.error) {
-          fail(`Codex rate-limit request failed: ${rpcError(message.error)}`)
-          return
-        }
-        finish(undefined, message.result)
-      }
-    }
-    const drainStdout = () => {
-      let newline = stdout.indexOf('\n')
-      while (newline !== -1) {
-        let line = stdout.slice(0, newline)
-        stdout = stdout.slice(newline + 1)
-        if (line.endsWith('\r')) line = line.slice(0, -1)
-        if (line) {
-          try { handleMessage(JSON.parse(line)) } catch { /* ignore non-protocol output */ }
-        }
-        newline = stdout.indexOf('\n')
-      }
-    }
-
-    const timeout = setTimeout(() => fail('Codex rate-limit request timed out'), REQUEST_TIMEOUT_MS)
-    child.stdout.on('data', (chunk) => {
-      stdout += chunk.toString('utf8')
-      drainStdout()
-    })
-    child.stderr.on('data', (chunk) => {
-      if (stderr.length < 8_000) stderr += chunk.toString('utf8')
-    })
-    child.stdin.on('error', (error) => {
-      if (!settled) fail(`Codex app-server input failed: ${error.message}`)
-    })
-    child.once('error', (error) => finish(error))
-    child.once('exit', (code, signal) => {
-      if (!settled) fail(`Codex app-server exited before responding (${signal ?? code ?? 'unknown'})`)
-    })
-    child.once('spawn', () => send({
-      method: 'initialize',
-      id: 1,
-      params: {
-        clientInfo: {
-          name: 'pi_web',
-          title: 'pi-web',
-          version: '0.1.0',
-        },
+export async function loadCodexUsage(modelId) {
+  try {
+    const payload = await readCodexRateLimits();
+    const normalizedModel = String(modelId ?? "").toLowerCase();
+    const rateLimits = Object.values(payload?.rateLimitsByLimitId ?? {}).filter(
+      Boolean,
+    );
+    const selected = normalizedModel.includes("spark")
+      ? rateLimits.find((entry) =>
+          `${entry?.limitId ?? ""} ${entry?.limitName ?? ""}`
+            .toLowerCase()
+            .includes("spark"),
+        )
+      : rateLimits.find(
+          (entry) => String(entry?.limitId ?? "").toLowerCase() === "codex",
+        );
+    const limits = selected ?? payload?.rateLimits ?? rateLimits[0];
+    const windows = [limits?.primary, limits?.secondary]
+      .filter(Boolean)
+      .map((window) => ({
+        label: usageWindowLabel(Number(window.windowDurationMins ?? 0) * 60),
+        usedPercent: Number(window.usedPercent ?? 0),
+        ...(formatResetTime(Number(window.resetsAt))
+          ? { resetsAt: formatResetTime(Number(window.resetsAt)) }
+          : {}),
+      }));
+    return {
+      ok: true,
+      usage: {
+        available: windows.length > 0,
+        provider: "Codex",
+        plan:
+          String(limits?.planType ?? "")
+            .replace(
+              /(^|_)(\w)/g,
+              (_match, _prefix, letter) => ` ${letter.toUpperCase()}`,
+            )
+            .trim() || undefined,
+        windows,
+        updatedAt: new Date().toISOString(),
       },
-    }))
-  })
+    };
+  } catch (error) {
+    return { ok: false, error: String(error?.message ?? error) };
+  }
 }

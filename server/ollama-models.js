@@ -14,18 +14,29 @@ function prettyName(id) {
 }
 
 // Ollama's OpenAI-compatible endpoint accepts reasoning_effort of
-// low|medium|high|none (none disables thinking) — verified against the
-// daemon. Map Pi's thinking levels onto that scale; xhigh/max collapse to
-// high, which is Ollama's ceiling.
+// minimal|low|medium|high|xhigh|ultra|max|none (none disables thinking) --
+// verified against the daemon's own validation error. Pi's levels are the
+// same names, so every level passes through 1:1 except "off" -> "none".
 const OLLAMA_THINKING_LEVEL_MAP = {
   off: "none",
-  minimal: "low",
+  minimal: "minimal",
   low: "low",
   medium: "medium",
   high: "high",
-  xhigh: "high",
-  max: "high",
+  xhigh: "xhigh",
+  max: "max",
 };
+
+/**
+ * True when a stored map downgrades a level Ollama accepts verbatim -- the
+ * signature of a map written when "high" was believed to be the ceiling.
+ * User-authored entries that only remap names Ollama rejects are left alone.
+ */
+export function isStaleThinkingLevelMap(map) {
+  return Object.entries(map ?? {}).some(
+    ([from, to]) => OLLAMA_THINKING_LEVEL_MAP[from] === from && to !== from,
+  );
+}
 
 function modelKey(model) {
   return `${String(model?.provider ?? "").toLowerCase()}\0${String(model?.id ?? "")}`;
@@ -54,7 +65,11 @@ export async function listOllamaModels() {
           Number.isFinite(contextWindow) && contextWindow > 0
             ? contextWindow
             : undefined,
-        reasoning: capabilities.includes("thinking") || id.includes("cloud"),
+        // Cloud models proxy through Ollama's openai-completions endpoint,
+        // which doesn't split their reasoning into its own field -- it
+        // leaks into content as literal <think> tags regardless of what
+        // "capabilities" claims. Never request reasoning_effort for one.
+        reasoning: !id.includes("cloud") && capabilities.includes("thinking"),
         vision: capabilities.includes("vision"),
       },
     ];
@@ -124,12 +139,32 @@ export async function syncOllamaModelsJson(models) {
       continue;
     }
     // Upgrade models registered before effort support: thinking models gain
-    // a per-model compat override so Pi sends reasoning_effort. Any existing
-    // user-authored compat or thinkingLevelMap survives untouched.
-    if (reasoning && entry.compat?.supportsReasoningEffort !== true) {
-      entry.compat = { ...(entry.compat ?? {}), supportsReasoningEffort: true };
-      if (!entry.thinkingLevelMap)
+    // a per-model compat override so Pi sends reasoning_effort, and any map
+    // written when "high" was believed to be Ollama's ceiling is repaired so
+    // xhigh/max/minimal reach the daemon instead of being downgraded.
+    if (reasoning) {
+      if (entry.compat?.supportsReasoningEffort !== true) {
+        entry.compat = {
+          ...(entry.compat ?? {}),
+          supportsReasoningEffort: true,
+        };
+        changed = true;
+      }
+      const map = entry.thinkingLevelMap;
+      if (!map) {
         entry.thinkingLevelMap = OLLAMA_THINKING_LEVEL_MAP;
+        changed = true;
+      } else if (isStaleThinkingLevelMap(map)) {
+        entry.thinkingLevelMap = { ...map, ...OLLAMA_THINKING_LEVEL_MAP };
+        changed = true;
+      }
+    } else if (entry.reasoning || entry.compat?.supportsReasoningEffort) {
+      // Previously registered as reasoning-capable (e.g. GLM, before the
+      // <think>-tag leak was known) -- strip the override so Pi stops
+      // requesting reasoning_effort from a model that can't honor it cleanly.
+      entry.reasoning = false;
+      if (entry.compat) delete entry.compat.supportsReasoningEffort;
+      delete entry.thinkingLevelMap;
       changed = true;
     }
   }

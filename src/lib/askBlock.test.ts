@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { firstAsk, hasAskBlock, parseAsk } from "./askBlock.ts";
+import {
+  firstAsk,
+  hasAskBlock,
+  isAskMessage,
+  messageAsk,
+  parseAsk,
+} from "./askBlock.ts";
 
 const fence = (body: string) => ["```ask", body, "```"].join("\n");
 
@@ -39,17 +45,14 @@ describe("parseAsk", () => {
   });
 
   it("accepts a bare array and string options", () => {
-    assert.deepEqual(
-      parseAsk('[{"question":"Which?","options":["a","b"]}]'),
-      [
-        {
-          question: "Which?",
-          header: undefined,
-          multiSelect: false,
-          options: [{ label: "a" }, { label: "b" }],
-        },
-      ],
-    );
+    assert.deepEqual(parseAsk('[{"question":"Which?","options":["a","b"]}]'), [
+      {
+        question: "Which?",
+        header: undefined,
+        multiSelect: false,
+        options: [{ label: "a" }, { label: "b" }],
+      },
+    ]);
   });
 
   it("returns null for a half-streamed block", () => {
@@ -74,10 +77,42 @@ describe("firstAsk", () => {
       "What changed — nothing.",
       fence(q("Second?", "b")),
     ].join("\n");
-    assert.deepEqual(firstAsk(text)?.map((row) => row.question), ["First?"]);
+    assert.deepEqual(
+      firstAsk(text)?.map((row) => row.question),
+      ["First?"],
+    );
   });
 
   it("returns null for a half-streamed fence", () => {
-    assert.equal(firstAsk("```ask\n{\"questions\":["), null);
+    assert.equal(firstAsk('```ask\n{"questions":['), null);
+  });
+});
+
+describe("messageAsk / isAskMessage", () => {
+  const bare = JSON.stringify({
+    questions: [{ question: "Which?", options: ["a", "b"] }],
+  });
+
+  it("reads a fence-less questions payload", () => {
+    assert.deepEqual(
+      messageAsk(bare)?.map((row) => row.question),
+      ["Which?"],
+    );
+    assert.equal(isAskMessage(bare), true);
+  });
+
+  it("prefers the fence and ignores json code blocks", () => {
+    const fenced = `prose\n\n${fence(bare)}`;
+    assert.deepEqual(
+      messageAsk(fenced)?.map((row) => row.question),
+      ["Which?"],
+    );
+    assert.equal(isAskMessage(fenced), true);
+    assert.equal(isAskMessage("```json\n{}\n```"), false);
+  });
+
+  it("leaves ordinary prose alone", () => {
+    assert.equal(isAskMessage("A question? And **markdown**."), false);
+    assert.equal(messageAsk("A question? And **markdown**."), null);
   });
 });

@@ -3,7 +3,12 @@ import { api, type DeployStatusResponse } from "../lib/api";
 import { IconChevronDown, IconCloud, IconLaptop } from "./icons";
 
 /**
- * One-click deploy, split button:
+ * One-click deploy for the project this conversation is working in — its cwd,
+ * not pi-web's. The server confines that path to the workspace roots, keeps
+ * the deploy state file inside the project, and only restarts this server when
+ * the project being deployed happens to BE pi-web.
+ *
+ * Split button:
  *   - Primary click: deploy LOCAL (default) — build the working tree as-is
  *     + restart the API server + reload the page. Uncommitted changes
  *     included; nothing is pulled or pushed.
@@ -32,7 +37,7 @@ function formatAgo(ts?: number | null): string {
   return `${Math.round(hours / 24)}d ago`;
 }
 
-export function DeployButton() {
+export function DeployButton({ cwd }: { cwd: string }) {
   const [phase, setPhase] = useState<Phase>("idle");
   const [variant, setVariant] = useState<Variant>("local");
   const [status, setStatus] = useState<DeployStatusResponse | null>(null);
@@ -63,11 +68,24 @@ export function DeployButton() {
   const fetchStatus =
     useCallback(async (): Promise<DeployStatusResponse | null> => {
       try {
-        return await api.deployStatus();
+        return await api.deployStatus(cwd);
       } catch {
         return null;
       }
-    }, []);
+    }, [cwd]);
+
+  // Deploying another project never restarts this server, so there is nothing
+  // to wait for and nothing to reload.
+  const deploysSelf = status?.self !== false;
+
+  // A pane can be pointed at a different project (workspace switch, another
+  // session in split view); its deploy history is a different project's.
+  useEffect(() => {
+    setStatus(null);
+    setPhase("idle");
+    setMessage("");
+    setDeployStartedAt(null);
+  }, [cwd]);
 
   // Idle polling: keep the "un-deployed changes" dot and menu info fresh.
   useEffect(() => {
@@ -120,14 +138,19 @@ export function DeployButton() {
         last?.status === "success" &&
         (last.finishedAt ?? 0) > (deployStartedAt ?? 0)
       ) {
-        setPhase("restarting");
+        if (deploysSelf) {
+          setPhase("restarting");
+        } else {
+          setPhase("idle");
+          setMessage("");
+        }
       }
     }, ACTIVE_POLL_MS);
     return () => {
       cancelled = true;
       clearInterval(timer);
     };
-  }, [phase, deployStartedAt, fetchStatus]);
+  }, [phase, deployStartedAt, deploysSelf, fetchStatus]);
 
   // While restarting: wait for the server to come back up with a new boot id,
   // then reload the page so the UI picks up the new build.
@@ -169,7 +192,7 @@ export function DeployButton() {
       if (phase === "deploying" || phase === "restarting") return;
       setMenuOpen(false);
       try {
-        const result = await api.deploy(which);
+        const result = await api.deploy(which, cwd);
         if (!result.ok) {
           setVariant(which);
           setPhase("failed");
@@ -188,7 +211,7 @@ export function DeployButton() {
         );
       }
     },
-    [phase],
+    [cwd, phase],
   );
 
   const deploying = phase === "deploying" || phase === "restarting";
@@ -229,8 +252,11 @@ export function DeployButton() {
         Boolean(lastSuccessful?.signature) &&
         status?.signature !== lastSuccessful?.signature));
 
+  const projectName =
+    status?.projectName || cwd.split("/").filter(Boolean).at(-1) || cwd;
   const primaryTitle = [
-    primaryVariant === "local" ? "Deploy (local)" : "Deploy (cloud)",
+    `${primaryVariant === "local" ? "Deploy (local)" : "Deploy (cloud)"} — ${projectName}`,
+    status?.project ?? cwd,
     `Last local deploy: ${formatAgo(status?.lastLocal?.finishedAt)}`,
   ].join("\n");
 
@@ -284,6 +310,13 @@ export function DeployButton() {
       </button>
       {menuOpen && (
         <div className="conversation-header__deploy-menu" role="menu">
+          <p
+            className="conversation-header__deploy-menu-sub"
+            title={status?.project ?? cwd}
+          >
+            Deploys <strong>{projectName}</strong>
+            {deploysSelf ? " (this workbench)" : ""}
+          </p>
           <button
             type="button"
             role="menuitem"

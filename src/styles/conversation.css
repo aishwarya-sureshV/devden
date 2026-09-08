@@ -71,6 +71,8 @@
 /* Session header and view tabs, following the DeepSeek harness hierarchy. */
 .conversation-header {
  position: relative;
+ display: flex;
+ align-items: center;
  flex: none;
  border-bottom: 1px solid var(--dsw-alias-border-l2);
  background: var(--dsw-alias-bg-base);
@@ -82,6 +84,7 @@
 }
 .conversation-header__actions {
  display: flex;
+ flex: 1;
  align-items: center;
  justify-content: flex-end;
  gap: 8px;
@@ -217,6 +220,7 @@
  font-weight: 600;
 }
 .conversation-header__deploy-menu-sub {
+ margin: 0 0 2px;
  padding-left: 20px;
  color: var(--dsw-alias-label-caption);
  font-size: 11px;
@@ -961,11 +965,41 @@
  z-index: 40;
  width: min(280px, 74vw);
  padding: 6px;
- overflow: hidden;
+ /* Clamped via inline maxHeight by the component; scrolls, never clips. */
+ overflow-y: auto;
+ overflow-x: hidden;
  border: 1px solid var(--dsw-alias-border-l2);
  border-radius: 12px;
  background: var(--dsw-alias-bg-overlay);
  box-shadow: 0 10px 30px rgb(0 0 0 / 14%);
+}
+/* Not enough room below the trigger — open above it instead. */
+.workspace-picker__menu.is-upwards {
+ top: auto;
+ bottom: calc(100% + 6px);
+}
+/* "No folder" — work from the home directory — pinned above the recents. */
+.workspace-picker__nofolder {
+ display: block;
+ width: 100%;
+ min-height: 32px;
+ margin-bottom: 4px;
+ padding: 6px 9px;
+ border: 0;
+ border-bottom: 1px solid var(--dsw-alias-border-l2);
+ border-radius: 8px 8px 0 0;
+ background: none;
+ color: var(--dsw-alias-label-primary);
+ font-size: 13.5px;
+ text-align: left;
+ cursor: pointer;
+}
+.workspace-picker__nofolder:hover {
+ background: var(--dsw-alias-interactive-bg-hover);
+}
+.workspace-picker__nofolder:disabled {
+ opacity: 0.5;
+ cursor: default;
 }
 .workspace-picker__recent {
  max-height: 240px;
@@ -997,6 +1031,22 @@
 .workspace-picker__menu button strong {
  color: var(--dsw-alias-label-primary);
  font-size: 14px;
+}
+.workspace-picker__heading {
+ padding: 4px 9px 6px;
+ font-size: 13px;
+ color: var(--dsw-alias-label-caption);
+}
+/* Full path under folder names that collide (two "agentdeck" folders). */
+.workspace-picker__menu button span em {
+ display: block;
+ max-width: 100%;
+ overflow: hidden;
+ text-overflow: ellipsis;
+ white-space: nowrap;
+ font-style: normal;
+ font-size: 11.5px;
+ color: var(--dsw-alias-label-caption);
 }
 .workspace-picker__footer {
  margin-top: 5px;
@@ -1224,6 +1274,16 @@
 }
 .tl--assistant .tl__node {
  background: var(--ds-status-success);
+}
+
+/* Thinking blocks read as prose but are not the answer -- dim them so the
+ reply still stands out. Toggle: Settings > Thinking blocks. */
+.tl--rationale {
+ color: var(--ds-text-secondary, #6b6b63);
+ font-style: italic;
+}
+.tl--rationale .tl__node {
+ background: var(--ds-border-default, #cfcabd);
 }
 
 /* user message bubble */
@@ -2153,7 +2213,9 @@
  flex-direction: column;
  gap: 12px;
  width: 100%;
- max-width: var(--pw-composer-card-max-width);
+ /* Match the transcript content width (chat column minus its 24px side
+  padding), same cap the Changes card uses. */
+ max-width: calc(var(--pw-chat-content-width) - 48px);
  padding-top: 10px;
  border: 1px solid var(--dsw-alias-border-l2-darkmode-thin);
  border-radius: 8px;
@@ -2284,6 +2346,57 @@
  align-items: center;
  gap: 16px;
  min-width: 0;
+}
+/* Per-agent accent: a claude session must not look identical to a pi one.
+   Colors the send button and the agent badge; pi keeps the default look. */
+.composer[data-backend="claude"] {
+ --backend-accent: #c96442;
+ --backend-accent-contrast: #fff;
+}
+.composer[data-backend="grok"] {
+ --backend-accent: #7c5cbf;
+ --backend-accent-contrast: #fff;
+}
+.composer[data-backend="codex"] {
+ --backend-accent: #0f8a6d;
+ --backend-accent-contrast: #fff;
+}
+.composer__backend-badge {
+ flex: none;
+ padding: 3px 10px;
+ border-radius: 999px;
+ font-size: 11px;
+ font-weight: 600;
+ letter-spacing: 0.06em;
+ text-transform: uppercase;
+ color: var(--backend-accent, var(--dsw-alias-state-business-primary));
+ background: color-mix(
+  in srgb,
+  var(--backend-accent, var(--dsw-alias-state-business-tertiary)) 14%,
+  transparent
+ );
+}
+/* Muted full folder path inline with the view tabs. */
+.conversation-header__workspace {
+ flex: none;
+ max-width: 40%;
+ margin-left: 14px;
+ overflow: hidden;
+}
+.conversation-header__workspace .workspace-picker {
+ max-width: 100%;
+}
+.conversation-header__workspace .workspace-picker__trigger {
+ min-height: 22px;
+ max-width: 100%;
+ padding: 1px 4px;
+ border-radius: 6px;
+ font-size: 12px;
+ color: var(--dsw-alias-label-caption);
+ background: transparent;
+}
+.conversation-header__workspace .workspace-picker__trigger:hover {
+ color: var(--dsw-alias-label-primary);
 }
 .composer__trailing {
  display: flex;
@@ -2637,8 +2750,8 @@
  height: 34px;
  border: none;
  border-radius: 999px;
- background: var(--dsw-alias-state-business-tertiary);
- color: var(--dsw-alias-state-business-primary);
+ background: var(--backend-accent, var(--dsw-alias-state-business-tertiary));
+ color: var(--backend-accent-contrast, var(--dsw-alias-state-business-primary));
  cursor: pointer;
 }
 .composer__primary:hover:not(:disabled) {
@@ -3386,8 +3499,11 @@ body[data-ds-dark-theme] .conversation-stage .rich-text :not(pre) > code {
 
 .changes {
  margin: 0 0 8px;
+ /* Match the transcript CONTENT width: the chat column is
+  --pw-chat-content-width wide with 24px side padding, so its tool cards
+  and messages end 48px inside the composer card's width. */
  width: 100%;
- max-width: var(--pw-composer-card-max-width);
+ max-width: calc(var(--pw-chat-content-width) - 48px);
  border: 1px solid var(--dsw-alias-border-l2);
  border-radius: 12px;
  background: var(--dsw-alias-bg-layer-1);
@@ -3910,83 +4026,26 @@ body[data-ds-dark-theme] .conversation-stage .rich-text :not(pre) > code {
 /* Git result toast: fixed to the viewport (portalled to <body>), so a pull's
    output never reflows the card or scrolls off with the transcript. Top-right,
    clear of the composer — the bottom-right corner is the send button. */
-.git-toast {
- position: fixed;
- top: 54px;
- right: 18px;
- z-index: 120;
- width: min(360px, calc(100vw - 36px));
- padding: 9px 11px 10px;
- border: 1px solid var(--dsw-alias-border-l2);
- border-left: 3px solid var(--ds-status-success, #2f7d44);
- border-radius: 10px;
- background: var(--dsw-alias-bg-overlay, var(--dsw-alias-bg-layer-1));
- box-shadow: 0 10px 30px rgb(0 0 0 / 20%);
- animation: pw-toast-in 140ms ease-out;
-}
-.git-toast.is-error {
- border-left-color: var(--ds-status-error, #a4392e);
-}
-@keyframes pw-toast-in {
- from {
-  opacity: 0;
-  transform: translateY(-6px);
- }
- to {
-  opacity: 1;
-  transform: translateY(0);
- }
-}
-@media (prefers-reduced-motion: reduce) {
- .git-toast {
-  animation: none;
- }
-}
-.git-toast__head {
- display: flex;
- align-items: center;
- gap: 7px;
-}
-.git-toast__head strong {
- flex: 1;
- min-width: 0;
+/* Inline failure line for a failed git action (toasts were removed). */
+.changes__error {
+ margin: 6px 14px;
+ padding: 7px 10px;
+ border-radius: 8px;
+ border: 1px solid
+  color-mix(in srgb, var(--ds-status-error, #a4392e) 45%, transparent);
+ background: color-mix(
+  in srgb,
+  var(--ds-status-error, #a4392e) 8%,
+  transparent
+ );
  color: var(--dsw-alias-label-primary);
  font-size: 11.5px;
- font-weight: 600;
 }
-.git-toast__mark {
- display: grid;
- place-items: center;
- flex: none;
- width: 15px;
- height: 15px;
- border-radius: 50%;
- background: var(--ds-status-success, #2f7d44);
- color: #fffdf7;
- font-size: 9px;
- font-weight: 700;
+.changes__error strong {
+ font-size: 11.5px;
 }
-.git-toast.is-error .git-toast__mark {
- background: var(--ds-status-error, #a4392e);
-}
-.git-toast__close {
- flex: none;
- width: 18px;
- height: 18px;
- border: 0;
- border-radius: 5px;
- background: transparent;
- color: var(--dsw-alias-label-caption);
- font-size: 13px;
- line-height: 1;
- cursor: pointer;
-}
-.git-toast__close:hover {
- background: var(--dsw-alias-interactive-bg-hover);
- color: var(--dsw-alias-label-primary);
-}
-.git-toast__output {
- margin: 6px 0 0;
+.changes__error pre {
+ margin: 5px 0 0;
  padding: 6px 8px;
  max-height: 120px;
  overflow: auto;
@@ -3998,6 +4057,12 @@ body[data-ds-dark-theme] .conversation-stage .rich-text :not(pre) > code {
  line-height: 1.5;
  white-space: pre-wrap;
  word-break: break-word;
+}
+
+/* Pushed receipt: hug its git output instead of stretching to the full
+ conversation width — the receipt should match the text it carries. */
+.changes--pushed {
+ width: fit-content;
 }
 
 /* Clean tree: the card shrinks to its header, a repo status bar. */
@@ -4094,6 +4159,46 @@ body[data-ds-dark-theme] .conversation-stage .rich-text :not(pre) > code {
  text-align: left;
 }
 
+/* Compaction progress: the backend answers one long POST with no progress
+   events, so the fill is a slow 0→100% ease the strip unmounts on completion.
+   ponytail: theater, not telemetry — wire real progress if the backend ever
+   streams compaction stages. */
+.compacting-strip {
+ margin: 0 auto 8px;
+ width: min(100%, calc(var(--pw-content-width, 760px) + 32px));
+ padding: 10px 16px 12px;
+ border-radius: 10px;
+ border: 1px dashed var(--dsw-alias-border-l2);
+ background: var(--dsw-alias-bg-layer-1);
+}
+.compacting-strip__hint {
+ margin: 0 0 8px;
+ color: var(--dsw-alias-label-secondary);
+ font-size: 12.5px;
+}
+.compacting-strip__bar {
+ height: 4px;
+ border-radius: 999px;
+ overflow: hidden;
+ background: color-mix(in srgb, var(--dsw-alias-border-l2) 72%, transparent);
+}
+.compacting-strip__fill {
+ display: block;
+ height: 100%;
+ width: 0;
+ border-radius: inherit;
+ background: linear-gradient(90deg, var(--pw-teal), var(--pw-accent));
+ animation: compacting-fill 45s cubic-bezier(0.25, 0.6, 0.35, 1) forwards;
+}
+@keyframes compacting-fill {
+ from {
+  width: 0%;
+ }
+ to {
+  width: 100%;
+ }
+}
+
 /* Messages waiting behind the running turn. */
 .queue-strip {
  display: flex;
@@ -4186,6 +4291,9 @@ body[data-ds-dark-theme] .conversation-stage .rich-text :not(pre) > code {
 }
 
 .queue-strip__hint {
+ display: flex;
+ align-items: center;
+ gap: 6px;
  margin: 0 2px 2px;
  font-size: 11px;
  color: var(--dsw-alias-label-caption);
@@ -4370,22 +4478,40 @@ body[data-ds-dark-theme] .conversation-stage .rich-text :not(pre) > code {
  line-height: 20px;
  text-align: center;
 }
+/* The free-text field lives inside the option row, so it keeps the row's
+   padding instead of pulling out of it -- the negative margin it used to
+   carry pinned it against the card's left edge. */
 .ask-card__typed {
+ box-sizing: border-box;
  width: 100%;
- /* Stretch to the option card's edges: the card pads 14px, so pull back
-    out of it to line up with the other option boxes. */
- margin: 6px -14px 0;
- width: calc(100% + 28px);
- padding: 8px 10px;
+ margin: 8px 0 2px;
+ padding: 9px 12px;
  border: 1px solid var(--dsw-alias-border-l2);
  border-radius: 8px;
  background: var(--dsw-alias-bg-base);
  color: var(--dsw-alias-label-primary);
  font-family: inherit;
  font-size: 13px;
+ line-height: 1.45;
+ transition:
+  border-color var(--ds-transition-duration-fast) var(--ds-ease-in-out),
+  box-shadow var(--ds-transition-duration-fast) var(--ds-ease-in-out);
+}
+.ask-card__typed::placeholder {
+ color: var(--dsw-alias-label-caption);
 }
 .ask-card__typed:focus {
  outline: none;
+ border-color: var(--dsw-alias-state-business-primary);
+ box-shadow: 0 0 0 3px var(--dsw-alias-state-business-tertiary);
+}
+/* Typing auto-selects "Other". Flooding the row with the picked tint on the
+   first keystroke reads as the text changing colour, so this row shows the
+   selection on its border only and leaves the field on the base surface. */
+.ask-card__option--other.is-picked {
+ background: var(--dsw-alias-bg-layer-2);
+}
+.ask-card__option--other:focus-within {
  border-color: var(--dsw-alias-state-business-primary);
 }
 .ask-card__foot {

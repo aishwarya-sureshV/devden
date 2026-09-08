@@ -12,7 +12,8 @@ import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { StringDecoder } from "node:string_decoder";
-import { readCodexRateLimits } from "./codex-usage.js";
+import { loadCodexUsage } from "./codex-usage.js";
+import { readResumeSession } from "./sessions.js";
 import {
   CO_PARTNER_PROMPT,
   CLARIFY_PROMPT,
@@ -42,20 +43,96 @@ const USAGE_CACHE_TTL_MS = 5 * 60_000;
 // hanging forever. Long-lived turn commands are deliberately untimed — a
 // prompt legitimately runs for minutes and the turn streams over SSE.
 const DEFAULT_RPC_TIMEOUT_MS = 60_000;
+// Compaction is a model round trip over the whole transcript, not a local
+// bookkeeping call.
+const COMPACT_TIMEOUT_MS = 5 * 60_000;
 const UNTIMED_COMMANDS = new Set(["prompt", "steer", "follow_up"]);
 
 function resolvePiExecutable() {
   return process.env.PI_WEB_PI_BIN || "pi";
 }
 
-function usageWindowLabel(seconds) {
-  if (seconds <= 6 * 60 * 60) return "Current session";
-  if (seconds >= 6 * 24 * 60 * 60 && seconds <= 8 * 24 * 60 * 60)
-    return "Current week";
-  const hours = Math.round(seconds / 3600);
-  return hours >= 48
-    ? `${Math.round(hours / 24)} day limit`
-    : `${hours} hour limit`;
+// pi's own answer to "what thinking levels exist" (confirmed against a live
+// RPC session across several different configured models -- it never varies
+// per model, it's the same fixed CLI-level ladder `pi --help` documents).
+// Kept as a constant so a session that has no live process yet -- every
+// saved session, until its first message -- can still answer this instead
+// of 500ing.
+const PI_THINKING_LEVELS = [
+  "off",
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
+];
+
+const LIST_MODELS_TIMEOUT_MS = 15_000;
+
+/**
+ * `pi --list-models` is a one-shot, standalone listing -- no RPC session
+ * required -- so a saved session that has not started its process yet (pi
+ * only spawns on the first message) can still answer "what models exist"
+ * instead of rejecting with "Pi process is not running". Output is a
+ * fixed-width table; provider and model id are always its first two
+ * whitespace-separated columns, so splitting on any run of whitespace is
+ * robust regardless of the column widths.
+ */
+function listPiModelsStandalone(cwd) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(resolvePiExecutable(), ["--list-models"], {
+      cwd: cwd || homedir(),
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let stdout = "";
+    let stderr = "";
+    const timeout = setTimeout(() => {
+      child.kill();
+      reject(new Error("pi --list-models timed out"));
+    }, LIST_MODELS_TIMEOUT_MS);
+    timeout.unref?.();
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk;
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk;
+    });
+    child.once("error", (error) => {
+      clearTimeout(timeout);
+      reject(error);
+    });
+    child.once("exit", (code) => {
+      clearTimeout(timeout);
+      if (code !== 0) {
+        reject(new Error(stderr.trim() || `pi --list-models exited ${code}`));
+        return;
+      }
+      resolve(stdout);
+    });
+  });
+}
+
+/** "gpt-5.6-luna" -> "Gpt 5.6 Luna"; good enough for a fallback listing. */
+function titleizeModelId(id) {
+  return String(id ?? "")
+    .replace(/[:_-]+/g, " ")
+    .split(" ")
+    .filter(Boolean)
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(" ");
+}
+
+function parsePiModelListing(text) {
+  const lines = String(text ?? "")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+  // First line is the "provider  model  context  ..." header.
+  return lines.slice(1).map((line) => {
+    const [provider, id] = line.split(/\s+/);
+    return { provider, id, name: titleizeModelId(id) };
+  });
 }
 
 function formatResetTime(epochSeconds) {
@@ -308,11 +385,33 @@ class PiAgentProcess {
       return { ...result, state: { ...result.state, isStreaming: false } };
     }
   }
-  compact(customInstructions) {
-    return this.runCommand({
-      type: "compact",
-      ...(customInstructions ? { customInstructions } : {}),
-    });
+  /**
+   * Compaction re-summarizes the entire history through the model, which
+   * routinely takes minutes on a long session -- far past the default RPC
+   * timeout, which reported a failure for a compaction that then finished
+   * anyway (hence "already compacted" on the retry). It also rewrites the
+   * transcript, so the fresh history is returned with the result: without it
+   * the UI kept showing the pre-compaction messages and nothing on screen
+   * ever confirmed the compaction had happened.
+   */
+  async compact(customInstructions) {
+    const result = await this.runCommand(
+      {
+        type: "compact",
+        ...(customInstructions ? { customInstructions } : {}),
+      },
+      COMPACT_TIMEOUT_MS,
+    );
+    if (!result.ok) return result;
+    try {
+      const [state, messages] = await Promise.all([
+        this.getState(10_000),
+        this.getMessages(10_000),
+      ]);
+      return { ...result, state, messages };
+    } catch {
+      return result;
+    }
   }
   async setModel(provider, modelId) {
     if (provider === "ollama") {
@@ -322,11 +421,22 @@ class PiAgentProcess {
         /* listing is best-effort; set_model may still work */
       }
     }
+    // A session opened for viewing has no process yet (pi only spawns on
+    // the first message), so there is nothing live to push this into --
+    // `send()` would just reject with "Pi process is not running", which is
+    // what made every saved session's model picker fail before its first
+    // message. Answering with the picked model (no `state`) is enough: the
+    // client merges it into its own state and the next real prompt carries
+    // it into start(), same as grok/codex already handle a pre-start pick.
+    if (!this.process) return { ok: true, data: { provider, id: modelId } };
     const result = await this.runCommand({
       type: "set_model",
       provider,
       modelId,
     });
+    // pi's live process can be running with a stale ollama catalog (a model
+    // pulled after it started); restarting reloads ~/.pi/agent/models.json,
+    // which was just re-synced above.
     if (!result.ok && provider === "ollama" && this.cwd) {
       const sessionPath = this.lastState?.sessionFile;
       const thinkingLevel = this.lastState?.thinkingLevel;
@@ -346,6 +456,11 @@ class PiAgentProcess {
     }
   }
   setThinkingLevel(level) {
+    // Same as setModel: a not-yet-started session has nothing live to push
+    // this into. The client applies `level` locally on `ok: true` regardless
+    // of any returned data, so succeeding here is the whole fix -- the next
+    // real prompt carries state.thinkingLevel into start().
+    if (!this.process) return Promise.resolve({ ok: true });
     return this.runCommand({ type: "set_thinking_level", level });
   }
   setSessionName(name) {
@@ -523,9 +638,24 @@ class PiAgentProcess {
     };
   }
 
+  // A saved session viewed but not yet started has no process (pi only
+  // spawns on the first message), and `this.send` rejects rather than
+  // answers in that case -- the model dropdown 500ed and stayed on
+  // "model…" with nothing to pick, for every session until its first
+  // message. `pi --list-models` answers the same question standalone.
   async getAvailableModels() {
     const [response, ollama] = await Promise.all([
-      this.send({ type: "get_available_models" }),
+      this.process
+        ? this.send({ type: "get_available_models" })
+        : listPiModelsStandalone(this.cwd)
+            .then((stdout) => ({
+              success: true,
+              data: parsePiModelListing(stdout),
+            }))
+            .catch((error) => ({
+              success: false,
+              error: String(error?.message ?? error),
+            })),
       listOllamaModels().catch(() => []),
     ]);
     if (ollama.length) void syncOllamaModelsJson(ollama).catch(() => {});
@@ -542,6 +672,10 @@ class PiAgentProcess {
   }
 
   async getThinkingLevels() {
+    // Same fixed ladder either way (confirmed against a live process across
+    // several models) -- skip the RPC round trip entirely when there is no
+    // process to ask instead of rejecting.
+    if (!this.process) return { ok: true, levels: PI_THINKING_LEVELS };
     const response = await this.send({ type: "get_available_thinking_levels" });
     if (response.success === false)
       return { ok: false, error: response.error ?? "failed" };
@@ -552,7 +686,7 @@ class PiAgentProcess {
     };
   }
 
-  async getUsage(force = false) {
+  async getUsage(force = false, sessionPath) {
     const now = Date.now();
     if (
       !force &&
@@ -562,7 +696,7 @@ class PiAgentProcess {
       return this.usageCache.result;
     }
     if (this.usageRequest) return this.usageRequest;
-    this.usageRequest = this.loadUsage()
+    this.usageRequest = this.loadUsage(sessionPath)
       .then((result) => {
         if (result?.ok) this.usageCache = { at: Date.now(), result };
         return result;
@@ -573,8 +707,38 @@ class PiAgentProcess {
     return this.usageRequest;
   }
 
-  async loadUsage() {
+  async loadUsage(sessionPath) {
     let state = this.lastState;
+    // A session opened for viewing has no process yet (pi starts on the first
+    // message). Usage is a composer chip, not an error: answer from the
+    // session file on disk when we know it, or "nothing to report" to keep
+    // the poll quiet instead of 500ing every 30s.
+    if (!state && !this.process) {
+      if (sessionPath) {
+        const summary = await readResumeSession(sessionPath).catch(() => null);
+        if (summary?.usage?.total > 0) {
+          if (summary.lastModelProvider === "grok-sdk")
+            return this.loadGrokUsage();
+          if (summary.lastModelProvider === "ollama")
+            return this.loadOllamaUsage();
+          const providerName = summary.lastModelProvider ?? "Provider";
+          return {
+            ok: true,
+            usage: {
+              available: true,
+              provider: providerName,
+              windows: [],
+              tokens: summary.usage,
+              updatedAt: new Date().toISOString(),
+            },
+          };
+        }
+      }
+      return {
+        ok: true,
+        usage: { available: false, provider: "Provider", windows: [] },
+      };
+    }
     try {
       state ??= await this.getState(5_000);
     } catch (error) {
@@ -584,7 +748,7 @@ class PiAgentProcess {
       `${state?.model?.provider ?? ""}/${state?.model?.id ?? ""}`.toLowerCase();
     if (identity.includes("grok")) return this.loadGrokUsage();
     if (identity.includes("openai-codex"))
-      return this.loadCodexUsage(state?.model?.id);
+      return loadCodexUsage(state?.model?.id);
     if (identity.includes("ollama")) return this.loadOllamaUsage();
     return {
       ok: true,
@@ -659,77 +823,46 @@ class PiAgentProcess {
     }
   }
 
-  async loadCodexUsage(modelId) {
-    try {
-      const payload = await readCodexRateLimits();
-      const normalizedModel = String(modelId ?? "").toLowerCase();
-      const rateLimits = Object.values(
-        payload?.rateLimitsByLimitId ?? {},
-      ).filter(Boolean);
-      const selected = normalizedModel.includes("spark")
-        ? rateLimits.find((entry) =>
-            `${entry?.limitId ?? ""} ${entry?.limitName ?? ""}`
-              .toLowerCase()
-              .includes("spark"),
-          )
-        : rateLimits.find(
-            (entry) => String(entry?.limitId ?? "").toLowerCase() === "codex",
-          );
-      const limits = selected ?? payload?.rateLimits ?? rateLimits[0];
-      const windows = [limits?.primary, limits?.secondary]
-        .filter(Boolean)
-        .map((window) => ({
-          label: usageWindowLabel(Number(window.windowDurationMins ?? 0) * 60),
-          usedPercent: Number(window.usedPercent ?? 0),
-          ...(formatResetTime(Number(window.resetsAt))
-            ? { resetsAt: formatResetTime(Number(window.resetsAt)) }
-            : {}),
-        }));
-      return {
-        ok: true,
-        usage: {
-          available: windows.length > 0,
-          provider: "Codex",
-          plan:
-            String(limits?.planType ?? "")
-              .replace(
-                /(^|_)(\w)/g,
-                (_match, _prefix, letter) => ` ${letter.toUpperCase()}`,
-              )
-              .trim() || undefined,
-          windows,
-          updatedAt: new Date().toISOString(),
-        },
-      };
-    } catch (error) {
-      return { ok: false, error: String(error?.message ?? error) };
-    }
-  }
-
   async loadOllamaUsage() {
     try {
-      const messages = await this.getMessages();
-      const tokens = messages.reduce(
-        (total, message) => {
-          if (message?.role !== "assistant" || !message.usage) return total;
-          const input = Number(message.usage.input ?? 0);
-          const output = Number(message.usage.output ?? 0);
-          const combined = Number(message.usage.totalTokens ?? input + output);
-          return {
-            input: total.input + input,
-            output: total.output + output,
-            total: total.total + combined,
-          };
-        },
-        { input: 0, output: 0, total: 0 },
-      );
+      // Account usage from ollama.com (same auth the cloud models use). The
+      // session-file token sum is gone: this is the provider's own number.
+      const key = process.env.OLLAMA_API_KEY;
+      if (!key)
+        return {
+          ok: true,
+          usage: { available: false, provider: "Ollama", windows: [] },
+        };
+      const headers = {
+        Accept: "application/json",
+        Authorization: `Bearer ${key}`,
+      };
+      const response = await fetch("https://ollama.com/api/usage", {
+        headers,
+        signal: AbortSignal.timeout(10_000),
+      });
+      if (!response.ok)
+        throw new Error(`Ollama usage returned ${response.status}`);
+      const payload = await response.json();
+      // limits.{session,weekly}.usage are precomputed utilization fractions
+      // (verified against the live endpoint 2026-09-08: e.g. 0.288 = 28.8%).
+      const windows = [
+        ["Session", payload?.limits?.session?.usage],
+        ["Weekly", payload?.limits?.weekly?.usage],
+      ]
+        .map(([label, usage]) => {
+          const usedPercent = Number(usage) * 100;
+          return Number.isFinite(usedPercent) && usedPercent > 0
+            ? { label, usedPercent }
+            : null;
+        })
+        .filter(Boolean);
       return {
         ok: true,
         usage: {
-          available: tokens.total > 0,
+          available: true,
           provider: "Ollama",
-          windows: [],
-          ...(tokens.total > 0 ? { tokens } : {}),
+          windows,
           updatedAt: new Date().toISOString(),
         },
       };

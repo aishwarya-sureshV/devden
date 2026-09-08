@@ -158,6 +158,7 @@ class GrokAgentProcess {
     this.sessionId = undefined;
     this.cwd = undefined;
     this.model = undefined;
+    this.thinkingLevel = undefined;
     this.sessionFile = undefined;
     this.lastState = undefined;
     this.listeners = new Set();
@@ -173,6 +174,8 @@ class GrokAgentProcess {
     this.availableCommands = [];
     this.modelCatalog = undefined;
     this.messages = [];
+    this.queuedMessages = [];
+    this.queueSeq = 0;
     this.usageCache = { at: 0, result: undefined };
     this.usageRequest = undefined;
   }
@@ -227,7 +230,13 @@ class GrokAgentProcess {
       });
       this.process = child;
       child.stderr.on("data", (chunk) => {
-        const message = chunk.toString("utf8").trim();
+        // grok colours its logs; raw escapes render as "[2m...[0m" noise in
+        // the transcript, which is where its network errors surface.
+        const message = chunk
+          .toString("utf8")
+          // biome-ignore lint/suspicious/noControlCharactersInRegex: ANSI SGR
+          .replace(/\u001b\[[0-9;]*m/g, "")
+          .trim();
         if (message)
           this.emit({ type: "stderr", sessionKey: this.sessionKey, message });
       });
@@ -238,6 +247,11 @@ class GrokAgentProcess {
       });
       child.once("exit", (code, signal) => {
         this.process = undefined;
+        // index.js treats a truthy `connection` as "grok is alive" and skips
+        // the restart. Left set, every later prompt writes into a closed pipe
+        // and hangs forever -- the conversation looks frozen and no message
+        // can revive it.
+        this.connection = undefined;
         if (this.turn) {
           this.turn.reject?.(
             new Error(`Grok exited (${signal ?? code ?? "unknown"})`),
@@ -326,11 +340,20 @@ class GrokAgentProcess {
           }
         }
       }
-      if (options.thinkingLevel) {
+      // Grok advertises a different effort ladder per model (grok-4.6 adds
+      // xhigh, grok-4.5 stops at high), so an unset or unsupported effort
+      // falls back to whatever the model itself marks as default -- that is
+      // the level the session actually runs at, and the UI reads it back
+      // from getState().
+      this.thinkingLevel = await this.resolveEffort(
+        this.model?.id,
+        options.thinkingLevel || this.thinkingLevel,
+      );
+      if (this.thinkingLevel) {
         try {
           await this.connection.setSessionMode({
             sessionId: this.sessionId,
-            modeId: options.thinkingLevel,
+            modeId: this.thinkingLevel,
           });
         } catch {
           /* effort selection is best-effort at session creation */
@@ -579,7 +602,10 @@ class GrokAgentProcess {
     const index = turn.toolIndex.get(update.toolCallId);
     if (index === undefined) return; // update for a call we didn't see start
     const block = turn.content[index];
-    if (update.title != null) block.name = update.title;
+    // The first notification's title is grok's raw tool name (read_file,
+    // run_terminal_command, ...), which is what the UI's tool cards key on;
+    // later updates replace it with a prose title ("Read `notes.txt`") that
+    // matches nothing. Keep the name we started with.
     if (update.rawInput != null) block.arguments = update.rawInput;
     this.emitUpdate(turn, {
       type: "toolcall_delta",
@@ -636,7 +662,15 @@ class GrokAgentProcess {
             : "A Grok turn is already in progress",
       };
 
-    const promptBlocks = [{ type: "text", text: withClarifyPrefix(message) }];
+    // The clarify gate applies to what the user typed; a harness follow-up
+    // (a goal check-in, an interrupted-turn resume) must not be told to stop
+    // and ask questions instead of continuing.
+    const promptBlocks = [
+      {
+        type: "text",
+        text: kind === "prompt" ? withClarifyPrefix(message) : message,
+      },
+    ];
     for (const image of images ?? []) {
       if (image?.data && image?.mimeType)
         promptBlocks.push({
@@ -653,16 +687,21 @@ class GrokAgentProcess {
     };
     this.emit({ type: "agent_start", sessionKey: this.sessionKey });
     this.emit({ type: "turn_start", sessionKey: this.sessionKey });
-    this.emit({
-      type: "message_start",
-      sessionKey: this.sessionKey,
-      message: userMessage,
-    });
-    this.emit({
-      type: "message_end",
-      sessionKey: this.sessionKey,
-      message: userMessage,
-    });
+    // A follow-up is the harness talking, not the user: showing its
+    // instruction block as a user message would put text in the transcript
+    // that the user never typed.
+    if (kind !== "follow_up") {
+      this.emit({
+        type: "message_start",
+        sessionKey: this.sessionKey,
+        message: userMessage,
+      });
+      this.emit({
+        type: "message_end",
+        sessionKey: this.sessionKey,
+        message: userMessage,
+      });
+    }
 
     const assistantMessage = {
       role: "assistant",
@@ -700,22 +739,38 @@ class GrokAgentProcess {
         sessionKey: this.sessionKey,
         message: assistantMessage,
       });
+      const turnMessages =
+        kind === "follow_up"
+          ? [assistantMessage]
+          : [userMessage, assistantMessage];
       this.emit({
         type: "agent_end",
         sessionKey: this.sessionKey,
-        messages: [userMessage, assistantMessage],
+        messages: turnMessages,
       });
-      this.messages.push(userMessage, assistantMessage);
+      this.messages.push(...turnMessages);
       this.turn = undefined;
       this.setStatus("ready");
       this.emit({ type: "agent_settled", sessionKey: this.sessionKey });
       const state = await this.getState();
       this.emit({ type: "state", sessionKey: this.sessionKey, state });
+      this.sendNextQueued();
       return { ok: true, state };
     } catch (error) {
       this.turn = undefined;
       this.setStatus("ready");
-      return { ok: false, error: String(error?.message ?? error) };
+      const message = String(error?.message ?? error);
+      // Without these the composer spins forever and the interrupted-turn
+      // record never settles, so the next boot resumes a turn that already
+      // failed.
+      this.emit({
+        type: "notice",
+        sessionKey: this.sessionKey,
+        message: `Grok turn failed: ${message}`,
+        tone: "error",
+      });
+      this.emit({ type: "agent_settled", sessionKey: this.sessionKey });
+      return { ok: false, error: message };
     }
   }
 
@@ -725,6 +780,86 @@ class GrokAgentProcess {
 
   steer(message, images) {
     return this.runTurn("steer", message, images);
+  }
+
+  // ACP has no separate follow-up channel; a follow-up is an ordinary prompt
+  // the harness rather than the user originated. Named to match the other
+  // adapters so callers (goal check-ins, interrupted-turn resume) need no
+  // per-backend branch.
+  followUp(message, images) {
+    return this.runTurn("follow_up", message, images);
+  }
+
+  queueSnapshot() {
+    return this.queuedMessages.map(({ id, message, at }) => ({
+      id,
+      message,
+      at,
+    }));
+  }
+
+  emitQueue() {
+    this.emit({
+      type: "queue_updated",
+      sessionKey: this.sessionKey,
+      queued: this.queueSnapshot(),
+    });
+  }
+
+  /** Hold the message until the running turn settles; send now if idle. */
+  enqueue(message, images) {
+    const text = String(message ?? "");
+    if (!text.trim())
+      return Promise.resolve({ ok: false, error: "Empty message" });
+    if (this.turn) return this.queueMessage(text, images);
+    return this.prompt(text, images).then((result) =>
+      result.ok ? { ok: true, data: { queued: false } } : result,
+    );
+  }
+
+  queueMessage(text, images) {
+    this.queueSeq += 1;
+    this.queuedMessages.push({
+      id: `q-${Date.now()}-${this.queueSeq}`,
+      message: text,
+      images: Array.isArray(images) ? images : [],
+      at: Date.now(),
+    });
+    this.emitQueue();
+    return Promise.resolve({
+      ok: true,
+      data: { queued: true, position: this.queuedMessages.length },
+    });
+  }
+
+  cancelQueued(id) {
+    const before = this.queuedMessages.length;
+    this.queuedMessages = id
+      ? this.queuedMessages.filter((entry) => entry.id !== id)
+      : [];
+    if (this.queuedMessages.length === before)
+      return { ok: false, error: "That message is no longer queued" };
+    this.emitQueue();
+    return {
+      ok: true,
+      data: { cancelled: before - this.queuedMessages.length },
+    };
+  }
+
+  sendNextQueued() {
+    const next = this.queuedMessages.shift();
+    if (!next) return;
+    this.emitQueue();
+    this.prompt(next.message, next.images.length ? next.images : undefined)
+      .then((result) => {
+        if (result.ok) return;
+        this.queuedMessages.unshift(next);
+        this.emitQueue();
+      })
+      .catch(() => {
+        this.queuedMessages.unshift(next);
+        this.emitQueue();
+      });
   }
 
   // grok's own slash commands (compact, always-approve, context, ...) are
@@ -817,9 +952,11 @@ class GrokAgentProcess {
     const state = {
       status: this.status,
       isStreaming: this.status === "working",
+      queuedMessages: this.queueSnapshot(),
       sessionId: this.sessionId,
       cwd: this.cwd,
       model: this.model,
+      thinkingLevel: this.thinkingLevel,
       sessionFile: this.sessionFile,
     };
     this.lastState = state;
@@ -877,15 +1014,31 @@ class GrokAgentProcess {
     }
   }
 
+  /** The effort ladder grok advertises for one model, in catalog order. */
+  async modelEfforts(modelId) {
+    const raw = await this.fetchModelCatalog();
+    const entry = raw.find((m) => (m.id ?? m.model) === modelId) ?? raw[0];
+    return Array.isArray(entry?.reasoning_efforts)
+      ? entry.reasoning_efforts
+      : [];
+  }
+
+  /** Keep `current` when the model offers it, else the model's own default. */
+  async resolveEffort(modelId, current) {
+    try {
+      const efforts = await this.modelEfforts(modelId);
+      if (!efforts.length) return current;
+      const ids = efforts.map((effort) => effort.id ?? effort.value);
+      if (current && ids.includes(current)) return current;
+      return efforts.find((effort) => effort.default)?.id ?? ids[0];
+    } catch {
+      return current;
+    }
+  }
+
   async getThinkingLevels() {
     try {
-      const raw = await this.fetchModelCatalog();
-      const currentId = this.model?.id ?? raw[0]?.id ?? raw[0]?.model;
-      const current =
-        raw.find((m) => (m.id ?? m.model) === currentId) ?? raw[0];
-      const efforts = Array.isArray(current?.reasoning_efforts)
-        ? current.reasoning_efforts
-        : [];
+      const efforts = await this.modelEfforts(this.model?.id);
       return {
         ok: true,
         levels: efforts.map((effort) => effort.id ?? effort.value),
@@ -897,16 +1050,26 @@ class GrokAgentProcess {
 
   async setModel(provider, modelId) {
     this.model = { provider, id: modelId };
+    // The previous effort may not exist on the new model (xhigh is grok-4.6
+    // only), so re-resolve and re-push it rather than leaving the session on
+    // a level the model does not accept.
+    const effort = await this.resolveEffort(modelId, this.thinkingLevel);
     if (this.connection && this.sessionId) {
       try {
         await this.connection.setSessionMode({
           sessionId: this.sessionId,
           modeId: modelId,
         });
+        if (effort)
+          await this.connection.setSessionMode({
+            sessionId: this.sessionId,
+            modeId: effort,
+          });
       } catch (error) {
         return { ok: false, error: String(error?.message ?? error) };
       }
     }
+    this.thinkingLevel = effort;
     return { ok: true, state: await this.getState() };
   }
 
@@ -921,7 +1084,8 @@ class GrokAgentProcess {
         return { ok: false, error: String(error?.message ?? error) };
       }
     }
-    return { ok: true };
+    this.thinkingLevel = level;
+    return { ok: true, state: await this.getState() };
   }
 
   async getUsage(force = false) {
@@ -1018,6 +1182,7 @@ class GrokAgentProcess {
     this.status = "stopped";
     this.turn = undefined;
     this.replayMode = undefined;
+    this.queuedMessages = [];
     this.killChild();
     this.emit({
       type: "__status",

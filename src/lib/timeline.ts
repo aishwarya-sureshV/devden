@@ -154,6 +154,12 @@ export class Timeline {
   >();
 
   readonly key: string;
+  /**
+   * Monotonic stamp for useSyncExternalStore. hydrate() can finish before a
+   * useEffect subscribe runs; without a snapshot that changes, Grok session
+   * clicks (disk-only hydrate, no later start()) stay on the empty hero.
+   */
+  revision = 0;
 
   // Written out rather than a parameter property so `node --test` can load
   // this module directly (strip-only TypeScript rejects those).
@@ -166,7 +172,29 @@ export class Timeline {
     return () => this.listeners.delete(listener);
   }
 
+  /** Pending coalesced notify frame, if one is scheduled. */
+  private frame?: number;
+
+  /**
+   * Claude streams partial messages token by token, and every delta used to
+   * re-render the whole conversation synchronously — the visible stutter and
+   * flicker while a reply types itself. State is applied immediately; only
+   * the render is coalesced to one per animation frame.
+   */
   private notify() {
+    this.revision += 1;
+    if (typeof requestAnimationFrame !== "function") {
+      this.emit();
+      return;
+    }
+    if (this.frame !== undefined) return;
+    this.frame = requestAnimationFrame(() => {
+      this.frame = undefined;
+      this.emit();
+    });
+  }
+
+  private emit() {
     for (const listener of this.listeners) listener();
   }
 
@@ -582,7 +610,11 @@ export class Timeline {
           if (tool?.kind === "tool") {
             items[found] = {
               ...tool,
-              name: String(message.toolName ?? tool.name),
+              // Claude's tool results carry no tool name (toolUseResult has
+              // no `name`), so `??` let an empty string erase the name set by
+              // the tool_use block -- every call then grouped as a generic
+              // "N tool calls" chip and edit cards lost their diffs.
+              name: String(message.toolName || tool.name),
               details: asRecord(message.details),
               output,
               status: message.isError ? "error" : "done",
@@ -795,6 +827,15 @@ export class Timeline {
       this.appendNotice(String(event.message ?? ""), "warning");
       return;
     }
+    // Server- and adapter-sent notices (a cwd that vanished, an auto-resumed
+    // turn). These were emitted long before anything rendered them.
+    if (event.type === "notice") {
+      this.appendNotice(
+        String(event.message ?? ""),
+        event.tone === "error" ? "error" : "info",
+      );
+      return;
+    }
     if (event.type === "subagent_start") {
       // No notice: the subagent's calls carry parentToolUseId and render
       // nested inside the Task card that spawned them.
@@ -806,11 +847,8 @@ export class Timeline {
         .toLowerCase()
         .includes("hook")
     ) {
-      const subtype = String(event.subtype ?? "hook").replaceAll("_", " ");
-      const name = String(
-        event.hook_name ?? event.hookName ?? event.hook_event ?? "",
-      ).trim();
-      this.appendNotice(`${subtype}${name ? ` · ${name}` : ""}`, "info");
+      // Hook lifecycle is harness plumbing, not conversation. It stays in the
+      // Backend log (appendBackendEvent above) and out of the chat.
       return;
     }
     if (event.type === "turn_start") {

@@ -2,6 +2,7 @@ import {
   Fragment,
   useEffect,
   useState,
+  useSyncExternalStore,
   type KeyboardEvent as ReactKeyboardEvent,
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
@@ -18,6 +19,34 @@ import { FishLogo } from "./components/icons";
 import type { WorkbenchView } from "./lib/navigation";
 import "./styles/app.css";
 import "./styles/conversation.css";
+
+/**
+ * A dropped connection is invisible in the transcript: the agent's own
+ * retries are silent and its "fetch failed" only lands minutes later, so a
+ * stalled turn is indistinguishable from a slow one. The browser already
+ * knows -- say so immediately.
+ */
+function OfflineBanner() {
+  const online = useSyncExternalStore(
+    (onChange) => {
+      window.addEventListener("online", onChange);
+      window.addEventListener("offline", onChange);
+      return () => {
+        window.removeEventListener("online", onChange);
+        window.removeEventListener("offline", onChange);
+      };
+    },
+    () => navigator.onLine,
+    () => true,
+  );
+  if (online) return null;
+  return (
+    <div className="offline-banner" role="status">
+      No internet connection — the agent is retrying, and anything in flight
+      will stall until it is back.
+    </div>
+  );
+}
 
 function Frame() {
   const { tabs, active, activeKey, setActiveKey, closeConversation } =
@@ -42,6 +71,9 @@ function Frame() {
   const [theme, setTheme] = useState<"light" | "dark">(() =>
     localStorage.getItem("pi-web.theme.v2") === "dark" ? "dark" : "light",
   );
+  // Hidden by default. Reasoning streams are long and largely scratch work —
+  // shown inline they bury the tool cards and the answer. Settings turns them
+  // back on, and that choice sticks.
   const [showThinking, setShowThinking] = useState(
     () => localStorage.getItem("pi-web.show-thinking") === "on",
   );
@@ -262,6 +294,7 @@ function Frame() {
           setNavOpen(false);
       }}
     >
+      <OfflineBanner />
       <button
         type="button"
         className="nav-toggle"
@@ -291,7 +324,7 @@ function Frame() {
         onSplitSessionsToggle={toggleSplitSessions}
         onSessionFocus={focusSession}
         onSessionSplit={splitWithSession}
-        openTabKeys={tabs.map((tab) => tab.key)}
+        openTabKeys={visibleTabs.map((tab) => tab.key)}
         onResizePointerDown={startSidebarResize}
         onResizeKeyDown={resizeSidebarWithKeyboard}
       />

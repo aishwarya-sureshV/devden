@@ -661,9 +661,21 @@
  white-space: nowrap;
 }
 .sidebar__item-meta {
+ display: inline-flex;
+ align-items: center;
+ gap: 5px;
  font-size: 11px;
  color: var(--dsw-alias-label-caption);
  flex: none;
+}
+/* Which agent wrote a saved session — the list mixes all of them. */
+.sidebar__item-backend {
+ padding: 0 5px;
+ border: 1px solid var(--dsw-alias-border-l2);
+ border-radius: 999px;
+ font-size: 9px;
+ letter-spacing: 0.04em;
+ text-transform: uppercase;
 }
 .sidebar__item-row {
  position: relative;
@@ -717,7 +729,8 @@
 .sidebar__saved-row > .sidebar__item {
  padding-right: 8px;
 }
-.sidebar__saved-row:hover .sidebar__item-meta {
+.sidebar__saved-row:hover .sidebar__item-meta,
+.sidebar__item-row:hover .sidebar__item-meta {
  opacity: 0;
 }
 
@@ -1967,4 +1980,21 @@
  .fleet-card__dot--working {
   animation: none;
  }
+}
+
+.offline-banner {
+  position: fixed;
+  top: 0;
+  left: 50%;
+  z-index: 60;
+  transform: translateX(-50%);
+  max-width: min(680px, 92vw);
+  padding: 6px 14px;
+  border: 1px solid var(--danger, #c0392b);
+  border-top: none;
+  border-radius: 0 0 8px 8px;
+  background: var(--surface, #fff);
+  color: var(--danger, #c0392b);
+  font-size: 12px;
+  text-align: center;
 }

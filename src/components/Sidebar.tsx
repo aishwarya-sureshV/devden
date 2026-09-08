@@ -100,13 +100,6 @@ export function Sidebar({
     null,
   );
   const [backendMenuOpen, setBackendMenuOpen] = useState(false);
-  const requestedBackend = new URLSearchParams(window.location.search).get(
-    "backend",
-  );
-  const currentBackend: AgentBackend =
-    requestedBackend === "claude" || requestedBackend === "grok"
-      ? requestedBackend
-      : "pi";
   // Debounced: reading transcripts is far heavier than filtering titles, so
   // it waits for a pause in typing rather than firing per keystroke.
   useEffect(() => {
@@ -120,7 +113,7 @@ export function Sidebar({
     setTranscriptSearching(true);
     const timer = window.setTimeout(() => {
       void api
-        .searchSessions(query, currentBackend)
+        .searchSessions(query, "all")
         .then((result) => {
           if (cancelled) return;
           setTranscriptHits(result.ok ? (result.results ?? []) : []);
@@ -136,7 +129,7 @@ export function Sidebar({
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [transcriptQuery, currentBackend]);
+  }, [transcriptQuery]);
 
   const [sessionMenuOpensUp, setSessionMenuOpensUp] = useState(false);
   const [collapsedWorkspaces, setCollapsedWorkspaces] = useState<
@@ -159,7 +152,12 @@ export function Sidebar({
     archiveSession,
     restoreSession,
     deleteSession,
+    defaultBackend,
+    setDefaultBackend,
   } = useStore();
+  // The agent a NEW session starts on. Saved sessions always reopen on the
+  // agent that wrote them, so the sidebar lists every backend at once.
+  const currentBackend: AgentBackend = defaultBackend;
 
   const openTabs = openTabKeys.flatMap((key) => {
     const tab = tabs.find((candidate) => candidate.key === key);
@@ -183,7 +181,7 @@ export function Sidebar({
           sessionUsesModel(session, modelFilter),
         )
       : savedSessions;
-    return modelFilter ? matched : matched.slice(0, 60);
+    return modelFilter ? matched : matched.slice(0, 200);
   }, [modelFilter, savedSessions]);
   const workspaceGroups = useMemo(() => {
     const groups = new Map<string, typeof visibleSessions>();
@@ -246,16 +244,12 @@ export function Sidebar({
     onSessionFocus(key);
   };
 
+  // No page reload: reloading with ?backend= threw away every open session,
+  // which is exactly what stopped a pi session and a claude session from
+  // being open at the same time.
   const switchBackend = (next: AgentBackend) => {
     setBackendMenuOpen(false);
-    if (next === currentBackend) return;
-    const params = new URLSearchParams(window.location.search);
-    if (next === "claude" || next === "grok") params.set("backend", next);
-    else params.delete("backend");
-    const query = params.toString();
-    window.location.assign(
-      `${window.location.pathname}${query ? `?${query}` : ""}${window.location.hash}`,
-    );
+    setDefaultBackend(next);
   };
 
   const handleArchive = async (session: (typeof savedSessions)[number]) => {
@@ -354,7 +348,8 @@ export function Sidebar({
                 className="sidebar__backend-trigger"
                 aria-haspopup="menu"
                 aria-expanded={backendMenuOpen}
-                aria-label={`Current workbench: ${backendLabel(currentBackend)}. Open workbench menu.`}
+                aria-label={`New sessions start on ${backendLabel(currentBackend)}. Choose the agent for new sessions.`}
+                title={`New sessions start on ${backendLabel(currentBackend)}. Sessions already open keep their own agent.`}
                 onClick={() => {
                   setOpenSessionMenu(null);
                   setOpenWorkspaceMenu(null);
@@ -398,6 +393,16 @@ export function Sidebar({
                     onClick={() => switchBackend("grok")}
                   >
                     Grok
+                  </button>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    className={
+                      currentBackend === "codex" ? "is-active" : undefined
+                    }
+                    onClick={() => switchBackend("codex")}
+                  >
+                    Codex
                   </button>
                 </div>
               )}
@@ -523,6 +528,11 @@ export function Sidebar({
                   />
                 )}
                 <span className="sidebar__item-label">{tab.label}</span>
+                <span className="sidebar__item-meta">
+                  <span className="sidebar__item-backend">
+                    {backendLabel(tab.backend)}
+                  </span>
+                </span>
               </button>
               <button
                 type="button"
@@ -546,6 +556,54 @@ export function Sidebar({
 
           <div className="sidebar__saved-head">
             <span className="sidebar__heading">Sessions</span>
+            {/* The filters popover lives inside this header so its absolute
+                position anchors here: as a section-level sibling it resolved
+                against the whole sidebar and was clipped out of view. */}
+            {filtersOpen && (
+              <>
+                <div
+                  className="sidebar__backdrop"
+                  onClick={() => setFiltersOpen(false)}
+                />
+                <div className="sidebar__filters">
+                  <label className="sidebar__saved-select">
+                    <span className="sr-only">Saved session view</span>
+                    <select
+                      aria-label="Saved session view"
+                      value={sessionView}
+                      onChange={(event) => {
+                        setSessionView(
+                          event.target.value as "recent" | "archived",
+                        );
+                        setOpenSessionMenu(null);
+                      }}
+                    >
+                      <option value="recent">Recent</option>
+                      <option value="archived">Archived</option>
+                    </select>
+                    <IconChevronDown size={12} />
+                  </label>
+                  <label className="sidebar__saved-select sidebar__saved-select--model">
+                    <span className="sr-only">Filter sessions by model</span>
+                    <select
+                      aria-label="Filter sessions by model"
+                      value={modelFilter}
+                      onChange={(event) =>
+                        chooseModelFilter(event.target.value)
+                      }
+                    >
+                      <option value="">All models</option>
+                      {modelOptions.map((option) => (
+                        <option key={option.id} value={option.id}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
+                    <IconChevronDown size={12} />
+                  </label>
+                </div>
+              </>
+            )}
             <div className="sidebar__saved-tools">
               <button
                 type="button"
@@ -652,49 +710,6 @@ export function Sidebar({
               </div>,
               document.body,
             )}
-          {filtersOpen && (
-            <>
-              <div
-                className="sidebar__backdrop"
-                onClick={() => setFiltersOpen(false)}
-              />
-              <div className="sidebar__filters">
-                <label className="sidebar__saved-select">
-                  <span className="sr-only">Saved session view</span>
-                  <select
-                    aria-label="Saved session view"
-                    value={sessionView}
-                    onChange={(event) => {
-                      setSessionView(
-                        event.target.value as "recent" | "archived",
-                      );
-                      setOpenSessionMenu(null);
-                    }}
-                  >
-                    <option value="recent">Recent</option>
-                    <option value="archived">Archived</option>
-                  </select>
-                  <IconChevronDown size={12} />
-                </label>
-                <label className="sidebar__saved-select sidebar__saved-select--model">
-                  <span className="sr-only">Filter sessions by model</span>
-                  <select
-                    aria-label="Filter sessions by model"
-                    value={modelFilter}
-                    onChange={(event) => chooseModelFilter(event.target.value)}
-                  >
-                    <option value="">All models</option>
-                    {modelOptions.map((option) => (
-                      <option key={option.id} value={option.id}>
-                        {option.label}
-                      </option>
-                    ))}
-                  </select>
-                  <IconChevronDown size={12} />
-                </label>
-              </div>
-            </>
-          )}
 
           {workspaceGroups.map((group) => {
             const groupCollapsed =
@@ -830,6 +845,11 @@ export function Sidebar({
                           )}
                           <span className="sidebar__item-label">{title}</span>
                           <span className="sidebar__item-meta">
+                            {/* The list mixes every agent now, so which agent
+                                wrote a session has to be visible. */}
+                            <span className="sidebar__item-backend">
+                              {backendLabel(session.backend)}
+                            </span>
                             {formatRelativeTime(session.modifiedAt)}
                           </span>
                         </button>

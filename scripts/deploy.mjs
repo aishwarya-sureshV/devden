@@ -2,12 +2,16 @@
 /**
  * pi-web deployer: spawned detached by the server's POST /api/deploy.
  *
+ * The project deployed is PI_WEB_DEPLOY_CWD — the workbench session's own
+ * project, not pi-web, unless pi-web is what you happen to be working on.
+ *
  * Flow:
  *   1. cloud mode only: `git pull --ff-only` + `npm install` (local mode
  *      assumes your working tree IS the deployment).
- *   2. `npm run build` (vite build -> dist/).
- *   3. Record success + git HEAD in the deploy state file, then SIGTERM the
- *      API server so the supervisor (scripts/supervise.mjs) restarts it with
+ *   2. `npm run build`, skipped when the project has no build script.
+ *   3. Record success + git HEAD in the deploy state file (which lives in the
+ *      deployed project), then, only when the deployed project IS this server,
+ *      SIGTERM it so the supervisor (scripts/supervise.mjs) restarts it with
  *      fresh code and the freshly built dist/.
  *
  * The deployer must survive the server's death: it is spawned detached and
@@ -16,8 +20,11 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readFileSync, writeFileSync, renameSync } from "node:fs";
+import { join } from "node:path";
 
-const ROOT = process.cwd();
+// The project being deployed — the workbench session's cwd, which is only
+// pi-web itself when you are deploying pi-web.
+const ROOT = process.env.PI_WEB_DEPLOY_CWD || process.cwd();
 const STATE_PATH = process.env.PI_WEB_DEPLOY_STATE;
 const MODE = process.env.PI_WEB_DEPLOY_MODE === "cloud" ? "cloud" : "local";
 const SERVER_PID = Number(process.env.PI_WEB_SERVER_PID || 0);
@@ -122,7 +129,16 @@ if (MODE === "cloud") {
   }
   // package.json/lock may have changed in the pull — npm install is a fast
   // no-op when nothing changed.
+  const hasPackageJson = (() => {
+    try {
+      readFileSync(join(ROOT, "package.json"), "utf8");
+      return true;
+    } catch {
+      return false;
+    }
+  })();
   if (
+    hasPackageJson &&
     !runStep(
       "npm install",
       npmCommand,
@@ -138,7 +154,31 @@ if (MODE === "cloud") {
   }
 }
 
-const buildOk = runStep("npm run build", npmCommand, npmArgs(["run", "build"]));
+// Not every project builds (a Python service, a static site, a library with
+// no bundle step). Deploying one of those should pull/install and stop, not
+// fail on a script that was never meant to exist.
+const scripts = (() => {
+  try {
+    return JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8"))
+      .scripts ?? {};
+  } catch {
+    return {};
+  }
+})();
+
+if (!scripts.build) {
+  steps.push({
+    name: "npm run build",
+    ok: true,
+    exit: 0,
+    signal: null,
+    detail: "Skipped — this project has no build script.",
+  });
+}
+
+const buildOk = scripts.build
+  ? runStep("npm run build", npmCommand, npmArgs(["run", "build"]))
+  : true;
 if (!buildOk) {
   persist({
     status: "failed",

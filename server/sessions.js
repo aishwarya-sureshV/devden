@@ -1,4 +1,4 @@
-/** Discovers and manages resumable Pi, Claude Code, and Grok sessions. */
+/** Discovers and manages resumable Pi, Claude Code, Grok, and Codex sessions. */
 import {
   mkdir,
   readFile,
@@ -24,13 +24,63 @@ const CLAUDE_ARCHIVE_INDEX = join(CLAUDE_ROOT, "pi-web-archived-sessions.json");
 const GROK_ROOT = join(homedir(), ".grok");
 const GROK_SESSIONS_ROOT = join(GROK_ROOT, "sessions");
 const GROK_ARCHIVE_INDEX = join(GROK_ROOT, "pi-web-archived-sessions.json");
+// codex's rollout store. Its own thread index already knows every session's
+// title, cwd and timestamps, so listing goes through the app-server rather
+// than re-deriving them by scanning rollout JSONL.
+const CODEX_ROOT = process.env.CODEX_HOME || join(homedir(), ".codex");
+const CODEX_SESSIONS_ROOT = join(CODEX_ROOT, "sessions");
+const CODEX_ARCHIVE_INDEX = join(CODEX_ROOT, "pi-web-archived-sessions.json");
 let archiveMutation = Promise.resolve();
 
 import { messagesFromClaudeLog } from "./claude-agent.js";
+import { codexRequest } from "./codex-app-server.js";
+import { threadIdFromPath } from "./codex-agent.js";
+
+// Every listing re-read every session file end to end (~175MB of Claude
+// JSONL here, ~0.8s per call, and the sidebar asks for recent + archived on
+// each page load, so a backend switch paid it twice). Session logs are
+// append-only, so mtime+size is a safe cache key: a session that changed is
+// re-read, everything else costs one stat.
+// ponytail: unbounded map, keyed by path — bounded by session count in
+// practice; add an LRU if that ever stops being true.
+const sessionSummaries = new Map();
+
+async function cachedSummary(path, read) {
+  let key;
+  try {
+    const file = await stat(path);
+    key = `${file.mtimeMs}:${file.size}`;
+  } catch {
+    sessionSummaries.delete(path);
+    return undefined;
+  }
+  const hit = sessionSummaries.get(path);
+  if (hit && hit.key === key) return hit.session;
+  const session = await read(path);
+  sessionSummaries.set(path, { key, session });
+  return session;
+}
 
 export async function listSessions({ archived = false, backend = "pi" } = {}) {
+  // "all" is what the sidebar asks for: sessions from every agent in one
+  // list, so a pi session and a claude session can sit side by side instead
+  // of the UI being scoped to whichever backend the page was opened with.
+  if (backend === "all") {
+    const lists = await Promise.all(
+      ["pi", "claude", "grok", "codex"].map((name) =>
+        listSessions({ archived, backend: name }).catch(() => ({
+          ok: false,
+          sessions: [],
+        })),
+      ),
+    );
+    const sessions = lists.flatMap((result) => result.sessions ?? []);
+    sessions.sort((a, b) => b.modifiedAt - a.modifiedAt);
+    return { ok: true, sessions };
+  }
   if (backend === "claude") return listClaudeSessions({ archived });
   if (backend === "grok") return listGrokSessions({ archived });
+  if (backend === "codex") return listCodexSessions({ archived });
   return listPiSessions({ archived });
 }
 
@@ -59,7 +109,9 @@ async function listPiSessions({ archived = false } = {}) {
       .flat()
       .filter((path) => archivedPaths.has(path) === archived);
     const sessions = (
-      await Promise.all(paths.map((path) => readResumeSession(path)))
+      await Promise.all(
+        paths.map((path) => cachedSummary(path, readResumeSession)),
+      )
     )
       .filter(Boolean)
       .map((session) => ({ ...session, backend: "pi" }));
@@ -94,7 +146,9 @@ async function listClaudeSessions({ archived = false } = {}) {
       .flat()
       .filter((path) => archivedPaths.has(path) === archived);
     const sessions = (
-      await Promise.all(paths.map(readClaudeResumeSession))
+      await Promise.all(
+        paths.map((path) => cachedSummary(path, readClaudeResumeSession)),
+      )
     ).filter((session) => session && !isInternalClaudeSession(session));
     sessions.sort((a, b) => b.modifiedAt - a.modifiedAt);
     return { ok: true, sessions };
@@ -181,6 +235,10 @@ async function readGrokResumeSession(sessionDir) {
         typeof summary.current_model_id === "string"
           ? summary.current_model_id
           : undefined,
+      // Grok models always live under the grok-sdk provider, so the model
+      // picker can restore the id on a reopened session.
+      lastModelProvider:
+        typeof summary.current_model_id === "string" ? "grok-sdk" : undefined,
       models:
         typeof summary.current_model_id === "string"
           ? [summary.current_model_id]
@@ -192,6 +250,49 @@ async function readGrokResumeSession(sessionDir) {
     };
   } catch {
     return null;
+  }
+}
+
+// codex owns a thread index that already carries title, preview, cwd and
+// timestamps, so one `thread/list` replaces a scan of the rollout files.
+// Archiving stays in pi-web's own index (as for claude and grok) rather than
+// mutating codex's, so un-archiving here never surprises the codex CLI.
+async function listCodexSessions({ archived = false } = {}) {
+  try {
+    const [threads, archivedPaths] = await Promise.all([
+      codexRequest("thread/list", { limit: 200 }),
+      readArchiveIndex(CODEX_ARCHIVE_INDEX),
+    ]);
+    const sessions = (threads?.data ?? [])
+      .filter((thread) => typeof thread?.path === "string" && thread.path)
+      .filter((thread) => archivedPaths.has(thread.path) === archived)
+      // A thread that was opened but never prompted has no preview; those
+      // are the codex equivalent of grok's empty-session ghosts.
+      .filter((thread) => String(thread.preview ?? "").trim())
+      .map((thread) => {
+        const firstPrompt = stripHarnessPrefix(String(thread.preview).trim());
+        return {
+          path: thread.path,
+          backend: "codex",
+          // codex titles a thread a few turns in; until then the prompt is a
+          // better label than "Untitled".
+          name:
+            (thread.name || "").trim() ||
+            firstPrompt.split("\n")[0].slice(0, 80) ||
+            "Untitled session",
+          cwd: thread.cwd || "",
+          createdAt: Number(thread.createdAt ?? 0) * 1000,
+          modifiedAt: Number(thread.updatedAt ?? thread.createdAt ?? 0) * 1000,
+          messageCount: 0,
+          firstPrompt,
+          lastModel: undefined,
+          models: [],
+        };
+      });
+    sessions.sort((a, b) => b.modifiedAt - a.modifiedAt);
+    return { ok: true, sessions };
+  } catch (error) {
+    return { ok: false, error: String(error?.message ?? error), sessions: [] };
   }
 }
 
@@ -215,6 +316,12 @@ export async function deleteSession(path) {
     // than orphaning the rest of grok's own session metadata.
     if (backend === "grok")
       await rm(dirname(safePath), { recursive: true, force: true });
+    // Unlinking a rollout would leave codex's own thread index pointing at a
+    // file that no longer exists; let codex retire the thread itself.
+    else if (backend === "codex")
+      await codexRequest("thread/delete", {
+        threadId: threadIdFromPath(safePath),
+      });
     else await unlink(safePath);
     await mutateArchiveIndex(archiveIndex, async (archivedPaths) => {
       archivedPaths.delete(safePath);
@@ -235,7 +342,9 @@ export async function readSessionMessages(path) {
         ? messagesFromClaudeLog(contents)
         : backend === "grok"
           ? messagesFromGrokLog(contents)
-          : messagesFromPiLog(contents);
+          : backend === "codex"
+            ? messagesFromCodexLog(contents)
+            : messagesFromPiLog(contents);
     return { ok: true, messages };
   } catch (error) {
     return { ok: false, error: String(error?.message ?? error), messages: [] };
@@ -248,8 +357,12 @@ export async function readSessionMessages(path) {
 // numeric prompt_index; synthetic context grok injects for itself
 // (<user_info>, skill listings, etc.) carries synthetic_reason instead and
 // is skipped so the preview matches what the user actually typed.
-function messagesFromGrokLog(contents) {
+export function messagesFromGrokLog(contents) {
   const messages = [];
+  // tool_result entries name only the call id, so the tool name is carried
+  // forward from the assistant entry that made the call.
+  const toolNames = new Map();
+  let pendingThinking = "";
   for (const line of String(contents || "").split("\n")) {
     if (!line) continue;
     let entry;
@@ -258,12 +371,26 @@ function messagesFromGrokLog(contents) {
     } catch {
       continue;
     }
-    if (entry.type === "user") {
-      if (entry.synthetic_reason || typeof entry.prompt_index !== "number")
-        continue;
+    if (entry.type === "reasoning") {
+      // grok writes reasoning as its own entry immediately before the
+      // assistant entry it belongs to; only the plaintext summary is
+      // readable (encrypted_content is opaque).
+      pendingThinking = (Array.isArray(entry.summary) ? entry.summary : [])
+        .map((part) => (typeof part?.text === "string" ? part.text : ""))
+        .filter(Boolean)
+        .join("\n");
+    } else if (entry.type === "user") {
+      if (entry.synthetic_reason) continue;
       const text = grokContentText(entry.content);
       const match = /<user_query>\s*([\s\S]*?)\s*<\/user_query>/.exec(text);
-      const clean = (match ? match[1] : text).trim();
+      // A real turn is wrapped in <user_query>. prompt_index is NOT the test:
+      // a compacted session's surviving turn carries none, so requiring one
+      // made every compacted session read back empty — and grok also injects
+      // unflagged context blobs (<user_info>, <system-reminder>) as plain
+      // "user" entries, which the wrapper is what rules out.
+      if (!match && typeof entry.prompt_index !== "number") continue;
+      const clean = stripHarnessPrefix((match ? match[1] : text).trim());
+      pendingThinking = "";
       if (clean)
         messages.push({
           role: "user",
@@ -271,16 +398,68 @@ function messagesFromGrokLog(contents) {
           timestamp: Date.now(),
         });
     } else if (entry.type === "assistant") {
-      const text = grokContentText(entry.content);
-      if (text.trim())
-        messages.push({
-          role: "assistant",
-          content: [{ type: "text", text: text.trim() }],
-          timestamp: Date.now(),
+      const content = [];
+      if (pendingThinking)
+        content.push({ type: "thinking", thinking: pendingThinking });
+      pendingThinking = "";
+      const text = grokContentText(entry.content).trim();
+      if (text) content.push({ type: "text", text });
+      for (const call of Array.isArray(entry.tool_calls)
+        ? entry.tool_calls
+        : []) {
+        const id = String(call?.id ?? "");
+        const name = String(call?.name ?? "tool");
+        toolNames.set(id, name);
+        content.push({
+          type: "toolCall",
+          id,
+          name,
+          arguments: parseGrokToolArguments(call?.arguments),
         });
+      }
+      if (content.length)
+        messages.push({ role: "assistant", content, timestamp: Date.now() });
+    } else if (entry.type === "tool_result") {
+      const id = String(entry.tool_call_id ?? "");
+      messages.push({
+        role: "toolResult",
+        toolCallId: id,
+        toolName: toolNames.get(id) ?? "tool",
+        content: [{ type: "text", text: grokContentText(entry.content) }],
+        timestamp: Date.now(),
+      });
     }
   }
   return messages;
+}
+
+// The grok and codex adapters prefix every prompt with a bracketed harness
+// instruction block (their CLARIFY_PROMPT_PREFIX); both store it verbatim, so
+// it has to come back out to show what the user actually typed.
+function stripHarnessPrefix(text) {
+  const end = "[end pi-web harness instruction]";
+  // Loop: a turn can carry more than one block (the clarify gate plus, on a
+  // resumed turn, the interruption notice), and stripping only the first
+  // left the second showing as something the user had typed.
+  let rest = text;
+  while (rest.startsWith("[pi-web harness instruction")) {
+    const at = rest.indexOf(end);
+    if (at === -1) return rest;
+    rest = rest.slice(at + end.length).trimStart();
+  }
+  return rest;
+}
+
+// grok serializes tool arguments as a JSON string; the timeline's tool cards
+// (paths, commands, diffs) need the parsed object.
+function parseGrokToolArguments(value) {
+  if (value && typeof value === "object") return value;
+  try {
+    const parsed = JSON.parse(String(value ?? ""));
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
+  }
 }
 
 function grokContentText(content) {
@@ -316,6 +495,101 @@ function messagesFromPiLog(contents) {
     messages.push({ ...entry.message, timestamp });
   }
   return messages;
+}
+
+// A codex rollout is codex's own append-only event log. Its `event_msg`
+// entries come in two vocabularies depending on how the thread was created
+// (Codex Desktop writes `item_completed`, an app-server thread writes
+// `user_message`/`agent_message`), but both write the same `response_item`
+// entries -- the model conversation itself -- so that is what the preview
+// reads. Reasoning is skipped: rollouts store an empty summary and an
+// encrypted body, so there is nothing to show.
+export function messagesFromCodexLog(contents) {
+  const messages = [];
+  const toolNames = new Map();
+  let assistant;
+  const pushAssistant = () => {
+    if (assistant?.content.length) messages.push(assistant);
+    assistant = undefined;
+  };
+  const openAssistant = (timestamp) => {
+    if (!assistant) assistant = { role: "assistant", content: [], timestamp };
+    return assistant;
+  };
+  for (const line of String(contents || "").split("\n")) {
+    if (!line) continue;
+    let entry;
+    try {
+      entry = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (entry.type !== "response_item") continue;
+    const item = entry.payload;
+    if (!item) continue;
+    const timestamp = Date.parse(entry.timestamp ?? "") || Date.now();
+    if (item.type === "message") {
+      const text = codexItemText(item.content);
+      if (item.role === "assistant") {
+        if (text.trim())
+          openAssistant(timestamp).content.push({
+            type: "text",
+            text: text.trim(),
+          });
+      } else if (item.role === "user") {
+        // codex injects its own context as user messages
+        // (<recommended_plugins>, <environment_context>, ...); a real prompt
+        // is not an XML block.
+        if (/^\s*<[a-z_-]+>/i.test(text)) continue;
+        const clean = stripHarnessPrefix(text.trim());
+        if (!clean) continue;
+        pushAssistant();
+        messages.push({
+          role: "user",
+          content: [{ type: "text", text: clean }],
+          timestamp,
+        });
+      }
+      continue;
+    }
+    if (item.type === "custom_tool_call" || item.type === "function_call") {
+      const id = String(item.call_id ?? item.id ?? "");
+      const name = String(item.name ?? "tool");
+      toolNames.set(id, name);
+      openAssistant(timestamp).content.push({
+        type: "toolCall",
+        id,
+        name,
+        arguments: parseGrokToolArguments(item.arguments ?? item.input),
+      });
+      continue;
+    }
+    if (
+      item.type === "custom_tool_call_output" ||
+      item.type === "function_call_output"
+    ) {
+      const id = String(item.call_id ?? "");
+      pushAssistant();
+      messages.push({
+        role: "toolResult",
+        toolCallId: id,
+        toolName: toolNames.get(id) ?? "tool",
+        content: [{ type: "text", text: codexItemText(item.output) }],
+        timestamp,
+      });
+    }
+  }
+  pushAssistant();
+  return messages;
+}
+
+// Rollout content blocks are input_text/output_text parts; a tool output can
+// also be a bare string.
+function codexItemText(content) {
+  if (typeof content === "string") return content;
+  return (Array.isArray(content) ? content : [])
+    .map((part) => (typeof part?.text === "string" ? part.text : ""))
+    .join("");
 }
 
 export async function loadSessionLog(path) {
@@ -368,6 +642,11 @@ async function resolveSessionPath(path) {
       root: GROK_SESSIONS_ROOT,
       archiveIndex: GROK_ARCHIVE_INDEX,
       backend: "grok",
+    },
+    {
+      root: CODEX_SESSIONS_ROOT,
+      archiveIndex: CODEX_ARCHIVE_INDEX,
+      backend: "codex",
     },
   ]) {
     let root;
@@ -528,7 +807,7 @@ async function readClaudeResumeSession(path) {
   }
 }
 
-async function readResumeSession(path) {
+export async function readResumeSession(path) {
   try {
     const [contents, file] = await Promise.all([
       readFile(path, "utf8"),
@@ -541,6 +820,10 @@ async function readResumeSession(path) {
     let messageCount = 0;
     let firstPrompt = "";
     let lastModel;
+    let lastModelProvider;
+    // Cumulative usage across the session's assistant turns — the composer's
+    // "USED tokens" chip for sessions whose agent is not running.
+    let usage;
     // The tail of the final assistant message, sent so the sidebar can mark a
     // session that ended on a question as waiting on the user. Only kept when
     // that message is genuinely last: if the user has already replied, the
@@ -567,6 +850,15 @@ async function readResumeSession(path) {
         typeof entry.name === "string"
       ) {
         name = entry.name.trim() || undefined;
+      } else if (entry.type === "model_change") {
+        // Authoritative even when the switched-to model never produced a
+        // turn: without it a reopened session loses its model picker label.
+        if (typeof entry.modelId === "string" && entry.modelId) {
+          lastModel = entry.modelId;
+          if (typeof entry.provider === "string")
+            lastModelProvider = entry.provider;
+          models.add(entry.modelId);
+        }
       } else if (entry.type === "message") {
         messageCount++;
         if (typeof entry.timestamp === "string")
@@ -575,7 +867,22 @@ async function readResumeSession(path) {
         if (message?.role) lastRole = message.role;
         if (message?.role === "assistant") {
           const model = rememberModel(models, message.model);
-          if (model) lastModel = model;
+          if (model) {
+            lastModel = model;
+            if (typeof message.provider === "string")
+              lastModelProvider = message.provider;
+          }
+          if (message.usage) {
+            const input = Number(message.usage.input ?? 0);
+            const output = Number(message.usage.output ?? 0);
+            const total = Number(message.usage.totalTokens ?? input + output);
+            usage = {
+              input: (usage?.input ?? 0) + (Number.isFinite(input) ? input : 0),
+              output:
+                (usage?.output ?? 0) + (Number.isFinite(output) ? output : 0),
+              total: (usage?.total ?? 0) + (Number.isFinite(total) ? total : 0),
+            };
+          }
           const text = Array.isArray(message.content)
             ? message.content
                 .filter(
@@ -617,6 +924,8 @@ async function readResumeSession(path) {
           ? lastAssistantText.slice(-800)
           : undefined,
       lastModel,
+      lastModelProvider,
+      usage,
       models: [...models],
     };
   } catch {

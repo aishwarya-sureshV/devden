@@ -62,3 +62,27 @@ describe('extractTodos', () => {
     assert.equal(todos[3]?.status, 'in_progress')
   })
 })
+
+describe('grok todo_write', () => {
+  it('reads string ids, content, and the todos key', () => {
+    const grokTodo: TimelineItem = {
+      id: 'grok-todo',
+      kind: 'tool',
+      name: 'todo_write',
+      args: {
+        todos: [
+          { id: '1', content: 'Read the code', status: 'in_progress' },
+          { id: '2', content: 'Fix the bug', status: 'pending' },
+        ],
+      },
+      details: {},
+      output: '',
+      status: 'done',
+      startedAt: 1,
+    }
+    assert.deepEqual(extractTodos([user('do the thing'), grokTodo]), [
+      { id: 1, subject: 'Read the code', status: 'in_progress' },
+      { id: 2, subject: 'Fix the bug', status: 'pending' },
+    ])
+  })
+})

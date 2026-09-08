@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type { BackendLogEntry } from '../lib/api'
 
 function asRecord(value: unknown): Record<string, unknown> {
@@ -73,6 +73,27 @@ export function BackendLog({ entries, live }: { entries: BackendLogEntry[]; live
     return `${entry.source} ${entry.type} ${summary(entry)} ${stringify(entry.payload)}`.toLowerCase().includes(needle)
   }), [entries, needle])
 
+  // Follow the tail like a terminal: new events scroll into view on their
+  // own, but only while the reader is already at the bottom — scrolling up to
+  // read an older payload must not be yanked back by the next event.
+  const bottomRef = useRef<HTMLDivElement | null>(null)
+  const stickRef = useRef(true)
+  useEffect(() => {
+    const scroller = bottomRef.current?.closest('.conversation__scroll')
+    if (!scroller) return
+    const onScroll = () => {
+      stickRef.current =
+        scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 80
+    }
+    scroller.addEventListener('scroll', onScroll, { passive: true })
+    return () => scroller.removeEventListener('scroll', onScroll)
+  }, [])
+  useEffect(() => {
+    const scroller = bottomRef.current?.closest('.conversation__scroll')
+    if (!scroller || !stickRef.current) return
+    scroller.scrollTop = scroller.scrollHeight
+  }, [visible.length])
+
   const copyLog = async () => {
     try {
       await navigator.clipboard.writeText(stringify(entries))
@@ -135,6 +156,7 @@ export function BackendLog({ entries, live }: { entries: BackendLogEntry[]; live
         })}
         {entries.length === 0 && <div className="backend-log__empty">Backend events will appear after you send a prompt.</div>}
         {entries.length > 0 && visible.length === 0 && <div className="backend-log__empty">No backend events match “{query}”.</div>}
+        <div ref={bottomRef} aria-hidden="true" />
       </div>
     </div>
   )

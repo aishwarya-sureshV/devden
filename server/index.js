@@ -36,8 +36,10 @@
  *   GET  /api/:sessionKey/models
  *   GET  /api/:sessionKey/thinking-levels
  */
+import "./env.js";
 import { createServer } from "node:http";
 import { createHash, randomUUID } from "node:crypto";
+
 import {
   mkdir,
   open as openFile,
@@ -70,6 +72,15 @@ import pty from "node-pty";
 import { PiAgentPool, generateSessionTitle } from "./pi-agent.js";
 import { ClaudeAgentPool } from "./claude-agent.js";
 import { GrokAgentPool } from "./grok-agent.js";
+import { CodexAgentPool } from "./codex-agent.js";
+import { closeSharedCodex } from "./codex-app-server.js";
+import {
+  noteTurnContext,
+  noteTurnSettled,
+  noteTurnStarted,
+  takeInterruptedTurns,
+} from "./inflight.js";
+import { resumePrompt } from "./co-partner-prompt.js";
 import {
   archiveSession,
   deleteSession,
@@ -257,6 +268,11 @@ function pruneAuthTickets() {
 const SESSION_LEASES = new Map();
 const LEASE_TIMEOUT_MS = 5 * 60_000;
 const LEASE_SWEEP_MS = 60_000;
+// How long an agent that is still working may outlive its page's heartbeat.
+// Long enough to cover a sleeping laptop or a long tool call, short enough
+// that a wedged agent is not immortal.
+const LEASE_WORK_GRACE_MS = 60 * 60_000;
+const LEASE_WORK_GRACE = new Map();
 
 function renewLease(sessionKey) {
   SESSION_LEASES.set(sessionKey, Date.now());
@@ -265,9 +281,26 @@ function renewLease(sessionKey) {
 function sweepExpiredLeases() {
   const now = Date.now();
   for (const [key, lastHeartbeat] of SESSION_LEASES) {
-    if (now - lastHeartbeat <= LEASE_TIMEOUT_MS) continue;
-    SESSION_LEASES.delete(key);
+    if (now - lastHeartbeat <= LEASE_TIMEOUT_MS) {
+      LEASE_WORK_GRACE.delete(key);
+      continue;
+    }
     const backend = sessionBackends.get(key);
+    // A lease lapses for two very different reasons: the page is really
+    // gone, or it merely stopped heartbeating (the machine slept, the tab
+    // was throttled). Killing a turn that is still running is the one
+    // outcome the user cannot recover from -- the work stops mid-flight and
+    // the tab sits frozen until a reload -- so a working agent is spared and
+    // re-checked on the next sweep. The grace is bounded: an agent wedged in
+    // "working" with no page behind it would otherwise never be reaped.
+    const agent = backend ? poolFor(backend).agents.get(key) : undefined;
+    if (agent?.status === "working") {
+      const deadline = LEASE_WORK_GRACE.get(key) ?? now + LEASE_WORK_GRACE_MS;
+      LEASE_WORK_GRACE.set(key, deadline);
+      if (now < deadline) continue;
+    }
+    LEASE_WORK_GRACE.delete(key);
+    SESSION_LEASES.delete(key);
     if (!backend) continue;
     poolFor(backend).stop(key);
     sessionBackends.delete(key);
@@ -325,6 +358,87 @@ function scheduleGoalCheckIn(sessionKey) {
   goal.timer.unref?.();
 }
 
+/**
+ * Restart the turns that were running when this process's predecessor
+ * stopped. The user should not have to ask "did you finish that?" after a
+ * deploy, a crash, or the machine being switched off.
+ *
+ * The agent is resumed on its own session file, so it comes back with the
+ * full conversation in context; the follow-up only tells it that the last
+ * turn never ended. The conversation key is synthetic because the browser
+ * mints a new one on reload -- adoptLiveAgent() rebinds this running agent
+ * to whatever key the page comes back with, keyed on the session file, and
+ * carries the runtime log across with it, so the restored tab shows the
+ * resumed run live.
+ */
+const MAX_CONCURRENT_RESUMES = 3;
+
+async function resumeInterruptedTurns() {
+  const interrupted = takeInterruptedTurns().slice(0, MAX_CONCURRENT_RESUMES);
+  for (const entry of interrupted) {
+    if (!existsSync(entry.cwd) || !existsSync(entry.sessionPath)) continue;
+    const backend = backendName(entry.backend);
+    const sessionKey = `resume-${randomUUID()}`;
+    const agent = watch(sessionKey, backend);
+    // Re-register before the agent starts: if this resume is itself cut
+    // short, the attempt counter is what stops a crash loop.
+    noteTurnStarted({
+      ...entry,
+      sessionKey,
+      resumeAttempts: Number(entry.resumeAttempts ?? 0) + 1,
+    });
+    const started = await runLoggedCommand(
+      sessionKey,
+      "start",
+      { cwd: entry.cwd, backend },
+      () =>
+        agent.start(entry.cwd, {
+          sessionPath: entry.sessionPath,
+          ...(entry.model ? { model: entry.model } : {}),
+          ...(entry.thinkingLevel
+            ? { thinkingLevel: entry.thinkingLevel }
+            : {}),
+        }),
+    );
+    if (!started.ok) {
+      noteTurnSettled(sessionKey);
+      continue;
+    }
+    publishRuntimeEvent(sessionKey, "server", {
+      type: "notice",
+      sessionKey,
+      message:
+        "The workbench restarted mid-turn — picking this conversation back up where it stopped.",
+    });
+    void agent
+      .followUp(resumePrompt(entry.message))
+      .then(() => {
+        // Instructions the user had lined up behind the interrupted turn are
+        // part of the work, so they go back into the queue rather than being
+        // silently dropped.
+        for (const queued of entry.queued ?? [])
+          void agent.enqueue?.(queued.message);
+      })
+      .catch((error) => {
+        noteTurnSettled(sessionKey);
+        publishRuntimeEvent(sessionKey, "server", {
+          type: "notice",
+          sessionKey,
+          message: `Could not resume the interrupted turn: ${String(error?.message ?? error)}`,
+          tone: "error",
+        });
+      })
+      .finally(() => {
+        // No lease is taken for a resume key: nothing heartbeats it, and the
+        // sweep would reap the agent mid-work. That means cleaning up here
+        // instead -- unless a page has adopted the agent by now, in which
+        // case adoptLiveAgent has already moved it to the page's own key and
+        // this key is gone.
+        if (sessionBackends.has(sessionKey)) poolFor(backend).stop(sessionKey);
+      });
+  }
+}
+
 function setSessionGoal(sessionKey, text) {
   if (!text || /^off$/i.test(text)) {
     clearSessionGoal(sessionKey);
@@ -351,23 +465,43 @@ const BUILD_ID = existsSync(join(DIST, "index.html"))
  * then SIGTERMs this process so the supervisor restarts it with fresh code.
  */
 const BOOT_MS = Date.now();
-const DEPLOY_STATE_PATH = join(ROOT, ".pi-web-deploy.json");
 const DEPLOY_MODE =
   process.env.PI_WEB_DEPLOY_MODE === "cloud" ? "cloud" : "local";
 
-function readDeployState() {
+/**
+ * Deploy targets the project the session is working in, not pi-web. Every
+ * deploy fact (state file, git head, dirty count) is therefore per-project:
+ * the state file lives beside the project it describes, so two projects
+ * deployed from the same workbench never overwrite each other's history.
+ * `cwd` is confined to the workspace roots exactly like file access is.
+ */
+function deployProjectRoot(requested) {
+  if (!requested || typeof requested !== "string" || !requested.trim())
+    return ROOT;
+  // Confined the same way opening a workspace is (roots plus the user's home
+  // directory) rather than to the mutation roots: a session's cwd only
+  // becomes a mutation root once its agent has started, and the Deploy button
+  // has to answer for a tab whose agent is still lazy.
+  return resolve(confineHomePath(requested));
+}
+
+function deployStatePath(projectRoot) {
+  return join(projectRoot, ".pi-web-deploy.json");
+}
+
+function readDeployState(projectRoot = ROOT) {
   try {
-    return JSON.parse(readFileSync(DEPLOY_STATE_PATH, "utf8"));
+    return JSON.parse(readFileSync(deployStatePath(projectRoot), "utf8"));
   } catch {
     return null;
   }
 }
 
-function writeDeployState(patch) {
-  const base = readDeployState() || {};
+function writeDeployState(patch, projectRoot = ROOT) {
+  const base = readDeployState(projectRoot) || {};
   try {
     writeFileSync(
-      DEPLOY_STATE_PATH,
+      deployStatePath(projectRoot),
       JSON.stringify({ ...base, ...patch }, null, 2),
     );
   } catch {
@@ -376,10 +510,10 @@ function writeDeployState(patch) {
   }
 }
 
-function currentGitHead() {
+function currentGitHead(projectRoot = ROOT) {
   try {
     return execSync("git rev-parse --short HEAD", {
-      cwd: ROOT,
+      cwd: projectRoot,
       stdio: ["ignore", "pipe", "ignore"],
       timeout: 5000,
     })
@@ -396,12 +530,12 @@ function currentGitHead() {
  * "does the working tree differ from what is running?" — including uncommitted
  * edits, which HEAD alone can't see.
  */
-function workingTreeSignature() {
+function workingTreeSignature(projectRoot = ROOT) {
   try {
     const out = execSync(
       "git rev-parse HEAD && git status --porcelain && git diff HEAD",
       {
-        cwd: ROOT,
+        cwd: projectRoot,
         stdio: ["ignore", "pipe", "ignore"],
         timeout: 5000,
         maxBuffer: 16 * 1024 * 1024,
@@ -413,10 +547,10 @@ function workingTreeSignature() {
   }
 }
 
-function uncommittedFileCount() {
+function uncommittedFileCount(projectRoot = ROOT) {
   try {
     const out = execSync("git status --porcelain", {
-      cwd: ROOT,
+      cwd: projectRoot,
       stdio: ["ignore", "pipe", "ignore"],
       timeout: 5000,
     })
@@ -431,8 +565,28 @@ function uncommittedFileCount() {
 const piPool = new PiAgentPool();
 const claudePool = new ClaudeAgentPool();
 const grokPool = new GrokAgentPool();
+const codexPool = new CodexAgentPool();
 /** @type {Map<string, 'pi' | 'claude'>} */
 const sessionBackends = new Map();
+/**
+ * Old tab key → current key, after adoptLiveAgent rebinds a live agent to a
+ * refreshed page's key. Events are re-broadcast under aliases so the page
+ * that lost the agent keeps receiving its in-flight turn instead of sitting
+ * frozen on a “running” card until it manually refreshes; watch() resolves
+ * aliases so the old page's commands still reach the live process rather
+ * than spawning a duplicate.
+ */
+const KEY_ALIASES = new Map();
+
+function resolveSessionKey(sessionKey) {
+  let resolved = sessionKey;
+  for (let hops = 0; hops < 10; hops += 1) {
+    const next = KEY_ALIASES.get(resolved);
+    if (!next) break;
+    resolved = next;
+  }
+  return resolved;
+}
 /** @type {Set<import('node:http').ServerResponse>} */
 const sseClients = new Set();
 /** @type {Map<string, Array<{ id: string, timestamp: number, source: string, type: string, payload: object }>>} */
@@ -509,15 +663,67 @@ function recordRuntimeEvent(sessionKey, source, event) {
 }
 
 function publishRuntimeEvent(sessionKey, source, event) {
+  trackTurnLifecycle(sessionKey, event);
   const entry = recordRuntimeEvent(sessionKey, source, event);
-  broadcast({
+  const payload = {
     ...event,
     sessionKey,
     __logId: entry.id,
     __loggedAt: entry.timestamp,
     __logSource: source,
-  });
+  };
+  broadcast(payload);
+  // Alias keys: pages that owned this agent before an adoption keep their
+  // transcripts live under the key they know.
+  for (const [alias, target] of KEY_ALIASES) {
+    if (target !== sessionKey) continue;
+    broadcast({ ...payload, sessionKey: alias });
+  }
   return entry;
+}
+
+// Set while the process is tearing down, so the "stopped" events our own
+// shutdown produces are not mistaken for abandoned turns.
+let shuttingDown = false;
+
+/**
+ * Mirror a turn's lifecycle into the crash-durable record. Every backend
+ * funnels its events through publishRuntimeEvent, so this is the one place
+ * that sees a turn start, learn its session file, and end -- whichever
+ * adapter produced it.
+ */
+function trackTurnLifecycle(sessionKey, event) {
+  switch (event.type) {
+    case "state":
+      noteTurnContext(sessionKey, {
+        sessionPath: event.state?.sessionFile,
+        cwd: event.state?.cwd,
+        model: event.state?.model ?? undefined,
+        thinkingLevel: event.state?.thinkingLevel,
+      });
+      return;
+    case "queue_updated":
+      // Queued prompts are part of the work in flight: dropping them on a
+      // restart loses instructions the user already gave.
+      noteTurnContext(sessionKey, { queued: event.queued ?? [] });
+      return;
+    case "agent_settled":
+    case "agent_end":
+      noteTurnSettled(sessionKey);
+      return;
+    case "__status":
+      // A stopped agent normally means the user closed the tab and the lease
+      // sweep reaped it -- that turn is abandoned, not interrupted. During
+      // our own shutdown the same event means the opposite, so the record
+      // must survive it: that is precisely the case this exists for.
+      if (
+        event.status === "error" ||
+        (event.status === "stopped" && !shuttingDown)
+      )
+        noteTurnSettled(sessionKey);
+      return;
+    default:
+  }
 }
 
 function commandMetadata(body) {
@@ -575,7 +781,13 @@ async function runLoggedCommand(sessionKey, action, body, run) {
 function backendName(value) {
   if (value === "claude") return "claude";
   if (value === "grok") return "grok";
+  if (value === "codex") return "codex";
   return "pi";
+}
+
+/** Same, but "all" survives — only the session listing/search accept it. */
+function sessionScope(value) {
+  return value === "all" ? "all" : backendName(value);
 }
 
 // This was previously sent to the active model as ordinary text when it was
@@ -591,6 +803,7 @@ function isUsageShortcut(message, images) {
 function poolFor(backend) {
   if (backend === "claude") return claudePool;
   if (backend === "grok") return grokPool;
+  if (backend === "codex") return codexPool;
   return piPool;
 }
 
@@ -704,6 +917,13 @@ function adoptLiveAgent(sessionKey, backend, sessionPath) {
     pool.agents.set(sessionKey, candidate);
     candidate.sessionKey = sessionKey;
     sessionBackends.delete(key);
+    // Keep the abandoned page's key alive as an alias: its events still
+    // fan out under it and its commands resolve here, so a second tab (or
+    // a stray page) opening this session can't freeze the first one.
+    for (const [alias, target] of KEY_ALIASES) {
+      if (target === key) KEY_ALIASES.set(alias, sessionKey);
+    }
+    KEY_ALIASES.set(key, sessionKey);
     // The lease belongs to the conversation, not the tab: carry it to the
     // adopting key so the sweep does not reap a freshly refreshed session.
     const lease = SESSION_LEASES.get(key);
@@ -738,7 +958,40 @@ function adoptLiveAgent(sessionKey, backend, sessionPath) {
   return undefined;
 }
 
+/**
+ * Model catalogs are expensive to build and near-static: pi spawns
+ * `pi --list-models` (plus an Ollama probe), codex boots its app-server, grok
+ * hits its proxy. Every dropdown open paid that again, per tab, so the list
+ * took seconds to appear on every backend. One process-wide cache per
+ * backend+cwd fixes both: the stored value is the promise, so concurrent
+ * openings share a single lookup, and failures are evicted so a transient
+ * outage is not remembered for five minutes.
+ */
+const MODELS_TTL_MS = 5 * 60_000;
+const modelsCache = new Map();
+
+function cachedModels(agent) {
+  const key = `${agent.__watchedBackend ?? "pi"}\0${agent.cwd ?? ""}`;
+  const hit = modelsCache.get(key);
+  if (hit && Date.now() - hit.at < MODELS_TTL_MS) return hit.value;
+  const value = Promise.resolve()
+    .then(() => agent.getAvailableModels())
+    .then((result) => {
+      if (!result?.ok || !result.models?.length) modelsCache.delete(key);
+      return result;
+    })
+    .catch((error) => {
+      modelsCache.delete(key);
+      return { ok: false, error: String(error?.message ?? error) };
+    });
+  modelsCache.set(key, { at: Date.now(), value });
+  return value;
+}
+
 function watch(sessionKey, requestedBackend) {
+  // An adopted-away key still routes here (old tab sending a command):
+  // resolve to the live agent instead of spawning a duplicate process.
+  sessionKey = resolveSessionKey(sessionKey) ?? sessionKey;
   const backend =
     requestedBackend === undefined
       ? (sessionBackends.get(sessionKey) ?? "pi")
@@ -1329,7 +1582,16 @@ async function route(req, res) {
   }
 
   if (pathname === "/api/deploy/status" && req.method === "GET") {
-    const state = readDeployState();
+    let projectRoot;
+    try {
+      projectRoot = deployProjectRoot(url.searchParams.get("cwd"));
+    } catch (error) {
+      return sendJson(res, 400, {
+        ok: false,
+        error: String(error?.message ?? error),
+      });
+    }
+    const state = readDeployState(projectRoot);
     const stale = Boolean(
       state?.status === "running" &&
         Date.now() - (state.startedAt || 0) > 15 * 60_000,
@@ -1337,9 +1599,14 @@ async function route(req, res) {
     return sendJson(res, 200, {
       ok: true,
       mode: DEPLOY_MODE,
-      head: currentGitHead(),
-      signature: workingTreeSignature(),
-      dirtyFiles: uncommittedFileCount(),
+      project: projectRoot,
+      projectName: basename(projectRoot),
+      // Only a deploy of pi-web itself restarts this server and reloads the
+      // page; any other project is just built in place.
+      self: projectRoot === ROOT,
+      head: currentGitHead(projectRoot),
+      signature: workingTreeSignature(projectRoot),
+      dirtyFiles: uncommittedFileCount(projectRoot),
       deploying: state?.status === "running" && !stale,
       stale,
       last: state,
@@ -1356,7 +1623,16 @@ async function route(req, res) {
       body?.mode === "cloud" || body?.mode === "local"
         ? body.mode
         : DEPLOY_MODE;
-    const state = readDeployState();
+    let projectRoot;
+    try {
+      projectRoot = deployProjectRoot(body?.cwd);
+    } catch (error) {
+      return sendJson(res, 400, {
+        ok: false,
+        error: String(error?.message ?? error),
+      });
+    }
+    const state = readDeployState(projectRoot);
     if (
       state?.status === "running" &&
       Date.now() - (state.startedAt || 0) < 15 * 60_000
@@ -1366,45 +1642,61 @@ async function route(req, res) {
         error: "A deploy is already running.",
       });
     }
-    writeDeployState({
-      status: "running",
-      mode: requestedMode,
-      startedAt: Date.now(),
-      finishedAt: null,
-      commit: currentGitHead(),
-      steps: [],
-      log: "",
-      error: null,
-    });
+    writeDeployState(
+      {
+        status: "running",
+        mode: requestedMode,
+        startedAt: Date.now(),
+        finishedAt: null,
+        commit: currentGitHead(projectRoot),
+        steps: [],
+        log: "",
+        error: null,
+      },
+      projectRoot,
+    );
     try {
       const child = spawn(
         process.execPath,
         [join(ROOT, "scripts", "deploy.mjs")],
         {
-          cwd: ROOT,
+          cwd: projectRoot,
           detached: true,
           stdio: "ignore",
           env: {
             ...process.env,
             PI_WEB_DEPLOY_MODE: requestedMode,
-            PI_WEB_DEPLOY_STATE: DEPLOY_STATE_PATH,
-            PI_WEB_SERVER_PID: String(process.pid),
+            PI_WEB_DEPLOY_CWD: projectRoot,
+            PI_WEB_DEPLOY_STATE: deployStatePath(projectRoot),
+            // Restarting this server only makes sense when the project being
+            // deployed IS this server.
+            ...(projectRoot === ROOT
+              ? { PI_WEB_SERVER_PID: String(process.pid) }
+              : { PI_WEB_SERVER_PID: "" }),
           },
         },
       );
       child.unref();
     } catch (error) {
-      writeDeployState({
-        status: "failed",
-        finishedAt: Date.now(),
-        error: `Failed to start deployer: ${error?.message || error}`,
-      });
+      writeDeployState(
+        {
+          status: "failed",
+          finishedAt: Date.now(),
+          error: `Failed to start deployer: ${error?.message || error}`,
+        },
+        projectRoot,
+      );
       return sendJson(res, 500, {
         ok: false,
         error: "Failed to start deploy.",
       });
     }
-    return sendJson(res, 200, { ok: true, mode: requestedMode });
+    return sendJson(res, 200, {
+      ok: true,
+      mode: requestedMode,
+      project: projectRoot,
+      self: projectRoot === ROOT,
+    });
   }
 
   if (pathname === "/api/directories" && req.method === "GET") {
@@ -1621,7 +1913,7 @@ async function route(req, res) {
       200,
       await searchSessions({
         query: url.searchParams.get("q") ?? "",
-        backend: backendName(url.searchParams.get("backend")),
+        backend: sessionScope(url.searchParams.get("backend")),
       }),
     );
   }
@@ -1632,7 +1924,7 @@ async function route(req, res) {
       200,
       await listSessions({
         archived: url.searchParams.get("view") === "archived",
-        backend: backendName(url.searchParams.get("backend")),
+        backend: sessionScope(url.searchParams.get("backend")),
       }),
     );
   }
@@ -1746,7 +2038,14 @@ async function route(req, res) {
     const promptBackend = backendName(
       body.backend ?? sessionBackends.get(sessionKey),
     );
+    // Adopt before starting: the same session may already be running under
+    // another key -- a refreshed tab, or a turn this server resumed at boot
+    // under a key of its own. Without this the prompt spawns a second agent
+    // on one session file and the two fight over it.
+    adoptLiveAgent(sessionKey, promptBackend, body.sessionPath);
     const promptAgent = watch(sessionKey, promptBackend);
+    // grok's ACP connection and codex's app-server connection stand in for
+    // the child process the pi/claude adapters expose.
     const agentAlive =
       promptBackend === "grok"
         ? Boolean(promptAgent.connection)
@@ -1773,6 +2072,16 @@ async function route(req, res) {
       );
       if (!started.ok) return sendJson(res, 500, started);
     }
+    noteTurnStarted({
+      sessionKey,
+      backend: promptBackend,
+      cwd: String(body.cwd || promptAgent.cwd || process.cwd()),
+      sessionPath:
+        promptAgent.sessionFile ?? promptAgent.lastState?.sessionFile,
+      message,
+      model: promptAgent.lastState?.model ?? promptAgent.model ?? undefined,
+      thinkingLevel: promptAgent.lastState?.thinkingLevel,
+    });
     const result = await runLoggedCommand(sessionKey, "prompt", body, () =>
       watch(sessionKey).prompt(message, images),
     );
@@ -1855,13 +2164,14 @@ async function route(req, res) {
     poolFor(currentBackend).stop(sessionKey);
     sessionBackends.delete(sessionKey);
     const agent = watch(sessionKey, body.backend);
-    // A not-yet-started grok conversation (fresh or lazily resumed) has
-    // nothing to reconfigure server-side: just record the requested backend
-    // and return placeholder state instead of spawning an agent that writes
-    // an empty session file. The first prompt starts it with the new cwd.
+    // A not-yet-started grok or codex conversation (fresh or lazily resumed)
+    // has nothing to reconfigure server-side: just record the requested
+    // backend and return placeholder state instead of spawning an agent that
+    // writes an empty session file. The first prompt starts it with the new
+    // cwd.
     if (
-      backendName(body.backend) === "grok" &&
-      !agent.connection &&
+      ["grok", "codex"].includes(backendName(body.backend)) &&
+      !agent.process &&
       !body.sessionPath
     ) {
       return sendJson(res, 200, {
@@ -2653,10 +2963,9 @@ async function route(req, res) {
     return sendJson(
       res,
       200,
-      await watch(
-        sessionKey,
-        url.searchParams.get("backend") || undefined,
-      ).getAvailableModels(),
+      await cachedModels(
+        watch(sessionKey, url.searchParams.get("backend") || undefined),
+      ),
     );
   if (req.method === "GET" && action === "thinking-levels")
     return sendJson(
@@ -2669,10 +2978,13 @@ async function route(req, res) {
     );
   if (req.method === "GET" && action === "usage") {
     const refresh = url.searchParams.get("refresh") === "1";
+    // Session path lets a lazily-viewed session (no live process) answer
+    // usage from its session file instead of "nothing to report".
+    const sessionPath = url.searchParams.get("sessionPath") || undefined;
     const result = await watch(
       sessionKey,
       url.searchParams.get("backend") || undefined,
-    ).getUsage(refresh);
+    ).getUsage(refresh, sessionPath);
     return sendJson(res, result.ok ? 200 : 500, result);
   }
 
@@ -2804,6 +3116,11 @@ terminalSockets.on("connection", (socket, _request, url) => {
 
 server.listen(PORT, HOST, () => {
   console.log(`pi-web ready: http://${HOST}:${PORT}`);
+  // Warm the session-summary cache so the first sidebar load (and the first
+  // backend switch after a restart) reads stats, not 175MB of JSONL.
+  for (const backend of ["pi", "claude", "grok", "codex"])
+    void listSessions({ backend }).catch(() => {});
+  void resumeInterruptedTurns();
   listOllamaModels()
     .then((models) => syncOllamaModelsJson(models))
     .catch(() => {});
@@ -2811,9 +3128,12 @@ server.listen(PORT, HOST, () => {
 
 for (const signal of ["SIGINT", "SIGTERM"]) {
   process.on(signal, () => {
+    shuttingDown = true;
     piPool.stop();
     claudePool.stop();
     grokPool.stop();
+    codexPool.stop();
+    closeSharedCodex();
     sessionBackends.clear();
     server.close(() => process.exit(0));
     setTimeout(() => process.exit(0), 1500).unref();

@@ -1,11 +1,12 @@
 /** Types shared with the pi-web server. */
 
 export type RunStatus = "stopped" | "starting" | "ready" | "working" | "error";
-export type AgentBackend = "pi" | "claude" | "grok";
+export type AgentBackend = "pi" | "claude" | "grok" | "codex";
 
 export function backendLabel(backend: AgentBackend): string {
   if (backend === "claude") return "Claude";
   if (backend === "grok") return "Grok";
+  if (backend === "codex") return "Codex";
   return "Pi";
 }
 
@@ -67,6 +68,8 @@ export interface ResumeSession {
    *  session — the sidebar runs the awaiting-answer rule on it. */
   lastAssistantText?: string;
   lastModel?: string;
+  /** Provider of `lastModel` (pi sessions), so the picker can restore it. */
+  lastModelProvider?: string;
   /** Every model that produced a turn in this session, including one-off swaps. */
   models?: string[];
   lastEffort?: string;
@@ -331,6 +334,11 @@ export interface DeployState extends DeployRecord {
 export interface DeployStatusResponse {
   ok: boolean;
   mode: "local" | "cloud";
+  /** Absolute path of the project these facts describe. */
+  project?: string;
+  projectName?: string;
+  /** True when that project is pi-web itself, i.e. deploying restarts this server. */
+  self?: boolean;
   head: string | null;
   signature: string | null;
   dirtyFiles: number | null;
@@ -492,11 +500,14 @@ export const api = {
       bootMs?: number;
       pid?: number;
     }>("/api/health"),
-  deployStatus: () => get<DeployStatusResponse>("/api/deploy/status"),
-  deploy: (mode: "local" | "cloud") =>
-    post<{ ok: boolean; mode?: string; error?: string }>(
+  deployStatus: (cwd?: string) =>
+    get<DeployStatusResponse>(
+      `/api/deploy/status${cwd ? `?cwd=${encodeURIComponent(cwd)}` : ""}`,
+    ),
+  deploy: (mode: "local" | "cloud", cwd?: string) =>
+    post<{ ok: boolean; mode?: string; self?: boolean; error?: string }>(
       "/api/deploy",
-      { mode },
+      { mode, cwd },
       10_000,
     ),
   catalog: () => get<PiCatalogResponse>("/api/catalog"),
@@ -577,7 +588,8 @@ export const api = {
     ),
   sessions: (
     view: "recent" | "archived" = "recent",
-    backend: AgentBackend = "pi",
+    // "all" merges every agent's sessions into one list, newest first.
+    backend: AgentBackend | "all" = "pi",
   ) => {
     const params = new URLSearchParams({ backend });
     if (view === "archived") params.set("view", "archived");
@@ -585,7 +597,7 @@ export const api = {
       `/api/sessions?${params}`,
     );
   },
-  searchSessions: (query: string, backend: AgentBackend) =>
+  searchSessions: (query: string, backend: AgentBackend | "all") =>
     get<{ ok: boolean; results?: SessionSearchResult[]; error?: string }>(
       `/api/sessions/search?backend=${backend}&q=${encodeURIComponent(query)}`,
     ),
@@ -745,9 +757,19 @@ export const api = {
       120_000,
     ),
   compact: (key: string, customInstructions?: string) =>
-    post<{ ok: boolean; error?: string }>(`/api/${key}/compact`, {
-      customInstructions,
-    }),
+    post<{
+      ok: boolean;
+      state?: SessionState;
+      messages?: SessionHistoryMessage[];
+      error?: string;
+    }>(
+      `/api/${key}/compact`,
+      { customInstructions },
+      // Compaction re-summarizes the whole history through the model; the
+      // default request timeout cut it off and reported a failure for a
+      // compaction that was in fact still running.
+      300_000,
+    ),
   setModel: (key: string, provider: string, modelId: string) =>
     post<{
       ok: boolean;
@@ -798,10 +820,16 @@ export const api = {
     get<{ ok: boolean; levels: string[] }>(
       `/api/${key}/thinking-levels${backend ? `?backend=${backend}` : ""}`,
     ),
-  usage: (key: string, backend?: AgentBackend, refresh = false) => {
+  usage: (
+    key: string,
+    backend?: AgentBackend,
+    refresh = false,
+    sessionPath?: string,
+  ) => {
     const params = new URLSearchParams();
     if (backend) params.set("backend", backend);
     if (refresh) params.set("refresh", "1");
+    if (sessionPath) params.set("sessionPath", sessionPath);
     const query = params.size > 0 ? `?${params}` : "";
     return get<{ ok: boolean; usage: ProviderUsage; error?: string }>(
       `/api/${key}/usage${query}`,
@@ -832,7 +860,48 @@ export const api = {
  * instead of relying on EventSource's auto-reconnect (which would replay the
  * consumed URL and 401 forever).
  */
+/**
+ * One shared SSE connection for the whole page.
+ *
+ * Every caller used to open its own EventSource, and each conversation tab
+ * subscribes twice — so the third open session blew past the browser's
+ * 6-connections-per-origin limit and every later request (including the
+ * session history a click needs) queued behind streams that never end. The
+ * symptom was "sessions stop opening" and a UI that slowly froze.
+ */
+const eventListeners = new Set<(event: AgentEvent) => void>();
+const statusListeners = new Set<
+  (status: "connected" | "reconnecting") => void
+>();
+let closeSharedStream: (() => void) | null = null;
+
 export function subscribeEvents(
+  onEvent: (event: AgentEvent) => void,
+  onStatus?: (status: "connected" | "reconnecting") => void,
+): () => void {
+  eventListeners.add(onEvent);
+  if (onStatus) statusListeners.add(onStatus);
+  if (!closeSharedStream) {
+    closeSharedStream = openEventStream(
+      (event) => {
+        for (const listener of [...eventListeners]) listener(event);
+      },
+      (status) => {
+        for (const listener of [...statusListeners]) listener(status);
+      },
+    );
+  }
+  return () => {
+    eventListeners.delete(onEvent);
+    if (onStatus) statusListeners.delete(onStatus);
+    if (eventListeners.size === 0 && statusListeners.size === 0) {
+      closeSharedStream?.();
+      closeSharedStream = null;
+    }
+  };
+}
+
+function openEventStream(
   onEvent: (event: AgentEvent) => void,
   onStatus?: (status: "connected" | "reconnecting") => void,
 ): () => void {

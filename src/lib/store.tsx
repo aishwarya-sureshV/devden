@@ -10,6 +10,7 @@ import {
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
   type ReactNode,
 } from "react";
 import {
@@ -84,6 +85,11 @@ interface StoreValue {
   restoreSession: (session: ResumeSession) => Promise<SessionMutationResponse>;
   deleteSession: (session: ResumeSession) => Promise<SessionMutationResponse>;
   refreshSessions: () => void;
+  /** Backend used for new sessions. Existing tabs keep the backend they opened with. */
+  defaultBackend: AgentBackend;
+  setDefaultBackend: (backend: AgentBackend) => void;
+  /** Every workspace this browser knows about: open tabs + saved sessions of every agent. */
+  knownWorkspaces: string[];
   setPreferredModel: (
     backend: AgentBackend,
     cwd: string,
@@ -108,15 +114,14 @@ interface PersistedOpenSession {
   active?: boolean;
 }
 
-function openSessionsStorageKey(backend: AgentBackend): string {
-  return `pi-web.open-sessions.v1.${backend}`;
-}
+// One list for every agent, not one per backend: a split view holding a pi
+// session next to a claude one has to come back the same way after a reload.
+const OPEN_SESSIONS_KEY = "pi-web.open-sessions.v2";
+const BACKENDS: AgentBackend[] = ["pi", "claude", "grok", "codex"];
 
-function readOpenSessions(backend: AgentBackend): PersistedOpenSession[] {
+function readOpenSessions(): PersistedOpenSession[] {
   try {
-    const value = JSON.parse(
-      localStorage.getItem(openSessionsStorageKey(backend)) ?? "[]",
-    );
+    const value = JSON.parse(localStorage.getItem(OPEN_SESSIONS_KEY) ?? "[]");
     if (!Array.isArray(value)) return [];
     return value.filter(
       (entry): entry is PersistedOpenSession =>
@@ -124,11 +129,34 @@ function readOpenSessions(backend: AgentBackend): PersistedOpenSession[] {
         typeof entry === "object" &&
         typeof entry.cwd === "string" &&
         typeof entry.label === "string" &&
-        entry.backend === backend,
+        BACKENDS.includes(entry.backend),
     );
   } catch {
     return [];
   }
+}
+
+/** The v1 per-backend snapshots, merged once so an upgrade keeps open tabs. */
+function readLegacyOpenSessions(): PersistedOpenSession[] {
+  return BACKENDS.flatMap((backend) => {
+    try {
+      const value = JSON.parse(
+        localStorage.getItem(`pi-web.open-sessions.v1.${backend}`) ?? "[]",
+      );
+      return Array.isArray(value)
+        ? value.filter(
+            (entry): entry is PersistedOpenSession =>
+              entry &&
+              typeof entry === "object" &&
+              typeof entry.cwd === "string" &&
+              typeof entry.label === "string" &&
+              entry.backend === backend,
+          )
+        : [];
+    } catch {
+      return [];
+    }
+  });
 }
 
 function modelPreferenceKey(backend: AgentBackend, cwd: string): string {
@@ -160,21 +188,41 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     nonce: number;
   } | null>(null);
   const defaultCwd = useRef("");
-  const defaultBackend = useRef<AgentBackend>(
-    (() => {
-      const requested = new URLSearchParams(window.location.search).get(
-        "backend",
-      );
-      return requested === "claude" || requested === "grok" ? requested : "pi";
-    })(),
-  );
+  // The backend NEW sessions use. It is no longer the identity of the whole
+  // page: switching it used to reload with ?backend=, which is what made
+  // running a pi session and a claude session side by side impossible.
+  const initialBackend = ((): AgentBackend => {
+    const requested =
+      new URLSearchParams(window.location.search).get("backend") ??
+      localStorage.getItem("pi-web.backend");
+    return requested === "claude" ||
+      requested === "grok" ||
+      requested === "codex"
+      ? requested
+      : "pi";
+  })();
+  const [defaultBackend, setDefaultBackendState] =
+    useState<AgentBackend>(initialBackend);
+  const defaultBackendRef = useRef<AgentBackend>(initialBackend);
+  const setDefaultBackend = useCallback((backend: AgentBackend) => {
+    defaultBackendRef.current = backend;
+    setDefaultBackendState(backend);
+    try {
+      localStorage.setItem("pi-web.backend", backend);
+    } catch {
+      /* private mode; the choice lasts this session only */
+    }
+  }, []);
   const didOpenInitialSession = useRef(false);
   const didRenderRestoredSessions = useRef(false);
   const tabsRef = useRef<ConversationTab[]>([]);
   let firstStreamConnect = true;
   const preferredModels = useRef(new Map<string, ModelInfo>());
   const persistedOpenSessions = useRef(
-    readOpenSessions(defaultBackend.current),
+    (() => {
+      const stored = readOpenSessions();
+      return stored.length > 0 ? stored : readLegacyOpenSessions();
+    })(),
   );
 
   useEffect(() => {
@@ -208,12 +256,39 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const refreshSessions = useCallback(() => {
+    // Every agent's sessions, not just the current one: the sidebar shows
+    // them together and each carries its own backend, so opening one always
+    // resumes it on the agent that wrote it.
     void Promise.all([
-      api.sessions("recent", defaultBackend.current),
-      api.sessions("archived", defaultBackend.current),
+      api.sessions("recent", "all"),
+      api.sessions("archived", "all"),
     ]).then(([recent, archived]) => {
       if (recent.ok) setResumeSessions(recent.sessions);
       if (archived.ok) setArchivedSessions(archived.sessions);
+    });
+  }, []);
+
+  const restoreLiveTurn = useCallback((key: string, timeline: Timeline) => {
+    void api.backendLog(key).then((result) => {
+      if (!result.ok || !Array.isArray(result.entries)) return;
+      const outcome = timeline.replayLiveTurn(result.entries);
+      if (outcome === "live") return;
+      // "settled" means the run finished while the log was in flight;
+      // "none" means the log was too torn to replay. Either way the tail of
+      // the turn is missing from what was hydrated a moment ago — including,
+      // when the run ended on a question, the question itself, which left the
+      // session looking like it had simply stopped. The session file has it.
+      const sessionFile = timeline.state?.sessionFile;
+      if (!sessionFile) return;
+      void api.sessionMessages(sessionFile).then((refreshed) => {
+        if (!refreshed.ok || !Array.isArray(refreshed.messages)) return;
+        const state = timeline.state;
+        if (!state) return;
+        // A new turn may have started in the meantime (the user sent another
+        // prompt); re-reading the file would drop its live items.
+        if (timeline.status === "working" && outcome === "none") return;
+        timeline.hydrate(refreshed.messages, { ...state, isStreaming: false });
+      });
     });
   }, []);
 
@@ -259,22 +334,53 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           return;
         }
         for (const tab of tabsRef.current) {
-          void api
-            .sessionState(tab.key, tab.backend)
-            .then((result) => {
-              const timeline = timelines.get(tab.key);
-              if (!timeline) return;
-              if (result.state) timeline.setState(result.state);
-              else timeline.clearPendingRun();
-            })
-            .catch(() => {
-              /* server unreachable again; next reconnect retries */
+          const timeline = timelines.get(tab.key);
+          if (!timeline) continue;
+          const sessionPath = tab.sessionPath ?? timeline.state?.sessionFile;
+          // A restarted server has never heard of this tab's key, and it
+          // resumes an interrupted turn under a key of its own. Adopting by
+          // session file is what re-binds this tab to that run — without it
+          // the page sits on a dead "working" flag while the agent is
+          // actually working again, and only a reload would find it.
+          const correctFromServer = () =>
+            api.sessionState(tab.key, tab.backend).then((result) => {
+              if (!result.state) {
+                timeline.clearPendingRun();
+                return;
+              }
+              timeline.setState(result.state);
+              // Correcting the flag is not enough: everything the agent did
+              // while the stream was down is missing from the transcript,
+              // which is what made a slept-through turn look frozen until
+              // the page was reloaded. The server's log has those events.
+              if (result.state.isStreaming) restoreLiveTurn(tab.key, timeline);
             });
+          const reattach = sessionPath
+            ? api
+                .start(
+                  tab.key,
+                  tab.cwd,
+                  tab.backend,
+                  undefined,
+                  sessionPath,
+                  undefined,
+                  true,
+                )
+                .then((adopted) => {
+                  if (!adopted.ok || !adopted.state?.isStreaming)
+                    return correctFromServer();
+                  timeline.setState(adopted.state);
+                  restoreLiveTurn(tab.key, timeline);
+                })
+            : correctFromServer();
+          void reattach.catch(() => {
+            /* server unreachable again; next reconnect retries */
+          });
         }
       },
     );
     return unsubscribe;
-  }, [refreshSessions]);
+  }, [refreshSessions, restoreLiveTurn]);
 
   // The generated title reaches the UI two ways: the session_title_set event
   // (live) and the saved session list (a reload, where that event belonged to
@@ -347,7 +453,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       cwd: string,
       label?: string,
       sessionPath?: string,
-      backend = defaultBackend.current,
+      backend = defaultBackendRef.current,
     ): ConversationTab => {
       // Include a page-scoped UUID so separate browser windows never bind to the
       // same Pi RPC process (each page's local counter otherwise starts at 1).
@@ -372,7 +478,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   );
 
   const openConversation = useCallback(
-    (cwd: string, label?: string, backend = defaultBackend.current): string => {
+    (
+      cwd: string,
+      label?: string,
+      backend = defaultBackendRef.current,
+    ): string => {
       const freshTab = tabsRef.current.find(
         (candidate) =>
           candidate.backend === backend &&
@@ -404,12 +514,13 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           pendingMessageCount: 0,
         });
       }
-      // Grok stays lazy even for fresh conversations: starting the agent just
-      // to show an empty composer made grok write a session file (an empty
-      // "Untitled session" ghost in the sidebar) per workbench visit. The
-      // prompt route starts the agent on the first message, carrying this
-      // tab's cwd/model/effort from the prompt context.
-      if (backend === "grok") {
+      // Pi and Grok stay lazy even for fresh conversations: starting the
+      // agent just to show an empty composer costs a process spawn per
+      // workbench visit (~3s for pi's RPC boot) and made grok write a ghost
+      // "Untitled session" file. The prompt route starts the agent on the
+      // first message, carrying this tab's cwd/model/effort from the prompt
+      // context.
+      if (backend !== "claude") {
         tab.timeline.setState({
           model: preferredModel ?? null,
           thinkingLevel: "off",
@@ -480,30 +591,6 @@ export function StoreProvider({ children }: { children: ReactNode }) {
    * log was being fetched, its messages are persisted by then, so the
    * session file is re-read instead.
    */
-  const restoreLiveTurn = useCallback((key: string, timeline: Timeline) => {
-    void api.backendLog(key).then((result) => {
-      if (!result.ok || !Array.isArray(result.entries)) return;
-      const outcome = timeline.replayLiveTurn(result.entries);
-      if (outcome === "live") return;
-      // "settled" means the run finished while the log was in flight;
-      // "none" means the log was too torn to replay. Either way the tail of
-      // the turn is missing from what was hydrated a moment ago — including,
-      // when the run ended on a question, the question itself, which left the
-      // session looking like it had simply stopped. The session file has it.
-      const sessionFile = timeline.state?.sessionFile;
-      if (!sessionFile) return;
-      void api.sessionMessages(sessionFile).then((refreshed) => {
-        if (!refreshed.ok || !Array.isArray(refreshed.messages)) return;
-        const state = timeline.state;
-        if (!state) return;
-        // A new turn may have started in the meantime (the user sent another
-        // prompt); re-reading the file would drop its live items.
-        if (timeline.status === "working" && outcome === "none") return;
-        timeline.hydrate(refreshed.messages, { ...state, isStreaming: false });
-      });
-    });
-  }, []);
-
   const resumeConversation = useCallback(
     (session: ResumeSession): string => {
       const existing = tabsRef.current.find(
@@ -561,10 +648,13 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         session.backend ?? "pi",
       );
       const timeline = tab.timeline;
-      const restoredModel =
-        tab.backend === "claude" && session.lastModel
+      const restoredModel = !session.lastModel
+        ? undefined
+        : tab.backend === "claude"
           ? claudeModelInfo(session.lastModel)
-          : undefined;
+          : session.lastModelProvider
+            ? { provider: session.lastModelProvider, id: session.lastModel }
+            : undefined;
       const placeholderState = {
         model: restoredModel ?? null,
         thinkingLevel:
@@ -586,8 +676,18 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           !result.ok ||
           !Array.isArray(result.messages) ||
           result.messages.length === 0
-        )
+        ) {
+          // Say so instead of leaving the empty hero up: a log that reads back
+          // as nothing looked exactly like a click that did nothing at all.
+          if (timeline.items.length === 0)
+            timeline.appendNotice(
+              result.ok
+                ? "No readable turns in this session's log."
+                : (result.error ?? "This session's log could not be read."),
+              "error",
+            );
           return;
+        }
         // Never let a from-disk hydration clobber a live run: if a
         // mid-turn reload adopted the streaming agent, this late-arriving
         // read is stale by definition.
@@ -597,16 +697,16 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           isStreaming: false,
         });
       });
-      if (tab.backend === "grok") {
-        // Grok stays lazy for viewing — but a live process running this
-        // session (page refreshed mid-turn) is adopted, never spawned, so
-        // the in-flight run re-attaches without paying the ghost-session
-        // cost that made grok lazy in the first place.
+      if (tab.backend !== "claude") {
+        // Pi and Grok stay lazy for viewing — the transcript above comes
+        // straight off disk. A live process running this session (page
+        // refreshed mid-turn) is adopted, never spawned, so an in-flight run
+        // re-attaches without paying the spawn cost on every session click.
         void api
           .start(
             tab.key,
             session.cwd,
-            "grok",
+            tab.backend,
             undefined,
             session.path,
             undefined,
@@ -760,7 +860,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       label?: string;
       backend?: AgentBackend;
     }): string => {
-      const forkBackend = backend ?? defaultBackend.current;
+      const forkBackend = backend ?? defaultBackendRef.current;
       const tab = createConversationTab(
         cwd,
         label ?? `${cwd.split("/").filter(Boolean).at(-1) ?? cwd} · fork`,
@@ -865,6 +965,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
             messageCount: 0,
             backend: session.backend,
             lastModel: session.model?.id,
+            lastModelProvider: session.model?.provider,
             lastEffort: session.thinkingLevel,
           })
         : openConversation(session.cwd, session.label, session.backend);
@@ -890,10 +991,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       thinkingLevel: tab.timeline.state?.thinkingLevel,
       active: tab.key === activeKey,
     }));
-    localStorage.setItem(
-      openSessionsStorageKey(defaultBackend.current),
-      JSON.stringify(snapshot),
-    );
+    localStorage.setItem(OPEN_SESSIONS_KEY, JSON.stringify(snapshot));
   }, [activeKey, tabs]);
 
   const closeConversation = useCallback((key: string) => {
@@ -1032,6 +1130,22 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     [],
   );
 
+  // Every project the workbench has actually seen — open tabs first, then the
+  // cwd of every saved session of every agent. This is what makes a project
+  // you started working in yesterday show up in the workspace picker without
+  // anyone having to register it.
+  const knownWorkspaces = useMemo(() => {
+    const seen: string[] = [];
+    for (const cwd of [
+      ...tabs.map((tab) => tab.cwd),
+      ...resumeSessions.map((session) => session.cwd),
+      ...archivedSessions.map((session) => session.cwd),
+    ]) {
+      if (cwd && !seen.includes(cwd)) seen.push(cwd);
+    }
+    return seen;
+  }, [archivedSessions, resumeSessions, tabs]);
+
   const value: StoreValue = {
     tabs,
     activeKey,
@@ -1053,6 +1167,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     restoreSession,
     deleteSession,
     refreshSessions,
+    defaultBackend,
+    setDefaultBackend,
+    knownWorkspaces,
     setPreferredModel,
     workspaceReveal,
     revealWorkspace,
@@ -1069,12 +1186,24 @@ export function useStore(): StoreValue {
   return ctx;
 }
 
-/** Re-render the calling component whenever the timeline changes. */
+/**
+ * Re-render whenever the timeline changes.
+ *
+ * useSyncExternalStore, not useEffect+subscribe: a hydrate can finish
+ * between first paint and the effect, and Grok session clicks only hydrate
+ * from disk (no later start() to notify again). A missed notify leaves the
+ * empty hero up forever.
+ */
 export function useTimeline(timeline: Timeline | undefined) {
-  const [, setTick] = useState(0);
-  useEffect(() => {
-    if (!timeline) return;
-    return timeline.subscribe(() => setTick((t) => t + 1));
-  }, [timeline]);
+  const subscribe = useCallback(
+    (onChange: () => void) =>
+      timeline ? timeline.subscribe(onChange) : () => {},
+    [timeline],
+  );
+  const getSnapshot = useCallback(
+    () => (timeline ? timeline.revision : 0),
+    [timeline],
+  );
+  useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
   return timeline;
 }
