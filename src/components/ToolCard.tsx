@@ -11,6 +11,7 @@ import {
   type ToolFileView,
 } from '../lib/toolCards'
 import { langFromPath } from '../lib/toolCards'
+import { isSubagentTool } from '../lib/subagents'
 import { NumberedCode } from '../lib/highlight'
 
 type ToolItem = Extract<TimelineItem, { kind: 'tool' }>
@@ -18,10 +19,13 @@ type ToolItem = Extract<TimelineItem, { kind: 'tool' }>
 export function ToolCard({
   item,
   onOpenFile,
+  onOpenSubagent,
   children = [],
 }: {
   item: ToolItem
   onOpenFile: (view: ToolFileView) => void
+  /** Open the floating transcript for this Task / spawn_subagent call. */
+  onOpenSubagent?: (id: string) => void
   /** Calls a subagent made under this one, when this is a Task-style call. */
   children?: ToolItem[]
 }) {
@@ -37,6 +41,12 @@ export function ToolCard({
   const fileView = getToolFileView(item)
   const path = toolPath(item.args)
   const language = langFromPath(path)
+  // Same rule as collectSubagentRuns: only a call with nested work (or one
+  // still producing it) has a transcript worth opening.
+  const canPopout =
+    Boolean(onOpenSubagent) &&
+    (children.length > 0 ||
+      (isSubagentTool(item.name) && item.status === 'running'))
 
   return (
     <article className="tl tl--tool">
@@ -69,6 +79,17 @@ export function ToolCard({
                     : 'done'}
             </span>
           </button>
+          {canPopout && (
+            <button
+              type="button"
+              className="tool__popout"
+              title="Open subagent transcript"
+              aria-label="Open subagent transcript"
+              onClick={() => onOpenSubagent?.(item.id)}
+            >
+              Open
+            </button>
+          )}
           {fileView && (
             <button
               type="button"

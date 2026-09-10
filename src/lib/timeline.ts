@@ -9,6 +9,7 @@ import type {
   SessionHistoryMessage,
   SessionState,
 } from "./api";
+import { isSubagentTool } from "./subagents.ts";
 
 export interface UserMessageVersion {
   text: string;
@@ -34,6 +35,8 @@ export type TimelineItem =
       text: string;
       live: boolean;
       timestamp: number;
+      // Set when this block was produced by a subagent rather than the main loop.
+      parentToolUseId?: string;
     }
   | {
       id: string;
@@ -43,6 +46,8 @@ export type TimelineItem =
       timestamp: number;
       provider?: string;
       modelId?: string;
+      // Set when this block was produced by a subagent rather than the main loop.
+      parentToolUseId?: string;
     }
   | {
       id: string;
@@ -127,6 +132,12 @@ function historyTimestamp(message: SessionHistoryMessage): number {
   return typeof message.timestamp === "number" ? message.timestamp : Date.now();
 }
 
+function parentToolUseIdOf(value: unknown): string | undefined {
+  const record = asRecord(value);
+  const id = record.parentToolUseId ?? record.parent_tool_use_id;
+  return typeof id === "string" && id ? id : undefined;
+}
+
 export class Timeline {
   items: TimelineItem[] = [];
   backendLog: BackendLogEntry[] = [];
@@ -150,6 +161,7 @@ export class Timeline {
       kind: "rationale" | "assistant";
       pending: string;
       finalText?: string;
+      parentToolUseId?: string;
     }
   >();
 
@@ -390,10 +402,13 @@ export class Timeline {
    */
   replayLiveTurn(entries: BackendLogEntry[]): "live" | "settled" | "none" {
     if (!Array.isArray(entries) || entries.length === 0) return "none";
-    const agentEntries = entries.filter(
-      (entry) =>
-        entry && typeof entry.id === "string" && entry.source !== "server",
-    );
+    const agentEntries = entries.filter((entry) => {
+      if (!entry || typeof entry.id !== "string") return false;
+      if (entry.source !== "server") return true;
+      // Deploy-resume banners are published as server notices just before
+      // the follow-up turn. Dropping every server event hid them on reload.
+      return String(asRecord(entry.payload).type ?? "") === "notice";
+    });
     if (agentEntries.length === 0) return "none";
 
     // The current run is everything after the last completed run's
@@ -417,6 +432,17 @@ export class Timeline {
       }
     }
     if (lastStart >= windowStart) windowStart = lastStart;
+    // A deploy-resume publishes its "picking this conversation back up"
+    // notice just before agent_start. Starting the window at agent_start
+    // dropped that banner, so a refresh looked like the agent had started
+    // thinking on its own.
+    while (windowStart > 0) {
+      const previous = String(
+        agentEntries[windowStart - 1]?.payload?.type ?? "",
+      );
+      if (previous !== "notice") break;
+      windowStart -= 1;
+    }
     const window = agentEntries.slice(windowStart);
     // The run completed before the log was fetched: its messages are in the
     // session file now, so the caller re-reads them instead of replaying.
@@ -426,7 +452,7 @@ export class Timeline {
     // persisted turns, so degrade to showing the saved history.
     if (
       windowStart === 0 &&
-      !["agent_start", "turn_start", "message_start"].includes(
+      !["agent_start", "turn_start", "message_start", "notice"].includes(
         String(window[0]?.payload?.type ?? ""),
       )
     ) {
@@ -537,6 +563,7 @@ export class Timeline {
           typeof message.provider === "string" ? message.provider : undefined;
         const modelId =
           typeof message.model === "string" ? message.model : undefined;
+        const parentToolUseId = parentToolUseIdOf(message);
         if (!Array.isArray(message.content)) continue;
         for (
           let contentIndex = 0;
@@ -555,6 +582,7 @@ export class Timeline {
                 text,
                 live: false,
                 timestamp,
+                ...(parentToolUseId ? { parentToolUseId } : {}),
               });
           } else if (type === "text") {
             const text = typeof content.text === "string" ? content.text : "";
@@ -567,11 +595,14 @@ export class Timeline {
                 timestamp,
                 provider,
                 modelId,
+                ...(parentToolUseId ? { parentToolUseId } : {}),
               });
           } else if (type === "toolCall") {
             const id = String(
               content.id ?? `history-tool-${messageIndex}-${contentIndex}`,
             );
+            const nestedParent =
+              parentToolUseIdOf(content) ?? parentToolUseId;
             const tool: TimelineItem = {
               id,
               kind: "tool",
@@ -581,6 +612,7 @@ export class Timeline {
               output: "",
               status: "running",
               startedAt: timestamp,
+              ...(nestedParent ? { parentToolUseId: nestedParent } : {}),
             };
             tools.set(id, items.length);
             items.push(tool);
@@ -701,13 +733,21 @@ export class Timeline {
     kind: "rationale" | "assistant",
     text: string,
     final?: string,
+    parentToolUseId?: string,
   ) {
     const existing = this.streams.get(id);
     if (existing) {
       existing.pending += text;
       if (final !== undefined) existing.finalText = final;
+      if (parentToolUseId) existing.parentToolUseId = parentToolUseId;
     } else {
-      this.streams.set(id, { id, kind, pending: text, finalText: final });
+      this.streams.set(id, {
+        id,
+        kind,
+        pending: text,
+        finalText: final,
+        parentToolUseId,
+      });
     }
     this.flushStreams();
   }
@@ -738,6 +778,9 @@ export class Timeline {
               text,
               live: !done,
               timestamp: Date.now(),
+              ...(patch.parentToolUseId
+                ? { parentToolUseId: patch.parentToolUseId }
+                : {}),
             },
           ];
         } else {
@@ -751,6 +794,12 @@ export class Timeline {
                       ? patch.finalText
                       : `${item.text}${patch.pending}`,
                   live: !done,
+                  // The tag can arrive on a later delta than the one that
+                  // created the block; without this a subagent's narration
+                  // stayed untagged and leaked into the main transcript.
+                  ...(patch.parentToolUseId
+                    ? { parentToolUseId: patch.parentToolUseId }
+                    : {}),
                 }
               : item,
           );
@@ -781,7 +830,12 @@ export class Timeline {
             item.live),
       )
         ? current.map((item) => {
-            if (item.kind === "tool" && item.status === "running")
+            if (item.kind === "tool" && item.status === "running") {
+              // A Grok spawn_subagent returns immediately and keeps working in
+              // a child session; do not treat that (or its nested calls) as a
+              // dropped tool when the parent turn settles.
+              if (item.parentToolUseId || isSubagentTool(item.name))
+                return item;
               return {
                 ...item,
                 status: "error" as const,
@@ -790,6 +844,7 @@ export class Timeline {
                   "(interrupted — result lost when the backend stream dropped)",
                 elapsed: Date.now() - item.startedAt,
               };
+            }
             if (
               (item.kind === "assistant" || item.kind === "rationale") &&
               item.live
@@ -874,11 +929,14 @@ export class Timeline {
         typeof event.streamKey === "string"
           ? event.streamKey
           : String(this.cycle);
+      const parentToolUseId = parentToolUseIdOf(event);
       if (updateType === "thinking_delta") {
         this.upsertStream(
           `rationale-${streamKey}-${contentIndex}`,
           "rationale",
           delta,
+          undefined,
+          parentToolUseId,
         );
       } else if (updateType === "thinking_end") {
         this.upsertStream(
@@ -886,12 +944,15 @@ export class Timeline {
           "rationale",
           "",
           content,
+          parentToolUseId,
         );
       } else if (updateType === "text_delta") {
         this.upsertStream(
           `assistant-${streamKey}-${contentIndex}`,
           "assistant",
           delta,
+          undefined,
+          parentToolUseId,
         );
       } else if (updateType === "text_end") {
         this.upsertStream(
@@ -899,6 +960,7 @@ export class Timeline {
           "assistant",
           "",
           content,
+          parentToolUseId,
         );
       }
       return;
@@ -927,6 +989,8 @@ export class Timeline {
         typeof message.provider === "string" ? message.provider : undefined;
       const modelId =
         typeof message.model === "string" ? message.model : undefined;
+      const parentToolUseId =
+        parentToolUseIdOf(event) ?? parentToolUseIdOf(message);
       if (finalText) {
         // Deltas may have already rendered this exact text at any content index
         // this cycle; only fall back to message_end when nothing matches.
@@ -942,12 +1006,19 @@ export class Timeline {
             "assistant",
             "",
             finalText,
+            parentToolUseId,
           );
         this.updateItems((current) =>
           current.map((item) =>
             item.kind === "assistant" &&
             item.id.startsWith(`assistant-${streamKey}-`)
-              ? { ...item, timestamp: finalTimestamp, provider, modelId }
+              ? {
+                  ...item,
+                  timestamp: finalTimestamp,
+                  provider,
+                  modelId,
+                  ...(parentToolUseId ? { parentToolUseId } : {}),
+                }
               : item,
           ),
         );
@@ -961,29 +1032,40 @@ export class Timeline {
       const args = asRecord(event.args);
       const execKind =
         typeof event.execKind === "string" ? event.execKind : undefined;
-      const parentToolUseId =
-        typeof event.parentToolUseId === "string" && event.parentToolUseId
-          ? event.parentToolUseId
-          : undefined;
-      this.updateItems((current) =>
-        current.some((item) => item.kind === "tool" && item.id === id)
-          ? current
-          : [
-              ...current,
-              {
-                id,
-                kind: "tool",
-                name,
-                args,
-                details: {},
-                output: "",
-                status: "running",
-                startedAt: Date.now(),
-                ...(execKind ? { execKind } : {}),
-                ...(parentToolUseId ? { parentToolUseId } : {}),
-              },
-            ],
-      );
+      const parentToolUseId = parentToolUseIdOf(event);
+      this.updateItems((current) => {
+        const existing = current.findIndex(
+          (item) => item.kind === "tool" && item.id === id,
+        );
+        if (existing === -1) {
+          return [
+            ...current,
+            {
+              id,
+              kind: "tool",
+              name,
+              args,
+              details: {},
+              output: "",
+              status: "running" as const,
+              startedAt: Date.now(),
+              ...(execKind ? { execKind } : {}),
+              ...(parentToolUseId ? { parentToolUseId } : {}),
+            },
+          ];
+        }
+        const item = current[existing];
+        if (
+          item?.kind === "tool" &&
+          parentToolUseId &&
+          !item.parentToolUseId
+        ) {
+          return current.map((candidate, index) =>
+            index === existing ? { ...item, parentToolUseId } : candidate,
+          );
+        }
+        return current;
+      });
       return;
     }
 

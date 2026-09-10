@@ -7,7 +7,7 @@
  * PiAgentProcess.
  */
 import { spawn } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
@@ -346,8 +346,48 @@ function normalizeHistoryEntry(entry) {
   return [{ role: "user", content: visible, timestamp }];
 }
 
-export function messagesFromClaudeLog(contents) {
-  return String(contents || "")
+/** Subagent transcripts are written beside the session file, in
+ *  <session>/subagents/agent-<id>.jsonl with an agent-<id>.meta.json naming
+ *  the Agent/Task call that spawned them. The parent log keeps only the spawn
+ *  and its result, so without splicing the children back in a page refresh
+ *  emptied the subagent panel — the nested tool calls existed only for as
+ *  long as the live stream did.
+ *  @returns {Map<string, object[]>} child messages keyed by spawning call id */
+function readSubagentTranscripts(sessionPath) {
+  const dir = join(String(sessionPath).replace(/\.jsonl$/, ""), "subagents");
+  const byParent = new Map();
+  let names = [];
+  try {
+    names = readdirSync(dir);
+  } catch {
+    return byParent; // no subagents in this session
+  }
+  for (const name of names) {
+    if (!name.endsWith(".meta.json")) continue;
+    try {
+      const meta = JSON.parse(readFileSync(join(dir, name), "utf8"));
+      const parentToolUseId = String(meta.toolUseId ?? "");
+      if (!parentToolUseId) continue;
+      const log = readFileSync(
+        join(dir, name.replace(/\.meta\.json$/, ".jsonl")),
+        "utf8",
+      );
+      const child = messagesFromClaudeLog(log)
+        // The child's own prompt is a `user` entry, and the timeline renders
+        // those as the operator's message — it must not reappear in the main
+        // chat as something the user typed.
+        .filter((message) => message.role !== "user")
+        .map((message) => ({ ...message, parentToolUseId }));
+      if (child.length) byParent.set(parentToolUseId, child);
+    } catch {
+      /* a child still mid-flight has no readable meta/log pair yet */
+    }
+  }
+  return byParent;
+}
+
+export function messagesFromClaudeLog(contents, sessionPath) {
+  const messages = String(contents || "")
     .split("\n")
     .filter(Boolean)
     .flatMap((line) => {
@@ -357,6 +397,17 @@ export function messagesFromClaudeLog(contents) {
         return [];
       }
     });
+  const children = sessionPath
+    ? readSubagentTranscripts(sessionPath)
+    : undefined;
+  if (!children?.size) return messages;
+  // Nested work lands right after the spawn's result, which is where it
+  // happened and where collectSubagentRuns expects to find it.
+  return messages.flatMap((message) =>
+    message.role === "toolResult" && children.has(message.toolCallId)
+      ? [message, ...children.get(message.toolCallId)]
+      : [message],
+  );
 }
 
 export class ClaudeAgentProcess {
@@ -1333,6 +1384,9 @@ export class ClaudeAgentProcess {
         sessionKey: this.sessionKey,
         streamKey: activeStream.key,
         message,
+        ...(event.parent_tool_use_id
+          ? { parentToolUseId: event.parent_tool_use_id }
+          : {}),
       });
       this.messageCount += 1;
       this.activeStreams.delete(source);
@@ -1453,6 +1507,7 @@ export class ClaudeAgentProcess {
         type: "message_update",
         sessionKey: this.sessionKey,
         streamKey: activeStream.key,
+        ...(parentToolUseId ? { parentToolUseId } : {}),
         assistantMessageEvent: {
           type:
             delta.type === "thinking_delta" ? "thinking_delta" : "text_delta",
@@ -1471,6 +1526,7 @@ export class ClaudeAgentProcess {
         type: "message_update",
         sessionKey: this.sessionKey,
         streamKey: activeStream.key,
+        ...(parentToolUseId ? { parentToolUseId } : {}),
         assistantMessageEvent: {
           type: block.type === "thinking" ? "thinking_end" : "text_end",
           contentIndex: index,

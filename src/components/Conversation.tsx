@@ -47,8 +47,16 @@ import {
 } from "../lib/sessionMetrics";
 import { exportFilename, timelineToMarkdown } from "../lib/exportSession";
 import type { TimelineItem } from "../lib/timeline";
+import {
+  collectSubagentRuns,
+  isHeldMainNarration,
+  isHeldMainTool,
+  isSubagentEcho,
+  isSubagentToolEcho,
+} from "../lib/subagents";
 import { isAskMessage } from "../lib/askBlock";
 import { ToolCard } from "./ToolCard";
+import { SubagentPanel } from "./SubagentPanel";
 import { RichText } from "./RichText";
 import {
   getToolDiff,
@@ -244,6 +252,10 @@ export function Conversation({
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [dragActive, setDragActive] = useState(false);
   const [viewer, setViewer] = useState<ToolFileView | null>(null);
+  const [hiddenSubagents, setHiddenSubagents] = useState<string[]>([]);
+  const [pinnedSubagents, setPinnedSubagents] = useState<string[]>([]);
+  const [focusedSubagent, setFocusedSubagent] = useState<string | null>(null);
+  const seenRunningSubagents = useRef<Set<string>>(new Set());
   const [commands, setCommands] = useState<SlashCommand[]>([]);
   const [models, setModels] = useState<ModelInfo[]>(() =>
     tab.backend === "claude" ? CLAUDE_MODELS : [],
@@ -375,11 +387,28 @@ export function Conversation({
     siblings.push(item);
     subagentChildren.set(item.parentToolUseId, siblings);
   }
+  const subagentRuns = collectSubagentRuns(timeline.items);
+  // grok mirrors a child's tools and narration back onto the parent ACP
+  // stream without a parent id, so those copies have to be filtered out by
+  // shape. Claude (and pi, when it grows subagents) tags every nested event,
+  // and running the same filters there hid the main agent's *own* work
+  // whenever a subagent happened to be busy.
+  const mirrorsChildWork = tab.backend === "grok";
+  const subagentBusy =
+    mirrorsChildWork && subagentRuns.some((run) => run.status === "running");
   const visibleItems = timeline.items
     .filter(
       (item) =>
         (showThinking || item.kind !== "rationale") &&
         !(item.kind === "tool" && item.parentToolUseId) &&
+        !(
+          (item.kind === "assistant" || item.kind === "rationale") &&
+          item.parentToolUseId
+        ) &&
+        !isHeldMainTool(item, subagentBusy, timeline.items) &&
+        !isHeldMainNarration(item, subagentBusy) &&
+        !(mirrorsChildWork && isSubagentEcho(item, timeline.items)) &&
+        !(mirrorsChildWork && isSubagentToolEcho(item, timeline.items)) &&
         !(item.kind === "user" && isLocalCommandText(item.text)),
     )
     .filter((item, index, all) => {
@@ -412,6 +441,7 @@ export function Conversation({
       _index: number,
     ): void => {},
     onAnswer: (_text: string): void => {},
+    onOpenSubagent: (_id: string): void => {},
   });
   rowHandlersRef.current = {
     onFork: (item) => void forkOutput(item),
@@ -442,6 +472,18 @@ export function Conversation({
     onVersionChange: (messageItem, index) =>
       void selectUserVersion(messageItem, index),
     onAnswer: (text) => void send(text),
+    onOpenSubagent: (id) => {
+      setHiddenSubagents((current) =>
+        current.filter((openId) => openId !== id),
+      );
+      const run = subagentRuns.find((candidate) => candidate.id === id);
+      if (run && run.status !== "running") {
+        setPinnedSubagents((current) =>
+          current.includes(id) ? current : [...current, id],
+        );
+      }
+      setFocusedSubagent(id);
+    },
   };
   const stableRowHandlers = useMemo(
     () => ({
@@ -461,9 +503,49 @@ export function Conversation({
       ): Promise<RewindFilesResult> =>
         rowHandlersRef.current.onRewindFiles(timestamp, dryRun),
       onAnswer: (text: string): void => rowHandlersRef.current.onAnswer(text),
+      onOpenSubagent: (id: string): void =>
+        rowHandlersRef.current.onOpenSubagent(id),
     }),
     [],
   );
+  useEffect(() => {
+    setHiddenSubagents([]);
+    setPinnedSubagents([]);
+    seenRunningSubagents.current = new Set();
+  }, [tab.key]);
+  const runningSubagentKey = subagentRuns
+    .filter((run) => run.status === "running")
+    .map((run) => run.id)
+    .join(",");
+  useEffect(() => {
+    const running = runningSubagentKey ? runningSubagentKey.split(",") : [];
+    const justDone = [...seenRunningSubagents.current].filter(
+      (id) => !running.includes(id),
+    );
+    seenRunningSubagents.current = new Set(running);
+    if (justDone.length === 0) return;
+    // A finished run stays open as a tab until the user closes it — closing
+    // on a timer hid the findings the moment they arrived, and made each new
+    // subagent mint its own transient pane instead of joining this one.
+    setPinnedSubagents((current) => [...new Set([...current, ...justDone])]);
+  }, [runningSubagentKey]);
+  const openSubagents = useMemo(() => {
+    const running = subagentRuns
+      .filter(
+        (run) => run.status === "running" && !hiddenSubagents.includes(run.id),
+      )
+      .map((run) => run.id);
+    const pinned = pinnedSubagents.filter(
+      (id) =>
+        !hiddenSubagents.includes(id) &&
+        subagentRuns.some((run) => run.id === id && run.status !== "running"),
+    );
+    return [...running, ...pinned];
+  }, [hiddenSubagents, pinnedSubagents, subagentRuns]);
+  useEffect(() => {
+    if (focusedSubagent && openSubagents.includes(focusedSubagent)) return;
+    setFocusedSubagent(openSubagents.at(-1) ?? null);
+  }, [focusedSubagent, openSubagents]);
   const responseActionIds = getResponseActionIds(visibleItems, streaming);
   // The model tag is noise when repeated under every reply — surface it only on
   // the most recent completed assistant response, and only once the whole
@@ -482,6 +564,9 @@ export function Conversation({
         .find(
           (item): item is Extract<TimelineItem, { kind: "tool" }> =>
             item.kind === "tool" &&
+            !item.parentToolUseId &&
+            !isHeldMainTool(item, subagentBusy, timeline.items) &&
+            !(mirrorsChildWork && isSubagentToolEcho(item, timeline.items)) &&
             (item.name.toLowerCase() === "bash" ||
               item.execKind === "execute") &&
             item.status === "running",
@@ -1357,11 +1442,20 @@ export function Conversation({
     const steerNow =
       canSteer && (steerOnceRef.current || midTurnMode === "steer");
     steerOnceRef.current = false;
-    const result = streaming
+    let result = streaming
       ? steerNow
         ? await api.steer(tab.key, outboundMessage, images)
         : await api.enqueue(tab.key, outboundMessage, images)
       : await api.prompt(tab.key, outboundMessage, promptOptions);
+    // Laptop sleep / lease sweep can kill grok stdio while the tab still
+    // thinks a turn is in flight and therefore enqueues. Restart on the
+    // prompt path with the session file instead of failing closed.
+    if (
+      !result.ok &&
+      /session is not running/i.test(String(result.error ?? ""))
+    ) {
+      result = await api.prompt(tab.key, outboundMessage, promptOptions);
+    }
     if (!result.ok) {
       setAttachments(pickedAttachments);
       timeline.clearPendingRun();
@@ -2381,6 +2475,7 @@ export function Conversation({
                       onFork={stableRowHandlers.onFork}
                       onRewindFiles={stableRowHandlers.onRewindFiles}
                       subagentChildren={subagentChildren}
+                      onOpenSubagent={stableRowHandlers.onOpenSubagent}
                       forking={forkingId === row.item.id}
                       showActions={responseActionIds.has(row.item.id)}
                       showModelTag={row.item.id === lastAssistantId}
@@ -2403,8 +2498,15 @@ export function Conversation({
                     item={runningShell}
                     onInterrupt={interrupt}
                   />
-                ) : streaming && !showingLiveText ? (
-                  <ThinkingRow backend={tab.backend} />
+                ) : streaming && !compacting && !showingLiveText ? (
+                  <ThinkingRow
+                    backend={tab.backend}
+                    resume={visibleItems.some(
+                      (item) =>
+                        item.kind === "notice" &&
+                        /picking this conversation back up/i.test(item.text),
+                    )}
+                  />
                 ) : null}
               </div>
             </div>
@@ -2430,6 +2532,35 @@ export function Conversation({
           {conversationView === "chat" && composer}
           {dropOverlay}
         </div>
+        {openSubagents.length > 0 &&
+          subagentRuns.some((run) => openSubagents.includes(run.id)) && (
+            <SubagentPanel
+              runs={subagentRuns.filter((run) =>
+                openSubagents.includes(run.id),
+              )}
+              activeId={
+                focusedSubagent && openSubagents.includes(focusedSubagent)
+                  ? focusedSubagent
+                  : (openSubagents.at(-1) ?? "")
+              }
+              onSelect={setFocusedSubagent}
+              onClose={() => {
+                const closing =
+                  focusedSubagent && openSubagents.includes(focusedSubagent)
+                    ? focusedSubagent
+                    : (openSubagents.at(-1) ?? "");
+                if (!closing) return;
+                setHiddenSubagents((current) =>
+                  current.includes(closing) ? current : [...current, closing],
+                );
+                setPinnedSubagents((current) =>
+                  current.filter((id) => id !== closing),
+                );
+              }}
+              onOpenFile={setViewer}
+              onOpenSubagent={stableRowHandlers.onOpenSubagent}
+            />
+          )}
         {workspaceExplorer}
       </div>
 
@@ -2488,13 +2619,20 @@ export function Conversation({
   );
 }
 
-function ThinkingRow({ backend }: { backend: ConversationTab["backend"] }) {
+function ThinkingRow({
+  backend,
+  resume = false,
+}: {
+  backend: ConversationTab["backend"];
+  resume?: boolean;
+}) {
   const name = backendLabel(backend);
+  const label = resume ? "Picking up after restart" : `${name} is thinking`;
   return (
-    <div className="thinking" aria-label={`${name} is thinking`}>
+    <div className="thinking" aria-label={label}>
       <span className="thinking__spinner" />
-      <span>{name} is thinking</span>
-      <span className="thinking__dots" aria-hidden="true" />
+      <span>{label}</span>
+      {resume ? null : <span className="thinking__dots" aria-hidden="true" />}
     </div>
   );
 }
@@ -2642,6 +2780,7 @@ const TimelineRow = memo(function TimelineRow({
   onRewindFiles,
   onAnswer,
   subagentChildren,
+  onOpenSubagent,
 }: {
   item: TimelineItem;
   onOpenFile: (view: ToolFileView) => void;
@@ -2664,12 +2803,14 @@ const TimelineRow = memo(function TimelineRow({
   /** Present only on the newest settled reply — see AskCard. */
   onAnswer?: (text: string) => void;
   subagentChildren?: Map<string, Extract<TimelineItem, { kind: "tool" }>[]>;
+  onOpenSubagent?: (id: string) => void;
 }) {
   if (item.kind === "tool")
     return (
       <ToolCard
         item={item}
         onOpenFile={onOpenFile}
+        onOpenSubagent={onOpenSubagent}
         children={subagentChildren?.get(item.id) ?? []}
       />
     );

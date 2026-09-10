@@ -67,6 +67,35 @@ test("agent_settled clears live text as well as running tools", () => {
   assert.equal(timeline.state?.isStreaming, false);
 });
 
+test("a background subagent stays running after the parent turn settles", () => {
+  const timeline = new Timeline("conv-sub-settle");
+  timeline.setState(state({ isStreaming: true }));
+  timeline.handle(
+    event({
+      type: "tool_execution_start",
+      toolCallId: "spawn-1",
+      toolName: "spawn_subagent",
+      args: { description: "look around" },
+    }),
+  );
+  timeline.handle(
+    event({
+      type: "tool_execution_start",
+      toolCallId: "grep-1",
+      toolName: "grep",
+      args: { pattern: "health" },
+      parentToolUseId: "spawn-1",
+    }),
+  );
+  timeline.handle(event({ type: "agent_settled" }));
+  const spawn = timeline.items.find((item) => item.id === "spawn-1");
+  const grep = timeline.items.find((item) => item.id === "grep-1");
+  assert.equal(spawn?.kind, "tool");
+  assert.equal(spawn && spawn.kind === "tool" ? spawn.status : "", "running");
+  assert.equal(grep?.kind, "tool");
+  assert.equal(grep && grep.kind === "tool" ? grep.status : "", "running");
+});
+
 test("a backend that stops mid-turn ends the run instead of spinning", () => {
   const timeline = midTurn();
   assert.equal(timeline.state?.isStreaming, true);

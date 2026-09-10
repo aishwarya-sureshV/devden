@@ -72,3 +72,54 @@ test("replay of an adopted mid-run log keeps streaming", () => {
     "the in-flight user message must be restored",
   );
 });
+
+test("replay keeps the restart-resume notice in front of the live turn", () => {
+  const entries = [
+    {
+      id: "n",
+      timestamp: 1,
+      source: "server",
+      payload: {
+        type: "notice",
+        message:
+          "The workbench restarted mid-turn — picking this conversation back up where it stopped.",
+      },
+    },
+    {
+      id: "s",
+      timestamp: 2,
+      source: "grok",
+      payload: { type: "agent_start" },
+    },
+    {
+      id: "t",
+      timestamp: 3,
+      source: "grok",
+      payload: {
+        type: "message_update",
+        assistantMessageEvent: { type: "text_delta", delta: "checking" },
+      },
+    },
+  ] as unknown as Parameters<Timeline["replayLiveTurn"]>[0];
+
+  const timeline = new Timeline("conv-resume");
+  timeline.setState({
+    model: null,
+    thinkingLevel: "off",
+    isStreaming: true,
+    sessionId: "s",
+    sessionFile: "/tmp/fake.jsonl",
+    messageCount: 0,
+    pendingMessageCount: 0,
+  });
+  const outcome = timeline.replayLiveTurn(entries);
+  assert.equal(outcome, "live");
+  assert.ok(
+    timeline.items.some(
+      (item) =>
+        item.kind === "notice" &&
+        item.text.includes("picking this conversation back up"),
+    ),
+    "the resume banner must survive a reload",
+  );
+});

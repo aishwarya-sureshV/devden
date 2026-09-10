@@ -31,7 +31,7 @@
  * silently queuing or corrupting state.
  */
 import { spawn } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
@@ -41,6 +41,14 @@ import {
   ndJsonStream,
 } from "@zed-industries/agent-client-protocol";
 import { CLARIFY_PROMPT } from "./co-partner-prompt.js";
+import {
+  isSubagentToolName,
+  messagesFromGrokLog,
+  parseSubagentId,
+  stripTrailingCompactTurn,
+} from "./sessions.js";
+
+export { isSubagentToolName, parseSubagentId } from "./sessions.js";
 
 const GROK_HOME = () => process.env.GROK_HOME || join(homedir(), ".grok");
 const GROK_HOME_AUTH = () => join(GROK_HOME(), "auth.json");
@@ -125,6 +133,132 @@ function stripClarifyPrefix(text) {
 // indicator instead of a generic thinking spinner during shell execution.
 const SHELL_TOOL_NAMES = new Set(["run_terminal_command"]);
 
+// How long a background-driven piece of a turn may go silent before pi-web
+// treats it as dead. A healthy grok streams chunks continuously; silence means
+// the child crashed or stopped mid-report and the turn would otherwise wedge
+// the session on "running" forever — every later prompt queued behind it.
+// Covers stalled subagent follows (no bytes in the child's session file) and
+// idle reminder turns whose stream stopped.
+let stallMs = 5 * 60_000;
+
+/** Tests only: shrink the stall watchdogs so the bail-out is observable. */
+export function setStallMsForTesting(ms) {
+  stallMs = ms;
+}
+
+/** Child tools also arrive on the parent ACP stream, usually without a parent
+ *  id. While we are following a spawn, those calls belong in the pane only. */
+export function parentToolBelongsToFollow(follows, update, turn) {
+  if (!follows || follows.size === 0) return false;
+  const id = update?.toolCallId;
+  if (!id) return false;
+  if (follows.has(id)) return false;
+  if (turn?.toolIndex?.has(id)) return false;
+  if (isSubagentToolName(update.title ?? update.toolCallId)) return false;
+  for (const follow of follows.values()) {
+    if (follow.toolNames?.has(id)) return true;
+  }
+  return false;
+}
+
+/** Parent ACP text held while a child runs. Strip the nested copy so the
+ *  leftover (status + handover) can land in the main transcript. */
+export function parentTextAfterChild(held, childText) {
+  const parent = String(held ?? "");
+  const child = String(childText ?? "").trim();
+  if (!parent.trim()) return "";
+  if (!child) return parent;
+  if (child.includes(parent.trim()) && parent.trim().length >= 40) return "";
+  if (parent.includes(child)) {
+    return parent
+      .split(child)
+      .join("")
+      .replace(/\n{3,}/g, "\n\n")
+      .trim();
+  }
+  return parent;
+}
+
+/** The child's streamed narration arrives in blocks — opening chatter,
+ *  then the final findings after its tools. Each block keeps its own index
+ *  (its real place in the sequence). The official output.json findings are
+ *  appended as one more block only when no streamed block already contains
+ *  them — otherwise the panel would print the same report twice. The spawn
+ *  tool's result prefers the findings: that is what the Task card shows. */
+export function subagentFindings(segments, output) {
+  const blocks = (Array.isArray(segments) ? segments : [segments])
+    .map((text, index) => ({
+      contentIndex: index,
+      content: String(text ?? "").trim(),
+    }))
+    .filter((block) => block.content);
+  const findings = String(output ?? "").trim();
+  if (findings && !blocks.some((block) => block.content.includes(findings)))
+    blocks.push({ contentIndex: blocks.length, content: findings });
+  const narration = blocks.map((block) => block.content).join("\n");
+  return { blocks, resultText: findings || narration || "Subagent finished." };
+}
+
+function childUpdatesPath(cwd, subagentId) {
+  return join(
+    GROK_SESSIONS_ROOT(),
+    encodeURIComponent(cwd),
+    subagentId,
+    "updates.jsonl",
+  );
+}
+
+/** The session's own update journal — the ground truth for what grok has
+ *  finished. grok journals its turn marker with a non-ACP method
+ *  (`_x.ai/session/update`), so the turn_completed notification never
+ *  reaches the standard ACP stream and pi-web must read the file. */
+function sessionUpdatesPath(cwd, sessionId) {
+  return join(
+    GROK_SESSIONS_ROOT(),
+    encodeURIComponent(cwd),
+    sessionId,
+    "updates.jsonl",
+  );
+}
+
+function childMetaPath(cwd, parentSessionId, subagentId) {
+  return join(
+    GROK_SESSIONS_ROOT(),
+    encodeURIComponent(cwd),
+    parentSessionId,
+    "subagents",
+    subagentId,
+    "meta.json",
+  );
+}
+
+/** The child's official final report, written at completion. The streamed
+ *  narration chunks are process-speak ("I'll search for…"); the findings the
+ *  user wants live here. */
+function childOutputPath(cwd, parentSessionId, subagentId) {
+  return join(
+    GROK_SESSIONS_ROOT(),
+    encodeURIComponent(cwd),
+    parentSessionId,
+    "subagents",
+    subagentId,
+    "output.json",
+  );
+}
+
+function parentToolUseIdOf(update) {
+  const meta =
+    update?._meta && typeof update._meta === "object" ? update._meta : {};
+  for (const key of [
+    "parentToolCallId",
+    "parentToolUseId",
+    "parent_tool_use_id",
+  ]) {
+    if (typeof meta[key] === "string" && meta[key]) return meta[key];
+  }
+  return "";
+}
+
 function toolResultText(content) {
   return (content ?? [])
     .map((entry) => (entry?.type === "content" ? acpTextOf(entry.content) : ""))
@@ -178,6 +312,11 @@ class GrokAgentProcess {
     this.queueSeq = 0;
     this.usageCache = { at: 0, result: undefined };
     this.usageRequest = undefined;
+    this.subagentFollows = new Map();
+    this.parentHoldText = "";
+    this.lastChildText = "";
+    this.followsDrained = undefined;
+    this.suppressCompactUi = false;
   }
 
   onEvent(listener) {
@@ -187,6 +326,11 @@ class GrokAgentProcess {
 
   emit(event) {
     if (this.suppressReplayEvents && event.type !== "stderr") return;
+    if (
+      this.suppressCompactUi &&
+      !["__status", "state", "agent_settled", "stderr"].includes(event.type)
+    )
+      return;
     for (const listener of this.listeners) {
       try {
         listener(event);
@@ -206,8 +350,30 @@ class GrokAgentProcess {
     });
   }
 
+  isAlive() {
+    const child = this.process;
+    const childAlive = Boolean(
+      child && child.exitCode == null && child.signalCode == null,
+    );
+    return childAlive && Boolean(this.connection) && Boolean(this.sessionId);
+  }
+
+  async ensureRunning() {
+    if (this.isAlive()) return { ok: true };
+    const cwd = this.cwd;
+    const sessionPath = this.sessionFile;
+    if (!cwd) return { ok: false, error: "Grok session is not running" };
+    this.killChild();
+    return this.start(cwd, {
+      sessionPath,
+      model: this.model,
+      thinkingLevel: this.thinkingLevel,
+    });
+  }
+
   async start(cwd, options = {}) {
-    if (this.process) return { ok: true, state: await this.getState() };
+    if (this.isAlive()) return { ok: true, state: await this.getState() };
+    if (this.process) this.killChild();
     let effectiveCwd = cwd;
     if (effectiveCwd && !existsSync(effectiveCwd)) {
       effectiveCwd = homedir();
@@ -252,12 +418,21 @@ class GrokAgentProcess {
         // and hangs forever -- the conversation looks frozen and no message
         // can revive it.
         this.connection = undefined;
-        if (this.turn) {
+        if (this.turn?.idle) {
+          // The idle turn is fed by notifications from this child; with the
+          // child gone they never arrive. Close it so the composer does not
+          // stay "running" and the next prompt is not rejected with "already
+          // in progress".
+          this.finishIdleTurn();
+        } else if (this.turn) {
           this.turn.reject?.(
             new Error(`Grok exited (${signal ?? code ?? "unknown"})`),
           );
           this.turn = undefined;
         }
+        // Parent death used to leave jsonl pumps running, so spawn_subagent
+        // stayed `running` and the main transcript kept hiding later tools.
+        this.stopSubagentFollows();
         if (this.status !== "stopped") {
           this.setStatus(
             code && code !== 0 ? "error" : "stopped",
@@ -390,7 +565,6 @@ class GrokAgentProcess {
   // agnostic to whether the turn is live or replayed).
   async replayHistory(cwd) {
     this.emit({ type: "agent_start", sessionKey: this.sessionKey });
-    let turnIndex = 0;
     this.messages = [];
     const replayedMessages = [];
 
@@ -415,7 +589,6 @@ class GrokAgentProcess {
     };
 
     const startTurn = (userText) => {
-      turnIndex += 1;
       this.emit({ type: "turn_start", sessionKey: this.sessionKey });
       const userMessage = {
         role: "user",
@@ -491,26 +664,71 @@ class GrokAgentProcess {
       this.replayMode.onUserChunk(acpTextOf(update.content));
       return;
     }
-    const turn = this.turn;
+    let turn = this.turn;
     if (!turn) {
-      this.emit({
-        type: "grok_session_update",
-        sessionKey: this.sessionKey,
-        update,
-      });
+      // grok continues the session on its own after a background subagent
+      // completes: the completion reminder triggers a fresh turn with no
+      // prompt from this side. Without synthesizing a turn here, the
+      // parent's handover narration streamed while `this.turn` was undefined
+      // and never reached the timeline — the findings only appeared after
+      // a page refresh re-read the session file.
+      if (
+        !this.replayMode &&
+        (update.sessionUpdate === "agent_message_chunk" ||
+          update.sessionUpdate === "agent_thought_chunk")
+      ) {
+        this.startIdleTurn();
+        turn = this.turn;
+      } else {
+        this.emit({
+          type: "grok_session_update",
+          sessionKey: this.sessionKey,
+          update,
+        });
+        return;
+      }
+    } else if (turn.idle && update.sessionUpdate === "turn_completed") {
+      this.finishIdleTurn();
       return;
     }
     switch (update.sessionUpdate) {
       case "agent_thought_chunk":
+        if (this.subagentFollows.size > 0) return;
         this.appendDelta(turn, "thinking", acpTextOf(update.content));
         return;
-      case "agent_message_chunk":
-        this.appendDelta(turn, "text", acpTextOf(update.content));
+      case "agent_message_chunk": {
+        const delta = acpTextOf(update.content);
+        if (this.subagentFollows.size > 0) {
+          for (const follow of [...this.subagentFollows.values()])
+            this.pumpSubagent(follow);
+          const childText = [...this.subagentFollows.values()]
+            .map((follow) => follow.text)
+            .join("");
+          // Child already talking: hold parent-stream text until handover so
+          // mirrored nested tokens never flash in the main chat. Before that,
+          // the parent is allowed to say it spawned a child.
+          if (childText.length >= 20) {
+            this.parentHoldText += delta;
+            return;
+          }
+        }
+        this.appendDelta(turn, "text", delta);
         return;
+      }
       case "tool_call":
+        if (this.shouldHideParentTool(update)) {
+          for (const follow of [...this.subagentFollows.values()])
+            this.pumpSubagent(follow);
+          return;
+        }
         this.startToolCall(turn, update);
         return;
       case "tool_call_update":
+        if (this.shouldHideParentTool(update)) {
+          for (const follow of [...this.subagentFollows.values()])
+            this.pumpSubagent(follow);
+          return;
+        }
         this.updateToolCall(turn, update);
         return;
       default:
@@ -570,7 +788,14 @@ class GrokAgentProcess {
     });
   }
 
+  shouldHideParentTool(update) {
+    return parentToolBelongsToFollow(this.subagentFollows, update, this.turn);
+  }
+
   startToolCall(turn, update) {
+    for (const follow of [...this.subagentFollows.values()]) {
+      this.pumpSubagent(follow);
+    }
     this.closeOpenBlock(turn);
     const name = update.title ?? update.toolCallId;
     const block = {
@@ -584,6 +809,15 @@ class GrokAgentProcess {
     const index = turn.content.length - 1;
     turn.toolIndex.set(update.toolCallId, index);
     this.emitUpdate(turn, { type: "toolcall_start", contentIndex: index });
+    let parentToolUseId = parentToolUseIdOf(update);
+    if (!parentToolUseId) {
+      for (const follow of this.subagentFollows.values()) {
+        if (follow.toolNames.has(update.toolCallId)) {
+          parentToolUseId = follow.parentToolUseId;
+          break;
+        }
+      }
+    }
     this.emit({
       type: "tool_execution_start",
       sessionKey: this.sessionKey,
@@ -592,7 +826,15 @@ class GrokAgentProcess {
       args: block.arguments,
       execKind:
         update.kind ?? (SHELL_TOOL_NAMES.has(name) ? "execute" : undefined),
+      ...(parentToolUseId ? { parentToolUseId } : {}),
     });
+    if (isSubagentToolName(name)) {
+      this.emit({
+        type: "subagent_start",
+        sessionKey: this.sessionKey,
+        parentToolUseId: update.toolCallId,
+      });
+    }
     if (update.status === "completed" || update.status === "failed") {
       this.finishToolCall(turn, index, update);
     }
@@ -612,6 +854,19 @@ class GrokAgentProcess {
       contentIndex: index,
       delta: "",
     });
+    if (isSubagentToolName(block.name) && update.content) {
+      const output = toolResultText(update.content);
+      if (output) {
+        this.emit({
+          type: "tool_execution_update",
+          sessionKey: this.sessionKey,
+          toolCallId: update.toolCallId,
+          partialResult: {
+            content: [{ type: "text", text: output }],
+          },
+        });
+      }
+    }
     if (update.status === "completed" || update.status === "failed") {
       this.finishToolCall(turn, index, update);
     }
@@ -619,6 +874,22 @@ class GrokAgentProcess {
 
   finishToolCall(turn, index, update) {
     const block = turn.content[index];
+    if (isSubagentToolName(block.name) && update.status !== "failed") {
+      const output = toolResultText(update.content);
+      const childId = parseSubagentId(output);
+      this.emit({
+        type: "tool_execution_update",
+        sessionKey: this.sessionKey,
+        toolCallId: update.toolCallId,
+        partialResult: {
+          content: [{ type: "text", text: output }],
+        },
+      });
+      if (childId && this.cwd) {
+        this.followSubagent(update.toolCallId, childId);
+        return;
+      }
+    }
     this.emitUpdate(turn, {
       type: "toolcall_end",
       contentIndex: index,
@@ -641,6 +912,304 @@ class GrokAgentProcess {
     });
   }
 
+  followSubagent(parentToolUseId, subagentId) {
+    if (this.subagentFollows.has(parentToolUseId)) return;
+    const follow = {
+      parentToolUseId,
+      subagentId,
+      offset: 0,
+      pending: "",
+      text: "",
+      thinking: "",
+      // The child narrates in separate blocks (opening chatter, then the
+      // final findings after its tools). Each block keeps its own index so
+      // the panel shows them where they actually happened, not glued onto
+      // the first block's position above every tool card.
+      segments: [""],
+      segmentToolCount: undefined,
+      lastAdvance: Date.now(),
+      toolNames: new Map(),
+      timer: undefined,
+    };
+    this.subagentFollows.set(parentToolUseId, follow);
+    const tick = () => this.pumpSubagent(follow);
+    // Set the interval before the first tick: a child that is already done
+    // finishes on that tick, and finishSubagentFollow's clearInterval must
+    // find a real timer or the interval re-finishes and double-emits.
+    follow.timer = setInterval(tick, 200);
+    tick();
+  }
+
+  pumpSubagent(follow) {
+    if (!this.cwd) return;
+    const path = childUpdatesPath(this.cwd, follow.subagentId);
+    let text = "";
+    try {
+      text = readFileSync(path, "utf8");
+    } catch {
+      this.checkSubagentDone(follow);
+      return;
+    }
+    if (text.length < follow.offset) follow.offset = 0;
+    if (text.length > follow.offset) follow.lastAdvance = Date.now();
+    const chunk = follow.pending + text.slice(follow.offset);
+    follow.offset = text.length;
+    const lastNl = chunk.lastIndexOf("\n");
+    if (lastNl < 0) {
+      follow.pending = chunk;
+      this.checkSubagentDone(follow);
+      return;
+    }
+    follow.pending = chunk.slice(lastNl + 1);
+    for (const line of chunk.slice(0, lastNl + 1).split("\n")) {
+      if (!line.trim()) continue;
+      let event;
+      try {
+        event = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      if (event.method === "_x.ai/session/update") {
+        const kind = event.params?.update?.sessionUpdate;
+        if (kind === "turn_completed") follow.turnCompleted = true;
+        continue;
+      }
+      if (event.method !== "session/update") continue;
+      this.handleChildUpdate(follow, event.params?.update);
+    }
+    this.checkSubagentDone(follow);
+  }
+
+  handleChildUpdate(follow, update) {
+    if (!update || typeof update !== "object") return;
+    const parentToolUseId = follow.parentToolUseId;
+    const streamKey = `grok-sub-${parentToolUseId}`;
+    if (update.sessionUpdate === "agent_thought_chunk") {
+      // Thinking stays off the subagent pane — same as the main chat.
+      return;
+    }
+    if (update.sessionUpdate === "agent_message_chunk") {
+      const delta = acpTextOf(update.content);
+      if (!delta) return;
+      // A message that starts after the child has run tools is a new block
+      // of its transcript (the final findings after the opening narration),
+      // not a continuation of the first — otherwise the findings would
+      // render at the first block's position, above the tool cards that
+      // actually preceded them.
+      if (
+        follow.segmentToolCount !== undefined &&
+        follow.segmentToolCount < follow.toolNames.size
+      )
+        follow.segments.push("");
+      follow.segmentToolCount = follow.toolNames.size;
+      const index = follow.segments.length - 1;
+      follow.segments[index] += delta;
+      follow.text += delta;
+      this.emit({
+        type: "message_update",
+        sessionKey: this.sessionKey,
+        streamKey,
+        parentToolUseId,
+        assistantMessageEvent: {
+          type: "text_delta",
+          contentIndex: index,
+          delta,
+        },
+      });
+      return;
+    }
+    if (update.sessionUpdate === "tool_call") {
+      const name = update.title ?? update.toolCallId;
+      follow.toolNames.set(update.toolCallId, name);
+      this.emit({
+        type: "tool_execution_start",
+        sessionKey: this.sessionKey,
+        toolCallId: update.toolCallId,
+        toolName: name,
+        args: update.rawInput ?? {},
+        execKind:
+          update.kind ?? (SHELL_TOOL_NAMES.has(name) ? "execute" : undefined),
+        parentToolUseId,
+      });
+      if (update.status === "completed" || update.status === "failed") {
+        this.emitChildToolEnd(follow, update);
+      }
+      return;
+    }
+    if (update.sessionUpdate === "tool_call_update") {
+      if (update.rawInput && !follow.toolNames.has(update.toolCallId)) {
+        const name = update.title ?? update.toolCallId;
+        follow.toolNames.set(update.toolCallId, name);
+        this.emit({
+          type: "tool_execution_start",
+          sessionKey: this.sessionKey,
+          toolCallId: update.toolCallId,
+          toolName: name,
+          args: update.rawInput,
+          parentToolUseId,
+        });
+      }
+      if (update.status === "completed" || update.status === "failed") {
+        this.emitChildToolEnd(follow, update);
+      }
+    }
+  }
+
+  emitChildToolEnd(_follow, update) {
+    this.emit({
+      type: "tool_execution_end",
+      sessionKey: this.sessionKey,
+      toolCallId: update.toolCallId,
+      result: {
+        content: [{ type: "text", text: toolResultText(update.content) }],
+        details: update.rawOutput ?? {},
+      },
+      isError: update.status === "failed",
+    });
+  }
+
+  checkSubagentDone(follow) {
+    if (!this.cwd) return;
+    let status = "";
+    if (this.sessionId) {
+      try {
+        const meta = JSON.parse(
+          readFileSync(
+            childMetaPath(this.cwd, this.sessionId, follow.subagentId),
+            "utf8",
+          ),
+        );
+        status = String(meta.status ?? "");
+      } catch {
+        /* meta is written when the child finishes */
+      }
+    }
+    if (
+      !follow.turnCompleted &&
+      status !== "completed" &&
+      status !== "failed"
+    ) {
+      // A silent child is a dead child: without this bail runTurn waits on
+      // the drain forever and the session wedges on "running".
+      if (Date.now() - follow.lastAdvance < stallMs) return;
+      this.finishSubagentFollow(follow, true);
+      return;
+    }
+    this.finishSubagentFollow(follow, status === "failed");
+  }
+
+  /** The child's official findings from output.json; "" when the file has
+   *  not landed yet (ponytail: turn_completed in the child stream can beat
+   *  the file to disk; the narration fallback still lands — add a retry
+   *  tick if that race is ever observed). */
+  readChildOutput(follow) {
+    if (!this.cwd || !this.sessionId) return "";
+    try {
+      const parsed = JSON.parse(
+        readFileSync(
+          childOutputPath(this.cwd, this.sessionId, follow.subagentId),
+          "utf8",
+        ),
+      );
+      return typeof parsed?.output === "string" ? parsed.output : "";
+    } catch {
+      return "";
+    }
+  }
+
+  finishSubagentFollow(follow, failed) {
+    if (follow.timer) {
+      clearInterval(follow.timer);
+      follow.timer = undefined;
+    }
+    const streamKey = `grok-sub-${follow.parentToolUseId}`;
+    if (follow.text) {
+      this.lastChildText = [this.lastChildText, follow.text]
+        .filter(Boolean)
+        .join("\n");
+    }
+    const { blocks, resultText } = subagentFindings(
+      follow.segments,
+      failed ? "" : this.readChildOutput(follow),
+    );
+    for (const block of blocks) {
+      this.emit({
+        type: "message_update",
+        sessionKey: this.sessionKey,
+        streamKey,
+        parentToolUseId: follow.parentToolUseId,
+        assistantMessageEvent: {
+          type: "text_end",
+          contentIndex: block.contentIndex,
+          content: block.content,
+        },
+      });
+    }
+    this.emit({
+      type: "tool_execution_end",
+      sessionKey: this.sessionKey,
+      toolCallId: follow.parentToolUseId,
+      result: {
+        content: [{ type: "text", text: resultText }],
+      },
+      isError: failed,
+    });
+    this.subagentFollows.delete(follow.parentToolUseId);
+    if (this.subagentFollows.size === 0) {
+      this.flushHeldParentText();
+      const drained = this.followsDrained;
+      this.followsDrained = undefined;
+      drained?.();
+    }
+  }
+
+  flushHeldParentText() {
+    const leftover = parentTextAfterChild(
+      this.parentHoldText,
+      this.lastChildText,
+    );
+    this.parentHoldText = "";
+    if (!leftover) return;
+    if (this.turn) {
+      this.appendDelta(this.turn, "text", leftover);
+      return;
+    }
+    this.emit({
+      type: "message_update",
+      sessionKey: this.sessionKey,
+      streamKey: "grok-parent-handoff",
+      assistantMessageEvent: {
+        type: "text_delta",
+        contentIndex: 0,
+        delta: leftover,
+      },
+    });
+    this.emit({
+      type: "message_update",
+      sessionKey: this.sessionKey,
+      streamKey: "grok-parent-handoff",
+      assistantMessageEvent: {
+        type: "text_end",
+        contentIndex: 0,
+        content: leftover,
+      },
+    });
+  }
+
+  waitForSubagentFollows() {
+    if (this.subagentFollows.size === 0) return Promise.resolve();
+    return new Promise((resolve) => {
+      this.followsDrained = resolve;
+    });
+  }
+
+  stopSubagentFollows() {
+    const follows = [...this.subagentFollows.values()];
+    for (const follow of follows) {
+      this.finishSubagentFollow(follow, true);
+    }
+  }
+
   emitUpdate(_turn, assistantMessageEvent) {
     this.emit({
       type: "message_update",
@@ -651,8 +1220,14 @@ class GrokAgentProcess {
   }
 
   async runTurn(kind, message, images) {
-    if (!this.connection || !this.sessionId)
-      return { ok: false, error: "Grok session is not running" };
+    if (!this.isAlive()) {
+      const revived = await this.ensureRunning();
+      if (!revived.ok)
+        return {
+          ok: false,
+          error: revived.error ?? "Grok session is not running",
+        };
+    }
     if (this.turn)
       return {
         ok: false,
@@ -685,6 +1260,8 @@ class GrokAgentProcess {
       content: [{ type: "text", text: message }],
       timestamp: Date.now(),
     };
+    this.parentHoldText = "";
+    this.lastChildText = "";
     this.emit({ type: "agent_start", sessionKey: this.sessionKey });
     this.emit({ type: "turn_start", sessionKey: this.sessionKey });
     // A follow-up is the harness talking, not the user: showing its
@@ -728,12 +1305,29 @@ class GrokAgentProcess {
     this.setStatus("working");
 
     try {
-      const response = await this.connection.prompt({
-        sessionId: this.sessionId,
-        prompt: promptBlocks,
+      // The exit handler and stop() reject through turn.reject. Without this
+      // wiring they were silent no-ops and a child that died mid-turn hung
+      // the awaited prompt forever — the session stayed "running" and every
+      // later prompt was queued behind a turn nobody was executing.
+      const response = await new Promise((resolve, reject) => {
+        this.turn.reject = reject;
+        this.connection
+          .prompt({ sessionId: this.sessionId, prompt: promptBlocks })
+          .then(resolve, reject)
+          .finally(() => {
+            if (this.turn) this.turn.reject = undefined;
+          });
       });
       this.closeOpenBlock(this.turn);
       assistantMessage.stopReason = response.stopReason;
+      if (this.subagentFollows.size > 0) await this.waitForSubagentFollows();
+      if (!this.turn) {
+        this.setStatus("ready");
+        this.emit({ type: "agent_settled", sessionKey: this.sessionKey });
+        return { ok: false, error: "Grok turn was stopped" };
+      }
+      this.flushHeldParentText();
+      this.closeOpenBlock(this.turn);
       this.emit({
         type: "turn_end",
         sessionKey: this.sessionKey,
@@ -750,6 +1344,7 @@ class GrokAgentProcess {
       });
       this.messages.push(...turnMessages);
       this.turn = undefined;
+      this.lastChildText = "";
       this.setStatus("ready");
       this.emit({ type: "agent_settled", sessionKey: this.sessionKey });
       const state = await this.getState();
@@ -758,17 +1353,22 @@ class GrokAgentProcess {
       return { ok: true, state };
     } catch (error) {
       this.turn = undefined;
-      this.setStatus("ready");
+      this.stopSubagentFollows();
       const message = String(error?.message ?? error);
-      // Without these the composer spins forever and the interrupted-turn
-      // record never settles, so the next boot resumes a turn that already
-      // failed.
-      this.emit({
-        type: "notice",
-        sessionKey: this.sessionKey,
-        message: `Grok turn failed: ${message}`,
-        tone: "error",
-      });
+      // A user stop already moved the session to "stopped"; re-marking it
+      // ready or notifying would resurrect a stopped agent. Otherwise,
+      // without the settle the composer spins forever and the interrupted-
+      // turn record never settles, so the next boot resumes a turn that
+      // already failed.
+      if (this.status !== "stopped") {
+        this.setStatus("ready");
+        this.emit({
+          type: "notice",
+          sessionKey: this.sessionKey,
+          message: `Grok turn failed: ${message}`,
+          tone: "error",
+        });
+      }
       this.emit({ type: "agent_settled", sessionKey: this.sessionKey });
       return { ok: false, error: message };
     }
@@ -776,6 +1376,126 @@ class GrokAgentProcess {
 
   prompt(message, images) {
     return this.runTurn("prompt", message, images);
+  }
+
+  /** A turn grok started on its own — the background-subagent completion
+   *  reminder (or a goal check-in) triggers the parent without a prompt
+   *  from this side. Streamed live like any other turn so the handover
+   *  narration reaches the main transcript without a page refresh. */
+  startIdleTurn() {
+    const assistantMessage = {
+      role: "assistant",
+      content: [],
+      api: "grok-sdk",
+      provider: "grok-sdk",
+      model: this.model?.id ?? "grok-4.6",
+      usage: zeroUsage(),
+      stopReason: "pending",
+      timestamp: Date.now(),
+    };
+    this.emit({ type: "agent_start", sessionKey: this.sessionKey });
+    this.emit({ type: "turn_start", sessionKey: this.sessionKey });
+    this.emit({
+      type: "message_start",
+      sessionKey: this.sessionKey,
+      message: assistantMessage,
+    });
+    this.turn = {
+      content: assistantMessage.content,
+      openKind: undefined,
+      openIndex: undefined,
+      toolIndex: new Map(),
+      idle: true,
+      message: assistantMessage,
+    };
+    // ponytail: the reminder turn is fed by the child's notification
+    // stream. If that stream dies mid-narration the turn would stay open
+    // forever and wedge the session on "running"; close it after a silent
+    // stall instead. If a very slow report overruns the window, its tail
+    // chunks simply open a fresh idle turn — self-healing.
+    const turn = this.turn;
+    turn.stallTimer = setTimeout(() => {
+      if (this.turn === turn) this.finishIdleTurn();
+    }, stallMs);
+    this.watchIdleTurnFile(turn);
+    this.setStatus("working");
+  }
+
+  /** grok journals turn_completed with a non-ACP method, so the idle turn
+   *  never hears about its own completion through handleSessionUpdate — it
+   *  would sit open until the stall watchdog and every prompt typed in that
+   * window gets queued behind a turn nobody is executing. The session file
+   * is the ground truth: poll the journal for the completion line and close
+   * the turn within one tick. */
+  watchIdleTurnFile(turn) {
+    if (!this.cwd || !this.sessionId) return;
+    const path = sessionUpdatesPath(this.cwd, this.sessionId);
+    let offset = 0;
+    try {
+      offset = readFileSync(path, "utf8").length;
+    } catch {
+      /* file appears once grok journals its first update */
+    }
+    turn.fileTimer = setInterval(() => {
+      if (this.turn !== turn) {
+        clearInterval(turn.fileTimer);
+        return;
+      }
+      let text = "";
+      try {
+        text = readFileSync(path, "utf8");
+      } catch {
+        return;
+      }
+      if (text.length <= offset) return;
+      const chunk = text.slice(offset);
+      const lastNl = chunk.lastIndexOf("\n");
+      if (lastNl < 0) return;
+      offset += lastNl + 1;
+      for (const line of chunk.slice(0, lastNl + 1).split("\n")) {
+        if (!line.trim()) continue;
+        let event;
+        try {
+          event = JSON.parse(line);
+        } catch {
+          continue;
+        }
+        if (event.params?.update?.sessionUpdate === "turn_completed") {
+          clearInterval(turn.fileTimer);
+          this.finishIdleTurn();
+          return;
+        }
+      }
+    }, 200);
+  }
+
+  finishIdleTurn() {
+    const turn = this.turn;
+    if (!turn?.idle) return;
+    clearTimeout(turn.stallTimer);
+    clearInterval(turn.fileTimer);
+    this.turn = undefined;
+    this.closeOpenBlock(turn);
+    turn.message.stopReason = "end_turn";
+    this.emit({
+      type: "turn_end",
+      sessionKey: this.sessionKey,
+      message: turn.message,
+    });
+    this.emit({
+      type: "agent_end",
+      sessionKey: this.sessionKey,
+      messages: [turn.message],
+    });
+    this.messages.push(turn.message);
+    this.setStatus("ready");
+    this.emit({ type: "agent_settled", sessionKey: this.sessionKey });
+    void this.getState()
+      .then((state) =>
+        this.emit({ type: "state", sessionKey: this.sessionKey, state }),
+      )
+      .catch(() => {});
+    this.sendNextQueued();
   }
 
   steer(message, images) {
@@ -865,14 +1585,35 @@ class GrokAgentProcess {
   // grok's own slash commands (compact, always-approve, context, ...) are
   // plain prompt text as far as ACP is concerned -- grok's harness parses
   // the leading "/name" itself, same convention its own CLI uses.
-  compact(customInstructions) {
+  async compact(customInstructions) {
     const text = customInstructions
       ? `/compact ${customInstructions}`
       : "/compact";
-    return this.runTurn("prompt", text);
+    this.suppressCompactUi = true;
+    try {
+      const result = await this.runTurn("follow_up", text);
+      if (!result.ok) return result;
+      let messages = [];
+      if (this.sessionFile && existsSync(this.sessionFile)) {
+        messages = stripTrailingCompactTurn(
+          messagesFromGrokLog(readFileSync(this.sessionFile, "utf8")),
+        );
+      }
+      return {
+        ok: true,
+        state: await this.getState(),
+        messages,
+      };
+    } finally {
+      this.suppressCompactUi = false;
+    }
   }
 
   async abort() {
+    // Cancel the ACP turn AND the jsonl follows. connection.cancel alone
+    // left spawn_subagent `running`, so isHeldMainTool kept hiding later
+    // parent tools after the user hit interrupt.
+    this.stopSubagentFollows();
     if (!this.connection || !this.sessionId) return { ok: true };
     try {
       await this.connection.cancel({ sessionId: this.sessionId });
@@ -1179,11 +1920,26 @@ class GrokAgentProcess {
   }
 
   stop() {
+    const turn = this.turn;
     this.status = "stopped";
     this.turn = undefined;
     this.replayMode = undefined;
     this.queuedMessages = [];
+    this.stopSubagentFollows();
     this.killChild();
+    // Reject after clearing: the exit handler only rejects a turn it can
+    // still see on this.turn, and the awaited prompt in runTurn must settle
+    // so its catch emits agent_settled.
+    turn?.reject?.(new Error("Grok turn was stopped"));
+    // The frontend clears its running flag on agent_settled and
+    // state.isStreaming — without both, stopping a wedged turn left the
+    // composer spinning on "running" even though nothing was executing.
+    this.emit({ type: "agent_settled", sessionKey: this.sessionKey });
+    void this.getState()
+      .then((state) =>
+        this.emit({ type: "state", sessionKey: this.sessionKey, state }),
+      )
+      .catch(() => {});
     this.emit({
       type: "__status",
       sessionKey: this.sessionKey,

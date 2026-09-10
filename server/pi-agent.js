@@ -12,6 +12,11 @@ import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { StringDecoder } from "node:string_decoder";
+import {
+  PiSubagentFollows,
+  isPiSubagentTool,
+  isSpawnArgs,
+} from "./pi-subagent.js";
 import { loadCodexUsage } from "./codex-usage.js";
 import { readResumeSession } from "./sessions.js";
 import {
@@ -168,6 +173,12 @@ class PiAgentProcess {
     // queue can't cancel a single message or keep an orderable snapshot).
     this.queuedMessages = [];
     this.queueSeq = 0;
+    // Live `subagent` runs (pi-subagents extension). Their children work in a
+    // detached runner, so their tool calls only reach the UI by tailing the
+    // run's artifacts — see pi-subagent.js.
+    this.subagents = new PiSubagentFollows((event) =>
+      this.emit({ ...event, sessionKey: this.sessionKey }),
+    );
   }
 
   onEvent(listener) {
@@ -308,6 +319,10 @@ class PiAgentProcess {
     });
     child.once("exit", (code, signal) => {
       this.flushStdout();
+      // The detached runner outlives pi, but its results can no longer reach
+      // this session; without this the follow intervals leak and the spawn
+      // card spins forever.
+      this.subagents.stopAll();
       this.failPending(new Error(`Pi exited (${signal ?? code ?? "unknown"})`));
       if (this.process === child) this.process = undefined;
       if (this.status !== "stopped" && this.process === undefined) {
@@ -964,7 +979,26 @@ class PiAgentProcess {
       return;
     }
     if (event.type === "agent_start") this.setStatus("working");
+    if (
+      event.type === "tool_execution_start" &&
+      isPiSubagentTool(event.toolName) &&
+      isSpawnArgs(event.args)
+    ) {
+      this.emit({
+        type: "subagent_start",
+        sessionKey: this.sessionKey,
+        parentToolUseId: event.toolCallId,
+      });
+      // Bound here rather than on the spawn's result: that event can arrive
+      // under a different tool call id than its start, and its details do not
+      // reliably name the run. The runner's own directory for this cwd does.
+      this.subagents.expect(event.toolCallId, this.cwd, Date.now());
+    }
     if (event.type === "agent_settled") {
+      // A child's closing report can be written after its run is marked
+      // complete; by the time the parent turn settles it is certainly on
+      // disk, so pick up anything the live follow missed.
+      this.subagents.reconcile();
       this.setStatus("ready");
       void this.getState()
         .then((state) =>
@@ -989,6 +1023,7 @@ class PiAgentProcess {
       this.process.kill();
       this.process = undefined;
     }
+    this.subagents.stopAll();
     this.failPending(new Error("Pi process stopped"));
     this.emit({
       type: "__status",

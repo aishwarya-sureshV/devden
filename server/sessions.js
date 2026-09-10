@@ -10,10 +10,30 @@ import {
   unlink,
   writeFile,
 } from "node:fs/promises";
+import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 
 const AGENT_ROOT = join(homedir(), ".pi", "agent");
+
+/** Task / spawn_subagent — the tool calls that stand up a background child.
+ *  Shared with grok-agent.js (which re-exports) so session-file parsing and
+ *  live event routing agree on what counts as a subagent spawn. */
+export function isSubagentToolName(name) {
+  const n = String(name ?? "")
+    .toLowerCase()
+    .replace(/[-\s]/g, "_");
+  return n === "task" || n === "spawn_subagent";
+}
+
+/** The child id from a spawn receipt ("Subagent started in background.
+ *  subagent_id: …"). Shared with grok-agent.js, which re-exports it. */
+export function parseSubagentId(text) {
+  const match = String(text ?? "").match(
+    /subagent_id:\s*([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i,
+  );
+  return match?.[1] ?? "";
+}
 const SESSIONS_ROOT = join(AGENT_ROOT, "sessions");
 const ARCHIVE_INDEX = join(AGENT_ROOT, "pi-web-archived-sessions.json");
 const CLAUDE_ROOT = join(homedir(), ".claude");
@@ -212,6 +232,10 @@ async function readGrokResumeSession(sessionDir) {
       stat(chatPath),
     ]);
     const summary = JSON.parse(summaryRaw);
+    // Child subagent sessions are full grok session folders, but they belong
+    // inside the parent's pane — listing them here made every spawn look like
+    // a brand-new conversation in the sidebar.
+    if (summary.session_kind === "subagent") return null;
     const createdAt =
       Date.parse(summary.created_at ?? "") || file.birthtimeMs || file.mtimeMs;
     const modifiedAt =
@@ -337,17 +361,44 @@ export async function readSessionMessages(path) {
   try {
     const { path: safePath, backend } = await resolveSessionPath(path);
     const contents = await readFile(safePath, "utf8");
+    // grok children keep their findings in their own session dir
+    // (subagents/<id>/output.json); the parent log only has the spawn
+    // receipt. Without re-attaching them here, a page refresh emptied the
+    // subagent panel and the findings existed only in the parent's
+    // after-the-fact narration.
+    const loadChildFindings =
+      backend === "grok"
+        ? (childId) => {
+            try {
+              const parsed = JSON.parse(
+                readFileSync(
+                  join(dirname(safePath), "subagents", childId, "output.json"),
+                  "utf8",
+                ),
+              );
+              return typeof parsed?.output === "string" && parsed.output.trim()
+                ? parsed.output
+                : undefined;
+            } catch {
+              return undefined;
+            }
+          }
+        : undefined;
     const messages =
       backend === "claude"
-        ? messagesFromClaudeLog(contents)
+        ? messagesFromClaudeLog(contents, safePath)
         : backend === "grok"
-          ? messagesFromGrokLog(contents)
+          ? messagesFromGrokLog(contents, loadChildFindings)
           : backend === "codex"
             ? messagesFromCodexLog(contents)
             : messagesFromPiLog(contents);
     return { ok: true, messages };
   } catch (error) {
-    return { ok: false, error: String(error?.message ?? error), messages: [] };
+    return {
+      ok: false,
+      error: String(error?.message ?? error),
+      messages: [],
+    };
   }
 }
 
@@ -357,7 +408,7 @@ export async function readSessionMessages(path) {
 // numeric prompt_index; synthetic context grok injects for itself
 // (<user_info>, skill listings, etc.) carries synthetic_reason instead and
 // is skipped so the preview matches what the user actually typed.
-export function messagesFromGrokLog(contents) {
+export function messagesFromGrokLog(contents, loadChildFindings) {
   const messages = [];
   // tool_result entries name only the call id, so the tool name is carried
   // forward from the assistant entry that made the call.
@@ -421,14 +472,55 @@ export function messagesFromGrokLog(contents) {
         messages.push({ role: "assistant", content, timestamp: Date.now() });
     } else if (entry.type === "tool_result") {
       const id = String(entry.tool_call_id ?? "");
+      const name = toolNames.get(id) ?? "tool";
+      const resultText = grokContentText(entry.content);
       messages.push({
         role: "toolResult",
         toolCallId: id,
-        toolName: toolNames.get(id) ?? "tool",
-        content: [{ type: "text", text: grokContentText(entry.content) }],
+        toolName: name,
+        content: [{ type: "text", text: resultText }],
         timestamp: Date.now(),
       });
+      // A spawn receipt names the child; its findings live in the child's
+      // own files, so hydrate re-attaches them under the spawn call — the
+      // panel then shows them after a refresh exactly as it did live.
+      if (loadChildFindings && isSubagentToolName(name)) {
+        const childId = parseSubagentId(resultText);
+        const findings = childId ? loadChildFindings(childId) : undefined;
+        if (findings)
+          messages.push({
+            role: "assistant",
+            content: [{ type: "text", text: findings }],
+            parentToolUseId: id,
+            timestamp: Date.now(),
+          });
+      }
     }
+  }
+  return messages;
+}
+
+function grokMessageText(message) {
+  const content = message?.content;
+  if (typeof content === "string") return content.trim();
+  if (!Array.isArray(content)) return "";
+  return content
+    .map((part) =>
+      part?.type === "text" && typeof part.text === "string" ? part.text : "",
+    )
+    .join("\n")
+    .trim();
+}
+
+/** Drop the `/compact` prompt and the model recap/tools that followed it. */
+export function stripTrailingCompactTurn(messages) {
+  if (!Array.isArray(messages) || messages.length === 0) return messages;
+  let end = messages.length;
+  while (end > 0 && messages[end - 1]?.role === "toolResult") end -= 1;
+  if (end > 0 && messages[end - 1]?.role === "assistant") end -= 1;
+  if (end > 0 && messages[end - 1]?.role === "user") {
+    const text = grokMessageText(messages[end - 1]);
+    if (/^\/compact\b/i.test(text)) return messages.slice(0, end - 1);
   }
   return messages;
 }

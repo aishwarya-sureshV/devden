@@ -2048,7 +2048,9 @@ async function route(req, res) {
     // the child process the pi/claude adapters expose.
     const agentAlive =
       promptBackend === "grok"
-        ? Boolean(promptAgent.connection)
+        ? typeof promptAgent.isAlive === "function"
+          ? promptAgent.isAlive()
+          : Boolean(promptAgent.connection && promptAgent.sessionId)
         : Boolean(promptAgent.process);
     if (!agentAlive) {
       const started = await runLoggedCommand(sessionKey, "start", body, () =>
