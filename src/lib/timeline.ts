@@ -72,6 +72,9 @@ export type TimelineItem =
       text: string;
       tone: "info" | "warning" | "error";
       timestamp: number;
+      // Set when the notice is about a subagent run, so it renders in that
+      // run's panel instead of the main transcript.
+      parentToolUseId?: string;
     };
 
 export function asRecord(value: unknown): Record<string, unknown> {
@@ -80,24 +83,70 @@ export function asRecord(value: unknown): Record<string, unknown> {
     : {};
 }
 
-function readableAgentError(value: unknown): string {
+function firstJsonObject(raw: string): Record<string, unknown> | null {
+  const start = raw.indexOf("{");
+  if (start < 0) return null;
+  let depth = 0;
+  for (let i = start; i < raw.length; i++) {
+    const ch = raw[i];
+    if (ch === "{") depth += 1;
+    else if (ch === "}") {
+      depth -= 1;
+      if (depth === 0) {
+        try {
+          return asRecord(JSON.parse(raw.slice(start, i + 1)));
+        } catch {
+          return null;
+        }
+      }
+    }
+  }
+  return null;
+}
+
+function stripApiErrorPrefix(message: string): string {
+  const match = message.match(/API error\s*\(status\s+\d+[^)]*\):\s*(.+)/i);
+  return (match?.[1] ?? message).replace(/[.,\s]+$/, "").trim();
+}
+
+function isGenericAgentError(text: string): boolean {
+  return /^(grok turn failed:\s*)?internal error$/i.test(text.trim());
+}
+
+/** Pull the human sentence out of a provider log or ACP throw. */
+export function readableAgentError(value: unknown): string {
   if (typeof value !== "string") return "";
   const raw = value.trim();
   if (!raw) return "";
-  const jsonStart = raw.indexOf("{");
-  if (jsonStart >= 0) {
-    try {
-      const payload = asRecord(JSON.parse(raw.slice(jsonStart)));
-      const nested = asRecord(payload.error);
-      if (typeof nested.message === "string" && nested.message.trim())
-        return nested.message.trim();
-      if (typeof payload.message === "string" && payload.message.trim())
-        return payload.message.trim();
-    } catch {
-      /* provider returned plain text after an HTTP status */
+  const payload = firstJsonObject(raw);
+  if (payload) {
+    if (typeof payload.error === "string" && payload.error.trim())
+      return payload.error.trim();
+    const nested = asRecord(payload.error);
+    if (typeof nested.message === "string" && nested.message.trim())
+      return stripApiErrorPrefix(nested.message);
+    if (typeof payload.message === "string" && payload.message.trim()) {
+      const message = stripApiErrorPrefix(payload.message);
+      if (message && !isGenericAgentError(message)) return message;
     }
   }
+  const named = raw.match(
+    /error_message=([^\n]+?)(?:\s+body_preview=|\s+model_id=|$)/i,
+  );
+  if (named?.[1]?.trim()) return named[1].trim();
+  const api = raw.match(/API error\s*\(status\s+\d+[^)]*\):\s*(.+)/i);
+  if (api?.[1]) return stripApiErrorPrefix(api[1]);
+  if (isGenericAgentError(raw)) return "";
   return raw;
+}
+
+function looksLikeProviderApiLog(raw: string): boolean {
+  return (
+    /^\d{4}-\d{2}-\d{2}T/.test(raw) ||
+    /ERROR responses API/i.test(raw) ||
+    /error_message=/.test(raw) ||
+    /body_preview=/.test(raw)
+  );
 }
 
 function extractText(value: unknown): string {
@@ -128,6 +177,54 @@ function extractHistoryText(value: unknown, imageLabel = ""): string {
     .join("\n");
 }
 
+/** True when the session file already has a finished assistant reply after
+ *  the last user message — the hung-Grok case where ACP never sent
+ *  agent_settled but the journal is complete. A turn that still ends on a
+ *  user, a tool result, or a tool-call-only assistant is still in flight. */
+export function persistedTurnLooksSettled(
+  messages: SessionHistoryMessage[],
+): boolean {
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const role = String(messages[i]?.role ?? "").toLowerCase();
+    if (role === "toolresult" || role === "tool") continue;
+    if (role !== "assistant") return false;
+    return extractHistoryText(messages[i]?.content).trim().length > 0;
+  }
+  return false;
+}
+
+function lastUserTextOf(items: TimelineItem[]): string | undefined {
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    const item = items[index];
+    if (item?.kind === "user") return item.text;
+  }
+  return undefined;
+}
+
+/** Composer footer vs the path list the agent actually receives. */
+function userMessageStem(text: string): string {
+  return text
+    .replace(/\n\nAttached files:\n[\s\S]*$/, "")
+    .replace(/\n\nAttachments: [^\n]*$/, "")
+    .trimEnd();
+}
+
+/**
+ * Optimistic appendUser already put a bubble in; grok/codex then echo the
+ * outbound prompt (path-expanded when files were attached). Skip that echo
+ * only while the composer bubble is still the last item — a queued
+ * follow-up arrives after the previous turn has printed, so it must show.
+ */
+function isEchoedUserMessage(items: TimelineItem[], text: string): boolean {
+  const lastUserText = lastUserTextOf(items);
+  if (!lastUserText) return false;
+  if (lastUserText === text) return true;
+  const last = items.at(-1);
+  if (last?.kind !== "user") return false;
+  const stem = userMessageStem(lastUserText);
+  return stem.length > 0 && stem === userMessageStem(text);
+}
+
 function historyTimestamp(message: SessionHistoryMessage): number {
   return typeof message.timestamp === "number" ? message.timestamp : Date.now();
 }
@@ -136,6 +233,14 @@ function parentToolUseIdOf(value: unknown): string | undefined {
   const record = asRecord(value);
   const id = record.parentToolUseId ?? record.parent_tool_use_id;
   return typeof id === "string" && id ? id : undefined;
+}
+
+/**
+ * Server notices carry an optional tone; anything unrecognised is ambient.
+ */
+function noticeTone(value: unknown): "info" | "warning" | "error" {
+  if (value === "error" || value === "warning") return value;
+  return "info";
 }
 
 export class Timeline {
@@ -153,6 +258,15 @@ export class Timeline {
    */
   private sessionName: string | undefined;
   private listeners = new Set<() => void>();
+  /**
+   * Notices published after a run settled, captured during replay so hydrate()
+   * can put them back. They exist only in the server's runtime log, and the
+   * session file the caller re-reads never carries them.
+   */
+  private trailingNotices: {
+    text: string;
+    tone: "info" | "warning" | "error";
+  }[] = [];
   /** Pending in-flight text streams, applied as whole chunks (no per-char cursor). */
   private streams = new Map<
     string,
@@ -215,18 +329,28 @@ export class Timeline {
     this.notify();
   }
 
-  appendNotice(text: string, tone: "info" | "warning" | "error") {
+  appendNotice(
+    text: string,
+    tone: "info" | "warning" | "error",
+    parentToolUseId?: string,
+  ) {
     if (!text) return;
-    this.updateItems((current) => [
-      ...current,
-      {
-        id: crypto.randomUUID(),
-        kind: "notice",
-        text,
-        tone,
-        timestamp: Date.now(),
-      },
-    ]);
+    this.updateItems((current) => {
+      const last = current.at(-1);
+      if (last?.kind === "notice" && last.text === text && last.tone === tone)
+        return current;
+      return [
+        ...current,
+        {
+          id: crypto.randomUUID(),
+          kind: "notice",
+          text,
+          tone,
+          timestamp: Date.now(),
+          ...(parentToolUseId ? { parentToolUseId } : {}),
+        },
+      ];
+    });
   }
 
   appendUser(text: string) {
@@ -401,6 +525,7 @@ export class Timeline {
    * "none" when no safe replay window exists.
    */
   replayLiveTurn(entries: BackendLogEntry[]): "live" | "settled" | "none" {
+    this.trailingNotices = [];
     if (!Array.isArray(entries) || entries.length === 0) return "none";
     const agentEntries = entries.filter((entry) => {
       if (!entry || typeof entry.id !== "string") return false;
@@ -461,13 +586,27 @@ export class Timeline {
     // grok emits agent_settled after agent_end; pi/claude may have trailing
     // state events post-completion. Any end-of-run marker inside the window
     // means the run settled during the fetch.
-    if (
-      window.some((entry) =>
+    let settledAt = -1;
+    for (let index = 0; index < window.length; index += 1) {
+      if (
         ["agent_end", "agent_settled"].includes(
-          String(entry.payload?.type ?? ""),
-        ),
+          String(window[index]?.payload?.type ?? ""),
+        )
       )
-    ) {
+        settledAt = index;
+    }
+    if (settledAt >= 0) {
+      // The cache-miss summary is published after the turn settles, so it sits
+      // at the bottom of the final output -- which also puts it outside every
+      // window above, since those start after the last agent_end. The caller
+      // re-reads the session file and a notice is not in it, so hold these for
+      // hydrate() rather than dropping them on every refresh.
+      this.trailingNotices = window.slice(settledAt + 1).flatMap((entry) => {
+        const payload = asRecord(entry.payload);
+        if (payload.type !== "notice") return [];
+        const text = String(payload.message ?? "");
+        return text ? [{ text, tone: noticeTone(payload.tone) }] : [];
+      });
       return "settled";
     }
 
@@ -491,15 +630,7 @@ export class Timeline {
         // The in-flight turn's user message was never persisted, so it can't
         // be in the hydrated items — dedupe only guards the tiny race where
         // it already arrived live between SSE connect and this replay.
-        let lastUserText: string | undefined;
-        for (let index = this.items.length - 1; index >= 0; index -= 1) {
-          const item = this.items[index];
-          if (item?.kind === "user") {
-            lastUserText = item.text;
-            break;
-          }
-        }
-        if (lastUserText === text) continue;
+        if (isEchoedUserMessage(this.items, text)) continue;
         this.appendUser(text);
         continue;
       }
@@ -601,8 +732,7 @@ export class Timeline {
             const id = String(
               content.id ?? `history-tool-${messageIndex}-${contentIndex}`,
             );
-            const nestedParent =
-              parentToolUseIdOf(content) ?? parentToolUseId;
+            const nestedParent = parentToolUseIdOf(content) ?? parentToolUseId;
             const tool: TimelineItem = {
               id,
               kind: "tool",
@@ -675,6 +805,12 @@ export class Timeline {
           }
         : item,
     );
+    // Notices exist only in the server's runtime log, so rebuilding from the
+    // session file drops them. A settled run's trailing asides were captured
+    // during replay; put them back or a refresh loses the turn's summary.
+    const trailing = this.trailingNotices;
+    this.trailingNotices = [];
+    for (const notice of trailing) this.appendNotice(notice.text, notice.tone);
     this.notify();
   }
 
@@ -737,7 +873,9 @@ export class Timeline {
   ) {
     const existing = this.streams.get(id);
     if (existing) {
-      existing.pending += text;
+      // A delta after text_end is out-of-order/spurious; once finalText is set
+      // the stream is done, so ignore it rather than clobber the final text.
+      if (existing.finalText === undefined) existing.pending += text;
       if (final !== undefined) existing.finalText = final;
       if (parentToolUseId) existing.parentToolUseId = parentToolUseId;
     } else {
@@ -879,15 +1017,32 @@ export class Timeline {
       return;
     }
     if (event.type === "stderr") {
-      this.appendNotice(String(event.message ?? ""), "warning");
+      const raw = String(event.message ?? "");
+      const clean = readableAgentError(raw);
+      if (looksLikeProviderApiLog(raw)) {
+        if (clean) this.appendNotice(clean, "error");
+        return;
+      }
+      this.appendNotice(clean || raw, "warning");
       return;
     }
     // Server- and adapter-sent notices (a cwd that vanished, an auto-resumed
     // turn). These were emitted long before anything rendered them.
     if (event.type === "notice") {
+      const raw = String(event.message ?? "");
+      const clean = readableAgentError(raw);
+      if (isGenericAgentError(raw)) {
+        const last = this.items.at(-1);
+        if (last?.kind === "notice" && last.tone === "error") return;
+        this.appendNotice(clean || raw, noticeTone(event.tone));
+        return;
+      }
       this.appendNotice(
-        String(event.message ?? ""),
-        event.tone === "error" ? "error" : "info",
+        clean || raw,
+        noticeTone(event.tone),
+        typeof event.parentToolUseId === "string"
+          ? event.parentToolUseId
+          : undefined,
       );
       return;
     }
@@ -908,6 +1063,19 @@ export class Timeline {
     }
     if (event.type === "turn_start") {
       this.cycle += 1;
+      return;
+    }
+
+    if (event.type === "message_start") {
+      const message = asRecord(event.message);
+      if (String(message.role ?? "") !== "user") return;
+      const text = extractHistoryText(message.content, "[Image attachment]");
+      if (!text) return;
+      // Optimistic appendUser on send already put this bubble in; a queued
+      // follow-up has no optimistic bubble and must appear only now, when
+      // the previous turn has actually finished printing.
+      if (isEchoedUserMessage(this.items, text)) return;
+      this.appendUser(text);
       return;
     }
 
@@ -1055,16 +1223,23 @@ export class Timeline {
           ];
         }
         const item = current[existing];
-        if (
-          item?.kind === "tool" &&
-          parentToolUseId &&
-          !item.parentToolUseId
-        ) {
-          return current.map((candidate, index) =>
-            index === existing ? { ...item, parentToolUseId } : candidate,
-          );
-        }
-        return current;
+        if (item?.kind !== "tool") return current;
+        // A stream_event can mint the card with an empty input; the
+        // completed assistant message then repeats the start with args
+        // (and, for nested calls, the parent id). Merge rather than ignore.
+        return current.map((candidate, index) => {
+          if (index !== existing) return candidate;
+          return {
+            ...item,
+            ...(name && name !== "tool" ? { name } : {}),
+            ...(Object.keys(args).length
+              ? { args: { ...item.args, ...args } }
+              : {}),
+            ...(parentToolUseId && !item.parentToolUseId
+              ? { parentToolUseId }
+              : {}),
+          };
+        });
       });
       return;
     }

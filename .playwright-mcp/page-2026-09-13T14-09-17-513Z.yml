@@ -1,0 +1,1262 @@
+- generic [ref=e3]:
+  - complementary [ref=e4]:
+    - generic [ref=e5]:
+      - button "New sessions start on Pi. Choose the agent for new sessions." [ref=e7] [cursor=pointer]:
+        - generic [ref=e11]:
+          - strong [ref=e12]: pi
+          - emphasis [ref=e13]: Glm 5.3 flash (cloud) · local shell agent
+      - button "Collapse sidebar" [ref=e17] [cursor=pointer]
+    - button "New session" [ref=e22] [cursor=pointer]:
+      - generic [ref=e27]: ⌘N
+    - navigation "Workbench" [ref=e28]:
+      - button "Terminal" [ref=e29] [cursor=pointer]
+      - button "Notes" [ref=e34] [cursor=pointer]
+      - button "Skills" [ref=e39] [cursor=pointer]
+      - button "Extensions" [ref=e44] [cursor=pointer]
+      - button "Settings" [ref=e48] [cursor=pointer]
+    - generic [ref=e53]:
+      - generic [ref=e93]:
+        - generic [ref=e94]:
+          - generic [ref=e95]: Open
+          - button "Show sessions side by side" [ref=e97] [cursor=pointer]
+        - generic [ref=e100]:
+          - button "Pi-web pi" [ref=e101] [cursor=pointer]:
+            - generic [ref=e103]:
+              - generic [ref=e104]: Pi-web
+              - generic [ref=e105]: pi
+          - button "Close Pi-web" [ref=e106] [cursor=pointer]: ×
+      - generic [ref=e54]:
+        - tablist "Sessions and fleet" [ref=e55]:
+          - tab "Sessions" [selected] [ref=e56] [cursor=pointer]
+          - tab "Fleet" [ref=e57] [cursor=pointer]
+        - generic [ref=e58]:
+          - button "Search transcripts" [ref=e59] [cursor=pointer]
+          - button "Session filters" [ref=e63] [cursor=pointer]
+      - generic [ref=e157]:
+        - generic [ref=e158]:
+          - button "⌄ pi-web 143" [expanded] [ref=e159] [cursor=pointer]:
+            - generic [ref=e160]: ⌄
+            - generic [ref=e163]: pi-web
+            - emphasis [ref=e164]: "143"
+          - button "Actions for workspace pi-web" [ref=e166] [cursor=pointer]
+        - generic [ref=e171]:
+          - button "Add a notes feature in this Pi-web, running" [ref=e172] [cursor=pointer]:
+            - generic [ref=e175]:
+              - generic [ref=e176]: Add a notes feature in this Pi-web
+              - generic [ref=e177]: GLM 5.3
+            - generic [ref=e182]: now
+          - button "Split with Add a notes feature in this Pi-web" [ref=e183] [cursor=pointer]
+          - button "Actions for Add a notes feature in this Pi-web" [ref=e187] [cursor=pointer]
+        - generic [ref=e192]:
+          - button "Pi agent stuck thinking indicator Claude Opus 5 · high now" [ref=e193] [cursor=pointer]:
+            - generic [ref=e195]:
+              - generic [ref=e196]: Pi agent stuck thinking indicator
+              - generic [ref=e197]: Claude Opus 5 · high
+            - generic [ref=e202]: now
+          - button "Split with Pi agent stuck thinking indicator" [ref=e203] [cursor=pointer]
+          - button "Actions for Pi agent stuck thinking indicator" [ref=e207] [cursor=pointer]
+        - generic [ref=e212]:
+          - button "Multi-Agent Plan-Execute-Review Workflow Setup GLM 5.3 7m" [ref=e3173] [cursor=pointer]:
+            - generic [ref=e215]:
+              - generic [ref=e216]: Multi-Agent Plan-Execute-Review Workflow Setup
+              - generic [ref=e217]: GLM 5.3
+            - generic [ref=e222]: 7m
+          - button "Split with Multi-Agent Plan-Execute-Review Workflow Setup" [ref=e223] [cursor=pointer]
+          - button "Actions for Multi-Agent Plan-Execute-Review Workflow Setup" [ref=e227] [cursor=pointer]
+        - generic [ref=e232]:
+          - button "Pi-web coding agent harness session Grok 4.6 · xhigh 3h" [ref=e233] [cursor=pointer]:
+            - generic [ref=e235]:
+              - generic [ref=e236]: Pi-web coding agent harness session
+              - generic [ref=e237]: Grok 4.6 · xhigh
+            - generic [ref=e242]: 3h
+          - button "Split with Pi-web coding agent harness session" [ref=e243] [cursor=pointer]
+          - button "Actions for Pi-web coding agent harness session" [ref=e247] [cursor=pointer]
+        - generic [ref=e252]:
+          - button "Missing Usage Display for Claude Sessions GLM 5.3 Flash 5h" [ref=e253] [cursor=pointer]:
+            - generic [ref=e255]:
+              - generic [ref=e256]: Missing Usage Display for Claude Sessions
+              - generic [ref=e257]: GLM 5.3 Flash
+            - generic [ref=e262]: 5h
+          - button "Split with Missing Usage Display for Claude Sessions" [ref=e263] [cursor=pointer]
+          - button "Actions for Missing Usage Display for Claude Sessions" [ref=e267] [cursor=pointer]
+        - generic [ref=e272]:
+          - button "Subagent interrupt handling parity Claude Opus 5 · high 6h" [ref=e273] [cursor=pointer]:
+            - generic [ref=e275]:
+              - generic [ref=e276]: Subagent interrupt handling parity
+              - generic [ref=e277]: Claude Opus 5 · high
+            - generic [ref=e282]: 6h
+          - button "Split with Subagent interrupt handling parity" [ref=e283] [cursor=pointer]
+          - button "Actions for Subagent interrupt handling parity" [ref=e287] [cursor=pointer]
+        - generic [ref=e292]:
+          - button "Routing GLM Flash for Playwright MCP GLM 5.3 Flash 6h" [ref=e293] [cursor=pointer]:
+            - generic [ref=e295]:
+              - generic [ref=e296]: Routing GLM Flash for Playwright MCP
+              - generic [ref=e297]: GLM 5.3 Flash
+            - generic [ref=e302]: 6h
+          - button "Split with Routing GLM Flash for Playwright MCP" [ref=e303] [cursor=pointer]
+          - button "Actions for Routing GLM Flash for Playwright MCP" [ref=e307] [cursor=pointer]
+        - generic [ref=e312]:
+          - button "Code review and bug fixes Claude Opus 5 · high 8h" [ref=e313] [cursor=pointer]:
+            - generic [ref=e315]:
+              - generic [ref=e316]: Code review and bug fixes
+              - generic [ref=e317]: Claude Opus 5 · high
+            - generic [ref=e322]: 8h
+          - button "Split with Code review and bug fixes" [ref=e323] [cursor=pointer]
+          - button "Actions for Code review and bug fixes" [ref=e327] [cursor=pointer]
+        - generic [ref=e332]:
+          - button "Playwright MCP install for Grok browser verify Grok 4.6 · high 8h" [ref=e333] [cursor=pointer]:
+            - generic [ref=e335]:
+              - generic [ref=e336]: Playwright MCP install for Grok browser verify
+              - generic [ref=e337]: Grok 4.6 · high
+            - generic [ref=e342]: 8h
+          - button "Split with Playwright MCP install for Grok browser verify" [ref=e343] [cursor=pointer]
+          - button "Actions for Playwright MCP install for Grok browser verify" [ref=e347] [cursor=pointer]
+        - generic [ref=e352]:
+          - button "Fix Pi auto-queue and Grok first-token latency Grok 4.6 · high 9h" [ref=e353] [cursor=pointer]:
+            - generic [ref=e355]:
+              - generic [ref=e356]: Fix Pi auto-queue and Grok first-token latency
+              - generic [ref=e357]: Grok 4.6 · high
+            - generic [ref=e362]: 9h
+          - button "Split with Fix Pi auto-queue and Grok first-token latency" [ref=e363] [cursor=pointer]
+          - button "Actions for Fix Pi auto-queue and Grok first-token latency" [ref=e367] [cursor=pointer]
+        - generic [ref=e372]:
+          - button "Fix stuck completed-subagent working loop Grok 4.6 · high 10h" [ref=e373] [cursor=pointer]:
+            - generic [ref=e375]:
+              - generic [ref=e376]: Fix stuck completed-subagent working loop
+              - generic [ref=e377]: Grok 4.6 · high
+            - generic [ref=e382]: 10h
+          - button "Split with Fix stuck completed-subagent working loop" [ref=e383] [cursor=pointer]
+          - button "Actions for Fix stuck completed-subagent working loop" [ref=e387] [cursor=pointer]
+        - generic [ref=e392]:
+          - button "Spawn an explore subagent to list the files in this workspace and… Claude Sonnet 5 · high 10h" [ref=e393] [cursor=pointer]:
+            - generic [ref=e395]:
+              - generic [ref=e396]: Spawn an explore subagent to list the files in this workspace and…
+              - generic [ref=e397]: Claude Sonnet 5 · high
+            - generic [ref=e402]: 10h
+          - button "Split with Spawn an explore subagent to list the files in this workspace and…" [ref=e403] [cursor=pointer]
+          - button "Actions for Spawn an explore subagent to list the files in this workspace and…" [ref=e407] [cursor=pointer]
+        - generic [ref=e412]:
+          - button "Fix Claude subagent display like Grok Grok 4.6 · high 10h" [ref=e413] [cursor=pointer]:
+            - generic [ref=e415]:
+              - generic [ref=e416]: Fix Claude subagent display like Grok
+              - generic [ref=e417]: Grok 4.6 · high
+            - generic [ref=e422]: 10h
+          - button "Split with Fix Claude subagent display like Grok" [ref=e423] [cursor=pointer]
+          - button "Actions for Fix Claude subagent display like Grok" [ref=e427] [cursor=pointer]
+        - generic [ref=e432]:
+          - button "Spawn an explore subagent to list the files in this workspace and… Claude Sonnet 5 · medium 19h" [ref=e433] [cursor=pointer]:
+            - generic [ref=e435]:
+              - generic [ref=e436]: Spawn an explore subagent to list the files in this workspace and…
+              - generic [ref=e437]: Claude Sonnet 5 · medium
+            - generic [ref=e442]: 19h
+          - button "Split with Spawn an explore subagent to list the files in this workspace and…" [ref=e443] [cursor=pointer]
+          - button "Actions for Spawn an explore subagent to list the files in this workspace and…" [ref=e447] [cursor=pointer]
+        - generic [ref=e452]:
+          - button "Background Grok turns false-settle when switching sessions Grok 4.6 · high 20h" [ref=e453] [cursor=pointer]:
+            - generic [ref=e455]:
+              - generic [ref=e456]: Background Grok turns false-settle when switching sessions
+              - generic [ref=e457]: Grok 4.6 · high
+            - generic [ref=e462]: 20h
+          - button "Split with Background Grok turns false-settle when switching sessions" [ref=e463] [cursor=pointer]
+          - button "Actions for Background Grok turns false-settle when switching sessions" [ref=e467] [cursor=pointer]
+        - generic [ref=e472]:
+          - button "Claude Code OAuth token refresh Claude Opus 5 · high 20h" [ref=e473] [cursor=pointer]:
+            - generic [ref=e475]:
+              - generic [ref=e476]: Claude Code OAuth token refresh
+              - generic [ref=e477]: Claude Opus 5 · high
+            - generic [ref=e482]: 20h
+          - button "Split with Claude Code OAuth token refresh" [ref=e483] [cursor=pointer]
+          - button "Actions for Claude Code OAuth token refresh" [ref=e487] [cursor=pointer]
+        - generic [ref=e492]:
+          - button "Fix missing Grok thinking spinner mid-turn Grok 4.6 · high 20h" [ref=e493] [cursor=pointer]:
+            - generic [ref=e495]:
+              - generic [ref=e496]: Fix missing Grok thinking spinner mid-turn
+              - generic [ref=e497]: Grok 4.6 · high
+            - generic [ref=e502]: 20h
+          - button "Split with Fix missing Grok thinking spinner mid-turn" [ref=e503] [cursor=pointer]
+          - button "Actions for Fix missing Grok thinking spinner mid-turn" [ref=e507] [cursor=pointer]
+        - generic [ref=e512]:
+          - button "Claude OAuth refresh dying under Desktop env Grok 4.6 · high 20h" [ref=e513] [cursor=pointer]:
+            - generic [ref=e515]:
+              - generic [ref=e516]: Claude OAuth refresh dying under Desktop env
+              - generic [ref=e517]: Grok 4.6 · high
+            - generic [ref=e522]: 20h
+          - button "Split with Claude OAuth refresh dying under Desktop env" [ref=e523] [cursor=pointer]
+          - button "Actions for Claude OAuth refresh dying under Desktop env" [ref=e527] [cursor=pointer]
+        - generic [ref=e532]:
+          - button "Grok agent sending inputs twice Grok 4.6 · high 21h" [ref=e533] [cursor=pointer]:
+            - generic [ref=e535]:
+              - generic [ref=e536]: Grok agent sending inputs twice
+              - generic [ref=e537]: Grok 4.6 · high
+            - generic [ref=e542]: 21h
+          - button "Split with Grok agent sending inputs twice" [ref=e543] [cursor=pointer]
+          - button "Actions for Grok agent sending inputs twice" [ref=e547] [cursor=pointer]
+        - generic [ref=e552]:
+          - button "Spawn an explore subagent to list the files in this workspace and… claude 21h" [ref=e553] [cursor=pointer]:
+            - generic [ref=e555]:
+              - generic [ref=e556]: Spawn an explore subagent to list the files in this workspace and…
+              - generic [ref=e557]: claude
+            - generic [ref=e562]: 21h
+          - button "Split with Spawn an explore subagent to list the files in this workspace and…" [ref=e563] [cursor=pointer]
+          - button "Actions for Spawn an explore subagent to list the files in this workspace and…" [ref=e567] [cursor=pointer]
+        - generic [ref=e572]:
+          - button "Explore workspace files via subagent Grok 4.6 · high 21h" [ref=e573] [cursor=pointer]:
+            - generic [ref=e575]:
+              - generic [ref=e576]: Explore workspace files via subagent
+              - generic [ref=e577]: Grok 4.6 · high
+            - generic [ref=e582]: 21h
+          - button "Split with Explore workspace files via subagent" [ref=e583] [cursor=pointer]
+          - button "Actions for Explore workspace files via subagent" [ref=e587] [cursor=pointer]
+        - generic [ref=e592]:
+          - button "Fix inline subagent flicker in main chat Grok 4.6 · high 21h" [ref=e593] [cursor=pointer]:
+            - generic [ref=e595]:
+              - generic [ref=e596]: Fix inline subagent flicker in main chat
+              - generic [ref=e597]: Grok 4.6 · high
+            - generic [ref=e602]: 21h
+          - button "Split with Fix inline subagent flicker in main chat" [ref=e603] [cursor=pointer]
+          - button "Actions for Fix inline subagent flicker in main chat" [ref=e607] [cursor=pointer]
+        - generic [ref=e612]:
+          - button "Explore workspace files with subagent Grok 4.6 · high 21h" [ref=e613] [cursor=pointer]:
+            - generic [ref=e615]:
+              - generic [ref=e616]: Explore workspace files with subagent
+              - generic [ref=e617]: Grok 4.6 · high
+            - generic [ref=e622]: 21h
+          - button "Split with Explore workspace files with subagent" [ref=e623] [cursor=pointer]
+          - button "Actions for Explore workspace files with subagent" [ref=e627] [cursor=pointer]
+        - generic [ref=e632]:
+          - button "Spawn explore subagent to list workspace files Grok 4.6 · high 21h" [ref=e633] [cursor=pointer]:
+            - generic [ref=e635]:
+              - generic [ref=e636]: Spawn explore subagent to list workspace files
+              - generic [ref=e637]: Grok 4.6 · high
+            - generic [ref=e642]: 21h
+          - button "Split with Spawn explore subagent to list workspace files" [ref=e643] [cursor=pointer]
+          - button "Actions for Spawn explore subagent to list workspace files" [ref=e647] [cursor=pointer]
+        - generic [ref=e652]:
+          - button "Spawn explore subagent to list workspace files Grok 4.6 · high 21h" [ref=e653] [cursor=pointer]:
+            - generic [ref=e655]:
+              - generic [ref=e656]: Spawn explore subagent to list workspace files
+              - generic [ref=e657]: Grok 4.6 · high
+            - generic [ref=e662]: 21h
+          - button "Split with Spawn explore subagent to list workspace files" [ref=e663] [cursor=pointer]
+          - button "Actions for Spawn explore subagent to list workspace files" [ref=e667] [cursor=pointer]
+        - generic [ref=e672]:
+          - button "Spawn explore subagent, list workspace files Grok 4.6 · high 21h" [ref=e673] [cursor=pointer]:
+            - generic [ref=e675]:
+              - generic [ref=e676]: Spawn explore subagent, list workspace files
+              - generic [ref=e677]: Grok 4.6 · high
+            - generic [ref=e682]: 21h
+          - button "Split with Spawn explore subagent, list workspace files" [ref=e683] [cursor=pointer]
+          - button "Actions for Spawn explore subagent, list workspace files" [ref=e687] [cursor=pointer]
+        - generic [ref=e692]:
+          - button "Fix Grok subagent follow, hydration, and queue order Grok 4.6 · high 23h" [ref=e693] [cursor=pointer]:
+            - generic [ref=e695]:
+              - generic [ref=e696]: Fix Grok subagent follow, hydration, and queue order
+              - generic [ref=e697]: Grok 4.6 · high
+            - generic [ref=e702]: 23h
+          - button "Split with Fix Grok subagent follow, hydration, and queue order" [ref=e703] [cursor=pointer]
+          - button "Actions for Fix Grok subagent follow, hydration, and queue order" [ref=e707] [cursor=pointer]
+        - generic [ref=e712]:
+          - button "Spawn explore subagents to inventory pi-web Grok 4.6 · high 23h" [ref=e713] [cursor=pointer]:
+            - generic [ref=e715]:
+              - generic [ref=e716]: Spawn explore subagents to inventory pi-web
+              - generic [ref=e717]: Grok 4.6 · high
+            - generic [ref=e722]: 23h
+          - button "Split with Spawn explore subagents to inventory pi-web" [ref=e723] [cursor=pointer]
+          - button "Actions for Spawn explore subagents to inventory pi-web" [ref=e727] [cursor=pointer]
+        - generic [ref=e732]:
+          - button "Keep compact transcript, queue-steer, unstick Grok thinking Grok 4.6 · high 1d" [ref=e733] [cursor=pointer]:
+            - generic [ref=e735]:
+              - generic [ref=e736]: Keep compact transcript, queue-steer, unstick Grok thinking
+              - generic [ref=e737]: Grok 4.6 · high
+            - generic [ref=e742]: 1d
+          - button "Split with Keep compact transcript, queue-steer, unstick Grok thinking" [ref=e743] [cursor=pointer]
+          - button "Actions for Keep compact transcript, queue-steer, unstick Grok thinking" [ref=e747] [cursor=pointer]
+        - generic [ref=e752]:
+          - button "Grok turn in progress error Claude Opus 5 · high 1d" [ref=e753] [cursor=pointer]:
+            - generic [ref=e755]:
+              - generic [ref=e756]: Grok turn in progress error
+              - generic [ref=e757]: Claude Opus 5 · high
+            - generic [ref=e762]: 1d
+          - button "Split with Grok turn in progress error" [ref=e763] [cursor=pointer]
+          - button "Actions for Grok turn in progress error" [ref=e767] [cursor=pointer]
+        - generic [ref=e772]:
+          - button "Grok session not running Claude Sonnet 5 · high 1d" [ref=e773] [cursor=pointer]:
+            - generic [ref=e775]:
+              - generic [ref=e776]: Grok session not running
+              - generic [ref=e777]: Claude Sonnet 5 · high
+            - generic [ref=e782]: 1d
+          - button "Split with Grok session not running" [ref=e783] [cursor=pointer]
+          - button "Actions for Grok session not running" [ref=e787] [cursor=pointer]
+        - generic [ref=e792]:
+          - button "User requests a one-word-only reply Grok 4.6 · high 1d" [ref=e793] [cursor=pointer]:
+            - generic [ref=e795]:
+              - generic [ref=e796]: User requests a one-word-only reply
+              - generic [ref=e797]: Grok 4.6 · high
+            - generic [ref=e802]: 1d
+          - button "Split with User requests a one-word-only reply" [ref=e803] [cursor=pointer]
+          - button "Actions for User requests a one-word-only reply" [ref=e807] [cursor=pointer]
+        - generic [ref=e812]:
+          - button "Multi-tab wrapping grid with density chrome Grok 4.6 · high 1d" [ref=e813] [cursor=pointer]:
+            - generic [ref=e815]:
+              - generic [ref=e816]: Multi-tab wrapping grid with density chrome
+              - generic [ref=e817]: Grok 4.6 · high
+            - generic [ref=e822]: 1d
+          - button "Split with Multi-tab wrapping grid with density chrome" [ref=e823] [cursor=pointer]
+          - button "Actions for Multi-tab wrapping grid with density chrome" [ref=e827] [cursor=pointer]
+        - generic [ref=e832]:
+          - button "Shared agent layer for plug-and-play backends Grok 4.6 · high 2d" [ref=e833] [cursor=pointer]:
+            - generic [ref=e835]:
+              - generic [ref=e836]: Shared agent layer for plug-and-play backends
+              - generic [ref=e837]: Grok 4.6 · high
+            - generic [ref=e842]: 2d
+          - button "Split with Shared agent layer for plug-and-play backends" [ref=e843] [cursor=pointer]
+          - button "Actions for Shared agent layer for plug-and-play backends" [ref=e847] [cursor=pointer]
+        - generic [ref=e852]:
+          - button "Amber Dot Persists After Closing Sessions DeepSeek V4.1 Flash 2d" [ref=e853] [cursor=pointer]:
+            - generic [ref=e855]:
+              - generic [ref=e856]: Amber Dot Persists After Closing Sessions
+              - generic [ref=e857]: DeepSeek V4.1 Flash
+            - generic [ref=e862]: 2d
+          - button "Split with Amber Dot Persists After Closing Sessions" [ref=e863] [cursor=pointer]
+          - button "Actions for Amber Dot Persists After Closing Sessions" [ref=e867] [cursor=pointer]
+        - generic [ref=e872]:
+          - button "Ollama Cloud usage API reset timestamps Grok 4.6 · high 2d" [ref=e873] [cursor=pointer]:
+            - generic [ref=e875]:
+              - generic [ref=e876]: Ollama Cloud usage API reset timestamps
+              - generic [ref=e877]: Grok 4.6 · high
+            - generic [ref=e882]: 2d
+          - button "Split with Ollama Cloud usage API reset timestamps" [ref=e883] [cursor=pointer]
+          - button "Actions for Ollama Cloud usage API reset timestamps" [ref=e887] [cursor=pointer]
+        - generic [ref=e892]:
+          - button "Sessions Pane Delete Option And Color Fix DeepSeek V4.1 Flash 2d" [ref=e893] [cursor=pointer]:
+            - generic [ref=e895]:
+              - generic [ref=e896]: Sessions Pane Delete Option And Color Fix
+              - generic [ref=e897]: DeepSeek V4.1 Flash
+            - generic [ref=e902]: 2d
+          - button "Split with Sessions Pane Delete Option And Color Fix" [ref=e903] [cursor=pointer]
+          - button "Actions for Sessions Pane Delete Option And Color Fix" [ref=e907] [cursor=pointer]
+        - generic [ref=e912]:
+          - button "Workbench 2B/2C/2D sidebar and 5A masthead Grok 4.6 · high 2d" [ref=e913] [cursor=pointer]:
+            - generic [ref=e915]:
+              - generic [ref=e916]: Workbench 2B/2C/2D sidebar and 5A masthead
+              - generic [ref=e917]: Grok 4.6 · high
+            - generic [ref=e922]: 2d
+          - button "Split with Workbench 2B/2C/2D sidebar and 5A masthead" [ref=e923] [cursor=pointer]
+          - button "Actions for Workbench 2B/2C/2D sidebar and 5A masthead" [ref=e927] [cursor=pointer]
+        - generic [ref=e932]:
+          - button "Pi-web localhost stuck Claude Sonnet 5 · high 2d" [ref=e933] [cursor=pointer]:
+            - generic [ref=e935]:
+              - generic [ref=e936]: Pi-web localhost stuck
+              - generic [ref=e937]: Claude Sonnet 5 · high
+            - generic [ref=e942]: 2d
+          - button "Split with Pi-web localhost stuck" [ref=e943] [cursor=pointer]
+          - button "Actions for Pi-web localhost stuck" [ref=e947] [cursor=pointer]
+        - generic [ref=e952]:
+          - button "Spawn Read-Only Explore Agent to Trace Feature Grok 4.6 · high 2d" [ref=e953] [cursor=pointer]:
+            - generic [ref=e955]:
+              - generic [ref=e956]: Spawn Read-Only Explore Agent to Trace Feature
+              - generic [ref=e957]: Grok 4.6 · high
+            - generic [ref=e962]: 2d
+          - button "Split with Spawn Read-Only Explore Agent to Trace Feature" [ref=e963] [cursor=pointer]
+          - button "Actions for Spawn Read-Only Explore Agent to Trace Feature" [ref=e967] [cursor=pointer]
+        - generic [ref=e972]:
+          - button "Model toggle page refresh issue Claude Opus 5 · high 2d" [ref=e973] [cursor=pointer]:
+            - generic [ref=e975]:
+              - generic [ref=e976]: Model toggle page refresh issue
+              - generic [ref=e977]: Claude Opus 5 · high
+            - generic [ref=e982]: 2d
+          - button "Split with Model toggle page refresh issue" [ref=e983] [cursor=pointer]
+          - button "Actions for Model toggle page refresh issue" [ref=e987] [cursor=pointer]
+        - generic [ref=e992]:
+          - button "Session continuity across model swaps Claude Opus 5 · high 2d" [ref=e993] [cursor=pointer]:
+            - generic [ref=e995]:
+              - generic [ref=e996]: Session continuity across model swaps
+              - generic [ref=e997]: Claude Opus 5 · high
+            - generic [ref=e1002]: 2d
+          - button "Split with Session continuity across model swaps" [ref=e1003] [cursor=pointer]
+          - button "Actions for Session continuity across model swaps" [ref=e1007] [cursor=pointer]
+        - generic [ref=e1012]:
+          - button "Bat and Ball Price Riddle DeepSeek V4 Flash 2d" [ref=e1013] [cursor=pointer]:
+            - generic [ref=e1015]:
+              - generic [ref=e1016]: Bat and Ball Price Riddle
+              - generic [ref=e1017]: DeepSeek V4 Flash
+            - generic [ref=e1022]: 2d
+          - button "Split with Bat and Ball Price Riddle" [ref=e1023] [cursor=pointer]
+          - button "Actions for Bat and Ball Price Riddle" [ref=e1027] [cursor=pointer]
+        - generic [ref=e1032]:
+          - button "Read-Only Subagent File Inspection DeepSeek V4 Flash 3d" [ref=e1033] [cursor=pointer]:
+            - generic [ref=e1035]:
+              - generic [ref=e1036]: Read-Only Subagent File Inspection
+              - generic [ref=e1037]: DeepSeek V4 Flash
+            - generic [ref=e1042]: 3d
+          - button "Split with Read-Only Subagent File Inspection" [ref=e1043] [cursor=pointer]
+          - button "Actions for Read-Only Subagent File Inspection" [ref=e1047] [cursor=pointer]
+        - generic [ref=e1052]:
+          - button "Subagent completion UI and running state Claude Opus 5 · high 3d" [ref=e1053] [cursor=pointer]:
+            - generic [ref=e1055]:
+              - generic [ref=e1056]: Subagent completion UI and running state
+              - generic [ref=e1057]: Claude Opus 5 · high
+            - generic [ref=e1062]: 3d
+          - button "Split with Subagent completion UI and running state" [ref=e1063] [cursor=pointer]
+          - button "Actions for Subagent completion UI and running state" [ref=e1067] [cursor=pointer]
+        - generic [ref=e1072]:
+          - button "Subagent completion UI and running state Claude Opus 5 · high 3d" [ref=e1073] [cursor=pointer]:
+            - generic [ref=e1075]:
+              - generic [ref=e1076]: Subagent completion UI and running state
+              - generic [ref=e1077]: Claude Opus 5 · high
+            - generic [ref=e1082]: 3d
+          - button "Split with Subagent completion UI and running state" [ref=e1083] [cursor=pointer]
+          - button "Actions for Subagent completion UI and running state" [ref=e1087] [cursor=pointer]
+        - generic [ref=e1092]:
+          - button "Spawning a Subagent to Read Files DeepSeek V4 Flash 3d" [ref=e1093] [cursor=pointer]:
+            - generic [ref=e1095]:
+              - generic [ref=e1096]: Spawning a Subagent to Read Files
+              - generic [ref=e1097]: DeepSeek V4 Flash
+            - generic [ref=e1102]: 3d
+          - button "Split with Spawning a Subagent to Read Files" [ref=e1103] [cursor=pointer]
+          - button "Actions for Spawning a Subagent to Read Files" [ref=e1107] [cursor=pointer]
+        - generic [ref=e1112]:
+          - button "subagent-worker-d957f2ab-db3e-4340-ac9b-b97a8a02892a-1 DeepSeek V4 Flash 3d" [ref=e1113] [cursor=pointer]:
+            - generic [ref=e1115]:
+              - generic [ref=e1116]: subagent-worker-d957f2ab-db3e-4340-ac9b-b97a8a02892a-1
+              - generic [ref=e1117]: DeepSeek V4 Flash
+            - generic [ref=e1122]: 3d
+          - button "Split with subagent-worker-d957f2ab-db3e-4340-ac9b-b97a8a02892a-1" [ref=e1123] [cursor=pointer]
+          - button "Actions for subagent-worker-d957f2ab-db3e-4340-ac9b-b97a8a02892a-1" [ref=e1127] [cursor=pointer]
+        - generic [ref=e1132]:
+          - button "subagent-worker-02073858-da4a-4ea7-8819-5bae4f4b92b5-1 DeepSeek V4 Flash 3d" [ref=e1133] [cursor=pointer]:
+            - generic [ref=e1135]:
+              - generic [ref=e1136]: subagent-worker-02073858-da4a-4ea7-8819-5bae4f4b92b5-1
+              - generic [ref=e1137]: DeepSeek V4 Flash
+            - generic [ref=e1142]: 3d
+          - button "Split with subagent-worker-02073858-da4a-4ea7-8819-5bae4f4b92b5-1" [ref=e1143] [cursor=pointer]
+          - button "Actions for subagent-worker-02073858-da4a-4ea7-8819-5bae4f4b92b5-1" [ref=e1147] [cursor=pointer]
+        - generic [ref=e1152]:
+          - button "Spawning a Read-Only Subagent Task GLM 5.3 Flash 3d" [ref=e1153] [cursor=pointer]:
+            - generic [ref=e1155]:
+              - generic [ref=e1156]: Spawning a Read-Only Subagent Task
+              - generic [ref=e1157]: GLM 5.3 Flash
+            - generic [ref=e1162]: 3d
+          - button "Split with Spawning a Read-Only Subagent Task" [ref=e1163] [cursor=pointer]
+          - button "Actions for Spawning a Read-Only Subagent Task" [ref=e1167] [cursor=pointer]
+        - generic [ref=e1172]:
+          - button "Spawning Read-Only Subagent for Task, waiting for your answer" [ref=e1173] [cursor=pointer]:
+            - generic [ref=e1176]:
+              - generic [ref=e1177]: Spawning Read-Only Subagent for Task
+              - generic [ref=e1178]: GLM 5.3 Flash
+            - generic [ref=e1183]: 3d
+          - button "Split with Spawning Read-Only Subagent for Task" [ref=e1184] [cursor=pointer]
+          - button "Actions for Spawning Read-Only Subagent for Task" [ref=e1188] [cursor=pointer]
+        - generic [ref=e1193]:
+          - button "Pi-web token consumption with coding agents Claude Sonnet 5 · high 3d" [ref=e1194] [cursor=pointer]:
+            - generic [ref=e1196]:
+              - generic [ref=e1197]: Pi-web token consumption with coding agents
+              - generic [ref=e1198]: Claude Sonnet 5 · high
+            - generic [ref=e1203]: 3d
+          - button "Split with Pi-web token consumption with coding agents" [ref=e1204] [cursor=pointer]
+          - button "Actions for Pi-web token consumption with coding agents" [ref=e1208] [cursor=pointer]
+        - generic [ref=e1213]:
+          - button "Full code editor implementation Claude Opus 5 · max 3d" [ref=e1214] [cursor=pointer]:
+            - generic [ref=e1216]:
+              - generic [ref=e1217]: Full code editor implementation
+              - generic [ref=e1218]: Claude Opus 5 · max
+            - generic [ref=e1223]: 3d
+          - button "Split with Full code editor implementation" [ref=e1224] [cursor=pointer]
+          - button "Actions for Full code editor implementation" [ref=e1228] [cursor=pointer]
+        - generic [ref=e1233]:
+          - button "Agent snapshot/revert feature Claude Opus 5 · max 3d" [ref=e1234] [cursor=pointer]:
+            - generic [ref=e1236]:
+              - generic [ref=e1237]: Agent snapshot/revert feature
+              - generic [ref=e1238]: Claude Opus 5 · max
+            - generic [ref=e1243]: 3d
+          - button "Split with Agent snapshot/revert feature" [ref=e1244] [cursor=pointer]
+          - button "Actions for Agent snapshot/revert feature" [ref=e1248] [cursor=pointer]
+        - generic [ref=e1253]:
+          - button "Project capabilities loose endings review Claude Opus 5 · max 3d" [ref=e1254] [cursor=pointer]:
+            - generic [ref=e1256]:
+              - generic [ref=e1257]: Project capabilities loose endings review
+              - generic [ref=e1258]: Claude Opus 5 · max
+            - generic [ref=e1263]: 3d
+          - button "Split with Project capabilities loose endings review" [ref=e1264] [cursor=pointer]
+          - button "Actions for Project capabilities loose endings review" [ref=e1268] [cursor=pointer]
+        - generic [ref=e1273]:
+          - button "Token leakage in UI Claude Opus 5 · max 3d" [ref=e1274] [cursor=pointer]:
+            - generic [ref=e1276]:
+              - generic [ref=e1277]: Token leakage in UI
+              - generic [ref=e1278]: Claude Opus 5 · max
+            - generic [ref=e1283]: 3d
+          - button "Split with Token leakage in UI" [ref=e1284] [cursor=pointer]
+          - button "Actions for Token leakage in UI" [ref=e1288] [cursor=pointer]
+        - generic [ref=e1293]:
+          - button "Pi-web project review Claude Opus 5 · max 3d" [ref=e1294] [cursor=pointer]:
+            - generic [ref=e1296]:
+              - generic [ref=e1297]: Pi-web project review
+              - generic [ref=e1298]: Claude Opus 5 · max
+            - generic [ref=e1303]: 3d
+          - button "Split with Pi-web project review" [ref=e1304] [cursor=pointer]
+          - button "Actions for Pi-web project review" [ref=e1308] [cursor=pointer]
+        - generic [ref=e1313]:
+          - button "Pi customization preservation and cache misses Claude Opus 5 · high 3d" [ref=e1314] [cursor=pointer]:
+            - generic [ref=e1316]:
+              - generic [ref=e1317]: Pi customization preservation and cache misses
+              - generic [ref=e1318]: Claude Opus 5 · high
+            - generic [ref=e1323]: 3d
+          - button "Split with Pi customization preservation and cache misses" [ref=e1324] [cursor=pointer]
+          - button "Actions for Pi customization preservation and cache misses" [ref=e1328] [cursor=pointer]
+        - generic [ref=e1333]:
+          - button "Claude session logout in pi-web Claude Opus 5 · high 3d" [ref=e1334] [cursor=pointer]:
+            - generic [ref=e1336]:
+              - generic [ref=e1337]: Claude session logout in pi-web
+              - generic [ref=e1338]: Claude Opus 5 · high
+            - generic [ref=e1343]: 3d
+          - button "Split with Claude session logout in pi-web" [ref=e1344] [cursor=pointer]
+          - button "Actions for Claude session logout in pi-web" [ref=e1348] [cursor=pointer]
+        - generic [ref=e1353]:
+          - button "Subagent code review and implementation Claude Opus 5 · high 3d" [ref=e1354] [cursor=pointer]:
+            - generic [ref=e1356]:
+              - generic [ref=e1357]: Subagent code review and implementation
+              - generic [ref=e1358]: Claude Opus 5 · high
+            - generic [ref=e1363]: 3d
+          - button "Split with Subagent code review and implementation" [ref=e1364] [cursor=pointer]
+          - button "Actions for Subagent code review and implementation" [ref=e1368] [cursor=pointer]
+        - generic [ref=e1373]:
+          - button "There is a subagent related code done for Grok-agent, can u review… claude 3d" [ref=e1374] [cursor=pointer]:
+            - generic [ref=e1376]:
+              - generic [ref=e1377]: There is a subagent related code done for Grok-agent, can u review…
+              - generic [ref=e1378]: claude
+            - generic [ref=e1383]: 3d
+          - button "Split with There is a subagent related code done for Grok-agent, can u review…" [ref=e1384] [cursor=pointer]
+          - button "Actions for There is a subagent related code done for Grok-agent, can u review…" [ref=e1388] [cursor=pointer]
+        - generic [ref=e1393]:
+          - button "Read-only subagent demo for panel UI Grok 4.6 · high 3d" [ref=e1394] [cursor=pointer]:
+            - generic [ref=e1396]:
+              - generic [ref=e1397]: Read-only subagent demo for panel UI
+              - generic [ref=e1398]: Grok 4.6 · high
+            - generic [ref=e1403]: 3d
+          - button "Split with Read-only subagent demo for panel UI" [ref=e1404] [cursor=pointer]
+          - button "Actions for Read-only subagent demo for panel UI" [ref=e1408] [cursor=pointer]
+        - generic [ref=e1413]:
+          - button "Read-only subagent handoffs to demo UI Grok 4.6 · high 3d" [ref=e1414] [cursor=pointer]:
+            - generic [ref=e1416]:
+              - generic [ref=e1417]: Read-only subagent handoffs to demo UI
+              - generic [ref=e1418]: Grok 4.6 · high
+            - generic [ref=e1423]: 3d
+          - button "Split with Read-only subagent handoffs to demo UI" [ref=e1424] [cursor=pointer]
+          - button "Actions for Read-only subagent handoffs to demo UI" [ref=e1428] [cursor=pointer]
+        - generic [ref=e1433]:
+          - button "Fixing Subagent Pane and Follow-Up Issues GLM 5.3 3d" [ref=e1434] [cursor=pointer]:
+            - generic [ref=e1436]:
+              - generic [ref=e1437]: Fixing Subagent Pane and Follow-Up Issues
+              - generic [ref=e1438]: GLM 5.3
+            - generic [ref=e1443]: 3d
+          - button "Split with Fixing Subagent Pane and Follow-Up Issues" [ref=e1444] [cursor=pointer]
+          - button "Actions for Fixing Subagent Pane and Follow-Up Issues" [ref=e1448] [cursor=pointer]
+        - generic [ref=e1453]:
+          - button "Live subagent transcript in compact side panel Grok 4.6 · high 4d" [ref=e1454] [cursor=pointer]:
+            - generic [ref=e1456]:
+              - generic [ref=e1457]: Live subagent transcript in compact side panel
+              - generic [ref=e1458]: Grok 4.6 · high
+            - generic [ref=e1463]: 4d
+          - button "Split with Live subagent transcript in compact side panel" [ref=e1464] [cursor=pointer]
+          - button "Actions for Live subagent transcript in compact side panel" [ref=e1468] [cursor=pointer]
+        - generic [ref=e1473]:
+          - button "Demo subagent handoffs in the conversation UI Grok 4.6 · high 4d" [ref=e1474] [cursor=pointer]:
+            - generic [ref=e1476]:
+              - generic [ref=e1477]: Demo subagent handoffs in the conversation UI
+              - generic [ref=e1478]: Grok 4.6 · high
+            - generic [ref=e1483]: 4d
+          - button "Split with Demo subagent handoffs in the conversation UI" [ref=e1484] [cursor=pointer]
+          - button "Actions for Demo subagent handoffs in the conversation UI" [ref=e1488] [cursor=pointer]
+        - generic [ref=e1493]:
+          - button "Improve Compaction UI and Header Layout GLM 5.3 Flash 5d" [ref=e1494] [cursor=pointer]:
+            - generic [ref=e1496]:
+              - generic [ref=e1497]: Improve Compaction UI and Header Layout
+              - generic [ref=e1498]: GLM 5.3 Flash
+            - generic [ref=e1503]: 5d
+          - button "Split with Improve Compaction UI and Header Layout" [ref=e1504] [cursor=pointer]
+          - button "Actions for Improve Compaction UI and Header Layout" [ref=e1508] [cursor=pointer]
+        - generic [ref=e1513]:
+          - button "Ollama usage spike investigation Claude Sonnet 5 · xhigh 5d" [ref=e1514] [cursor=pointer]:
+            - generic [ref=e1516]:
+              - generic [ref=e1517]: Ollama usage spike investigation
+              - generic [ref=e1518]: Claude Sonnet 5 · xhigh
+            - generic [ref=e1523]: 5d
+          - button "Split with Ollama usage spike investigation" [ref=e1524] [cursor=pointer]
+          - button "Actions for Ollama usage spike investigation" [ref=e1528] [cursor=pointer]
+        - generic [ref=e1533]:
+          - button "Thinking blocks visibility in Pi Claude Sonnet 5 · xhigh 5d" [ref=e1534] [cursor=pointer]:
+            - generic [ref=e1536]:
+              - generic [ref=e1537]: Thinking blocks visibility in Pi
+              - generic [ref=e1538]: Claude Sonnet 5 · xhigh
+            - generic [ref=e1543]: 5d
+          - button "Split with Thinking blocks visibility in Pi" [ref=e1544] [cursor=pointer]
+          - button "Actions for Thinking blocks visibility in Pi" [ref=e1548] [cursor=pointer]
+        - generic [ref=e1553]:
+          - button "Fix Filter Button and Folder Listing UI GLM 5.3 Flash 5d" [ref=e1554] [cursor=pointer]:
+            - generic [ref=e1556]:
+              - generic [ref=e1557]: Fix Filter Button and Folder Listing UI
+              - generic [ref=e1558]: GLM 5.3 Flash
+            - generic [ref=e1563]: 5d
+          - button "Split with Fix Filter Button and Folder Listing UI" [ref=e1564] [cursor=pointer]
+          - button "Actions for Fix Filter Button and Folder Listing UI" [ref=e1568] [cursor=pointer]
+        - generic [ref=e1573]:
+          - button "Ollama Cloud /api/usage JSON fields and limits Grok 4.6 · high 5d" [ref=e1574] [cursor=pointer]:
+            - generic [ref=e1576]:
+              - generic [ref=e1577]: Ollama Cloud /api/usage JSON fields and limits
+              - generic [ref=e1578]: Grok 4.6 · high
+            - generic [ref=e1583]: 5d
+          - button "Split with Ollama Cloud /api/usage JSON fields and limits" [ref=e1584] [cursor=pointer]
+          - button "Actions for Ollama Cloud /api/usage JSON fields and limits" [ref=e1588] [cursor=pointer]
+        - generic [ref=e1593]:
+          - button "Port 4319 already in use Claude Sonnet 5 · medium 6d" [ref=e1594] [cursor=pointer]:
+            - generic [ref=e1596]:
+              - generic [ref=e1597]: Port 4319 already in use
+              - generic [ref=e1598]: Claude Sonnet 5 · medium
+            - generic [ref=e1603]: 6d
+          - button "Split with Port 4319 already in use" [ref=e1604] [cursor=pointer]
+          - button "Actions for Port 4319 already in use" [ref=e1608] [cursor=pointer]
+        - generic [ref=e1613]:
+          - button "Project issues batch fix Claude Opus 5 · high 6d" [ref=e1614] [cursor=pointer]:
+            - generic [ref=e1616]:
+              - generic [ref=e1617]: Project issues batch fix
+              - generic [ref=e1618]: Claude Opus 5 · high
+            - generic [ref=e1623]: 6d
+          - button "Split with Project issues batch fix" [ref=e1624] [cursor=pointer]
+          - button "Actions for Project issues batch fix" [ref=e1628] [cursor=pointer]
+        - generic [ref=e1633]:
+          - button "grok agent - Grok was executing Claude Opus 5 · medium 6d" [ref=e1634] [cursor=pointer]:
+            - generic [ref=e1636]:
+              - generic [ref=e1637]: grok agent - Grok was executing
+              - generic [ref=e1638]: Claude Opus 5 · medium
+            - generic [ref=e1643]: 6d
+          - button "Split with grok agent - Grok was executing" [ref=e1644] [cursor=pointer]
+          - button "Actions for grok agent - Grok was executing" [ref=e1648] [cursor=pointer]
+        - generic [ref=e1653]:
+          - button "Model effort mapping in dropdown Claude Sonnet 5 · medium 7d" [ref=e1654] [cursor=pointer]:
+            - generic [ref=e1656]:
+              - generic [ref=e1657]: Model effort mapping in dropdown
+              - generic [ref=e1658]: Claude Sonnet 5 · medium
+            - generic [ref=e1663]: 7d
+          - button "Split with Model effort mapping in dropdown" [ref=e1664] [cursor=pointer]
+          - button "Actions for Model effort mapping in dropdown" [ref=e1668] [cursor=pointer]
+        - generic [ref=e1673]:
+          - button "Remove Grok Model and Refine Changes UI GPT 5.6 Luna 7d" [ref=e1674] [cursor=pointer]:
+            - generic [ref=e1676]:
+              - generic [ref=e1677]: Remove Grok Model and Refine Changes UI
+              - generic [ref=e1678]: GPT 5.6 Luna
+            - generic [ref=e1683]: 7d
+          - button "Split with Remove Grok Model and Refine Changes UI" [ref=e1684] [cursor=pointer]
+          - button "Actions for Remove Grok Model and Refine Changes UI" [ref=e1688] [cursor=pointer]
+        - generic [ref=e1693]:
+          - button "Exact Reply Confirmation GPT 5.6 Luna 7d" [ref=e1694] [cursor=pointer]:
+            - generic [ref=e1696]:
+              - generic [ref=e1697]: Exact Reply Confirmation
+              - generic [ref=e1698]: GPT 5.6 Luna
+            - generic [ref=e1703]: 7d
+          - button "Split with Exact Reply Confirmation" [ref=e1704] [cursor=pointer]
+          - button "Actions for Exact Reply Confirmation" [ref=e1708] [cursor=pointer]
+        - generic [ref=e1713]:
+          - button "Exact Ok Reply GPT 5.6 Luna 7d" [ref=e1714] [cursor=pointer]:
+            - generic [ref=e1716]:
+              - generic [ref=e1717]: Exact Ok Reply
+              - generic [ref=e1718]: GPT 5.6 Luna
+            - generic [ref=e1723]: 7d
+          - button "Split with Exact Ok Reply" [ref=e1724] [cursor=pointer]
+          - button "Actions for Exact Ok Reply" [ref=e1728] [cursor=pointer]
+        - generic [ref=e1733]:
+          - button "Pi coding agent system prompt setup Grok 4.6 · xhigh 7d" [ref=e1734] [cursor=pointer]:
+            - generic [ref=e1736]:
+              - generic [ref=e1737]: Pi coding agent system prompt setup
+              - generic [ref=e1738]: Grok 4.6 · xhigh
+            - generic [ref=e1743]: 7d
+          - button "Split with Pi coding agent system prompt setup" [ref=e1744] [cursor=pointer]
+          - button "Actions for Pi coding agent system prompt setup" [ref=e1748] [cursor=pointer]
+        - generic [ref=e1753]:
+          - 'button "Reply with exactly: ok GLM 5.3 Flash 7d" [ref=e1754] [cursor=pointer]':
+            - generic [ref=e1756]:
+              - generic [ref=e1757]: "Reply with exactly: ok"
+              - generic [ref=e1758]: GLM 5.3 Flash
+            - generic [ref=e1763]: 7d
+          - 'button "Split with Reply with exactly: ok" [ref=e1764] [cursor=pointer]'
+          - 'button "Actions for Reply with exactly: ok" [ref=e1768] [cursor=pointer]'
+        - generic [ref=e1773]:
+          - button "Create grok-resume.txt, sleep, then append Grok 4.6 · high 7d" [ref=e1774] [cursor=pointer]:
+            - generic [ref=e1776]:
+              - generic [ref=e1777]: Create grok-resume.txt, sleep, then append
+              - generic [ref=e1778]: Grok 4.6 · high
+            - generic [ref=e1783]: 7d
+          - button "Split with Create grok-resume.txt, sleep, then append" [ref=e1784] [cursor=pointer]
+          - button "Actions for Create grok-resume.txt, sleep, then append" [ref=e1788] [cursor=pointer]
+        - generic [ref=e1793]:
+          - button "Create /tmp/resume-final.txt containing the single line 'step 1 done'. Then run codex 7d" [ref=e1794] [cursor=pointer]:
+            - generic [ref=e1796]:
+              - generic [ref=e1797]: Create /tmp/resume-final.txt containing the single line 'step 1 done'. Then run
+              - generic [ref=e1798]: codex
+            - generic [ref=e1803]: 7d
+          - button "Split with Create /tmp/resume-final.txt containing the single line 'step 1 done'. Then run" [ref=e1804] [cursor=pointer]
+          - button "Actions for Create /tmp/resume-final.txt containing the single line 'step 1 done'. Then run" [ref=e1808] [cursor=pointer]
+        - generic [ref=e1813]:
+          - 'button "Run the shell command echo pong then reply with exactly: done codex 7d" [ref=e1814] [cursor=pointer]':
+            - generic [ref=e1816]:
+              - generic [ref=e1817]: "Run the shell command echo pong then reply with exactly: done"
+              - generic [ref=e1818]: codex
+            - generic [ref=e1823]: 7d
+          - 'button "Split with Run the shell command echo pong then reply with exactly: done" [ref=e1824] [cursor=pointer]'
+          - 'button "Actions for Run the shell command echo pong then reply with exactly: done" [ref=e1828] [cursor=pointer]'
+        - generic [ref=e1833]:
+          - 'button "Reply with exactly: ok codex 7d" [ref=e1834] [cursor=pointer]':
+            - generic [ref=e1836]:
+              - generic [ref=e1837]: "Reply with exactly: ok"
+              - generic [ref=e1838]: codex
+            - generic [ref=e1843]: 7d
+          - 'button "Split with Reply with exactly: ok" [ref=e1844] [cursor=pointer]'
+          - 'button "Actions for Reply with exactly: ok" [ref=e1848] [cursor=pointer]'
+        - generic [ref=e1853]:
+          - button "Create a file called /tmp/resume-demo.txt containing the single line 'step 1 don codex 7d" [ref=e1854] [cursor=pointer]:
+            - generic [ref=e1856]:
+              - generic [ref=e1857]: Create a file called /tmp/resume-demo.txt containing the single line 'step 1 don
+              - generic [ref=e1858]: codex
+            - generic [ref=e1863]: 7d
+          - button "Split with Create a file called /tmp/resume-demo.txt containing the single line 'step 1 don" [ref=e1864] [cursor=pointer]
+          - button "Actions for Create a file called /tmp/resume-demo.txt containing the single line 'step 1 don" [ref=e1868] [cursor=pointer]
+        - generic [ref=e1873]:
+          - 'button "Run the shell command echo pong then reply with exactly: done codex 7d" [ref=e1874] [cursor=pointer]':
+            - generic [ref=e1876]:
+              - generic [ref=e1877]: "Run the shell command echo pong then reply with exactly: done"
+              - generic [ref=e1878]: codex
+            - generic [ref=e1883]: 7d
+          - 'button "Split with Run the shell command echo pong then reply with exactly: done" [ref=e1884] [cursor=pointer]'
+          - 'button "Actions for Run the shell command echo pong then reply with exactly: done" [ref=e1888] [cursor=pointer]'
+        - generic [ref=e1893]:
+          - 'button "Reply with exactly: done codex 7d" [ref=e1894] [cursor=pointer]':
+            - generic [ref=e1896]:
+              - generic [ref=e1897]: "Reply with exactly: done"
+              - generic [ref=e1898]: codex
+            - generic [ref=e1903]: 7d
+          - 'button "Split with Reply with exactly: done" [ref=e1904] [cursor=pointer]'
+          - 'button "Actions for Reply with exactly: done" [ref=e1908] [cursor=pointer]'
+        - generic [ref=e1913]:
+          - 'button "Run the shell command echo pong and then reply with exactly: done codex 7d" [ref=e1914] [cursor=pointer]':
+            - generic [ref=e1916]:
+              - generic [ref=e1917]: "Run the shell command echo pong and then reply with exactly: done"
+              - generic [ref=e1918]: codex
+            - generic [ref=e1923]: 7d
+          - 'button "Split with Run the shell command echo pong and then reply with exactly: done" [ref=e1924] [cursor=pointer]'
+          - 'button "Actions for Run the shell command echo pong and then reply with exactly: done" [ref=e1928] [cursor=pointer]'
+        - generic [ref=e1933]:
+          - 'button "Run echo pong with the shell tool, then reply with just: done codex 7d" [ref=e1934] [cursor=pointer]':
+            - generic [ref=e1936]:
+              - generic [ref=e1937]: "Run echo pong with the shell tool, then reply with just: done"
+              - generic [ref=e1938]: codex
+            - generic [ref=e1943]: 7d
+          - 'button "Split with Run echo pong with the shell tool, then reply with just: done" [ref=e1944] [cursor=pointer]'
+          - 'button "Actions for Run echo pong with the shell tool, then reply with just: done" [ref=e1948] [cursor=pointer]'
+        - generic [ref=e1953]:
+          - button "Claude agent hook leaks Claude Opus 5 · medium 7d" [ref=e1954] [cursor=pointer]:
+            - generic [ref=e1956]:
+              - generic [ref=e1957]: Claude agent hook leaks
+              - generic [ref=e1958]: Claude Opus 5 · medium
+            - generic [ref=e1963]: 7d
+          - button "Split with Claude agent hook leaks" [ref=e1964] [cursor=pointer]
+          - button "Actions for Claude agent hook leaks" [ref=e1968] [cursor=pointer]
+        - generic [ref=e1973]:
+          - button "I wanna see how you read, make a code change in file Claude Sonnet 5 · high 7d" [ref=e1974] [cursor=pointer]:
+            - generic [ref=e1976]:
+              - generic [ref=e1977]: I wanna see how you read, make a code change in file
+              - generic [ref=e1978]: Claude Sonnet 5 · high
+            - generic [ref=e1983]: 7d
+          - button "Split with I wanna see how you read, make a code change in file" [ref=e1984] [cursor=pointer]
+          - button "Actions for I wanna see how you read, make a code change in file" [ref=e1988] [cursor=pointer]
+        - generic [ref=e1993]:
+          - button "Grok to Pi integration issues Claude Opus 5 · high 7d" [ref=e1994] [cursor=pointer]:
+            - generic [ref=e1996]:
+              - generic [ref=e1997]: Grok to Pi integration issues
+              - generic [ref=e1998]: Claude Opus 5 · high
+            - generic [ref=e2003]: 7d
+          - button "Split with Grok to Pi integration issues" [ref=e2004] [cursor=pointer]
+          - button "Actions for Grok to Pi integration issues" [ref=e2008] [cursor=pointer]
+        - generic [ref=e2013]:
+          - button "Ask-block UI test with coding questions Grok 4.6 · xhigh 8d" [ref=e2014] [cursor=pointer]:
+            - generic [ref=e2016]:
+              - generic [ref=e2017]: Ask-block UI test with coding questions
+              - generic [ref=e2018]: Grok 4.6 · xhigh
+            - generic [ref=e2023]: 8d
+          - button "Split with Ask-block UI test with coding questions" [ref=e2024] [cursor=pointer]
+          - button "Actions for Ask-block UI test with coding questions" [ref=e2028] [cursor=pointer]
+        - generic [ref=e2033]:
+          - button "Grok to Pi sync issues Claude Opus 5 · high 8d" [ref=e2034] [cursor=pointer]:
+            - generic [ref=e2036]:
+              - generic [ref=e2037]: Grok to Pi sync issues
+              - generic [ref=e2038]: Claude Opus 5 · high
+            - generic [ref=e2043]: 8d
+          - button "Split with Grok to Pi sync issues" [ref=e2044] [cursor=pointer]
+          - button "Actions for Grok to Pi sync issues" [ref=e2048] [cursor=pointer]
+        - generic [ref=e2053]:
+          - button "Grok to Pi sync issues Claude Opus 5 · high 8d" [ref=e2054] [cursor=pointer]:
+            - generic [ref=e2056]:
+              - generic [ref=e2057]: Grok to Pi sync issues
+              - generic [ref=e2058]: Claude Opus 5 · high
+            - generic [ref=e2063]: 8d
+          - button "Split with Grok to Pi sync issues" [ref=e2064] [cursor=pointer]
+          - button "Actions for Grok to Pi sync issues" [ref=e2068] [cursor=pointer]
+        - generic [ref=e2073]:
+          - button "Three questions Claude Sonnet 5 · high 8d" [ref=e2074] [cursor=pointer]:
+            - generic [ref=e2076]:
+              - generic [ref=e2077]: Three questions
+              - generic [ref=e2078]: Claude Sonnet 5 · high
+            - generic [ref=e2083]: 8d
+          - button "Split with Three questions" [ref=e2084] [cursor=pointer]
+          - button "Actions for Three questions" [ref=e2088] [cursor=pointer]
+        - generic [ref=e2093]:
+          - button "Ask me three questions Grok 4.6 8d" [ref=e2094] [cursor=pointer]:
+            - generic [ref=e2096]:
+              - generic [ref=e2097]: Ask me three questions
+              - generic [ref=e2098]: Grok 4.6
+            - generic [ref=e2103]: 8d
+          - button "Split with Ask me three questions" [ref=e2104] [cursor=pointer]
+          - button "Actions for Ask me three questions" [ref=e2108] [cursor=pointer]
+        - generic [ref=e2113]:
+          - button "Pi coding agent tools and guidelines Grok 4.6 · xhigh 8d" [ref=e2114] [cursor=pointer]:
+            - generic [ref=e2116]:
+              - generic [ref=e2117]: Pi coding agent tools and guidelines
+              - generic [ref=e2118]: Grok 4.6 · xhigh
+            - generic [ref=e2123]: 8d
+          - button "Split with Pi coding agent tools and guidelines" [ref=e2124] [cursor=pointer]
+          - button "Actions for Pi coding agent tools and guidelines" [ref=e2128] [cursor=pointer]
+        - generic [ref=e2133]:
+          - button "Ask me three questions Grok 4.6 8d" [ref=e2134] [cursor=pointer]:
+            - generic [ref=e2136]:
+              - generic [ref=e2137]: Ask me three questions
+              - generic [ref=e2138]: Grok 4.6
+            - generic [ref=e2143]: 8d
+          - button "Split with Ask me three questions" [ref=e2144] [cursor=pointer]
+          - button "Actions for Ask me three questions" [ref=e2148] [cursor=pointer]
+        - generic [ref=e2153]:
+          - button "Pi coding agent harness system prompt Grok 4.6 · high 8d" [ref=e2154] [cursor=pointer]:
+            - generic [ref=e2156]:
+              - generic [ref=e2157]: Pi coding agent harness system prompt
+              - generic [ref=e2158]: Grok 4.6 · high
+            - generic [ref=e2163]: 8d
+          - button "Split with Pi coding agent harness system prompt" [ref=e2164] [cursor=pointer]
+          - button "Actions for Pi coding agent harness system prompt" [ref=e2168] [cursor=pointer]
+        - generic [ref=e2173]:
+          - button "When i said ask me three questions in Pi, it gave the 1st… Grok 4.6 8d" [ref=e2174] [cursor=pointer]:
+            - generic [ref=e2176]:
+              - generic [ref=e2177]: When i said ask me three questions in Pi, it gave the 1st…
+              - generic [ref=e2178]: Grok 4.6
+            - generic [ref=e2183]: 8d
+          - button "Split with When i said ask me three questions in Pi, it gave the 1st…" [ref=e2184] [cursor=pointer]
+          - button "Actions for When i said ask me three questions in Pi, it gave the 1st…" [ref=e2188] [cursor=pointer]
+        - generic [ref=e2193]:
+          - button "Pi coding agent harness system setup Grok 4.6 · xhigh 8d" [ref=e2194] [cursor=pointer]:
+            - generic [ref=e2196]:
+              - generic [ref=e2197]: Pi coding agent harness system setup
+              - generic [ref=e2198]: Grok 4.6 · xhigh
+            - generic [ref=e2203]: 8d
+          - button "Split with Pi coding agent harness system setup" [ref=e2204] [cursor=pointer]
+          - button "Actions for Pi coding agent harness system setup" [ref=e2208] [cursor=pointer]
+        - generic [ref=e2213]:
+          - button "Fleet in pi-web project Claude Opus 5 · high 8d" [ref=e2214] [cursor=pointer]:
+            - generic [ref=e2216]:
+              - generic [ref=e2217]: Fleet in pi-web project
+              - generic [ref=e2218]: Claude Opus 5 · high
+            - generic [ref=e2223]: 8d
+          - button "Split with Fleet in pi-web project" [ref=e2224] [cursor=pointer]
+          - button "Actions for Fleet in pi-web project" [ref=e2228] [cursor=pointer]
+        - generic [ref=e2233]:
+          - button "Settings Toggle Addition Request GLM 5.3 Flash 8d" [ref=e2234] [cursor=pointer]:
+            - generic [ref=e2236]:
+              - generic [ref=e2237]: Settings Toggle Addition Request
+              - generic [ref=e2238]: GLM 5.3 Flash
+            - generic [ref=e2243]: 8d
+          - button "Split with Settings Toggle Addition Request" [ref=e2244] [cursor=pointer]
+          - button "Actions for Settings Toggle Addition Request" [ref=e2248] [cursor=pointer]
+        - generic [ref=e2253]:
+          - button "Add a settings toggle Claude Sonnet 5 · high 8d" [ref=e2254] [cursor=pointer]:
+            - generic [ref=e2256]:
+              - generic [ref=e2257]: Add a settings toggle
+              - generic [ref=e2258]: Claude Sonnet 5 · high
+            - generic [ref=e2263]: 8d
+          - button "Split with Add a settings toggle" [ref=e2264] [cursor=pointer]
+          - button "Actions for Add a settings toggle" [ref=e2268] [cursor=pointer]
+        - generic [ref=e2273]:
+          - button "Pi coding agent harness system prompt Grok 4.6 · xhigh 8d" [ref=e2274] [cursor=pointer]:
+            - generic [ref=e2276]:
+              - generic [ref=e2277]: Pi coding agent harness system prompt
+              - generic [ref=e2278]: Grok 4.6 · xhigh
+            - generic [ref=e2283]: 8d
+          - button "Split with Pi coding agent harness system prompt" [ref=e2284] [cursor=pointer]
+          - button "Actions for Pi coding agent harness system prompt" [ref=e2288] [cursor=pointer]
+        - generic [ref=e2293]:
+          - button "Reply with the single word OK and nothing else Grok 4.6 8d" [ref=e2294] [cursor=pointer]:
+            - generic [ref=e2296]:
+              - generic [ref=e2297]: Reply with the single word OK and nothing else
+              - generic [ref=e2298]: Grok 4.6
+            - generic [ref=e2303]: 8d
+          - button "Split with Reply with the single word OK and nothing else" [ref=e2304] [cursor=pointer]
+          - button "Actions for Reply with the single word OK and nothing else" [ref=e2308] [cursor=pointer]
+        - generic [ref=e2313]:
+          - button "Add a settings toggle Claude Sonnet 5 · high 8d" [ref=e2314] [cursor=pointer]:
+            - generic [ref=e2316]:
+              - generic [ref=e2317]: Add a settings toggle
+              - generic [ref=e2318]: Claude Sonnet 5 · high
+            - generic [ref=e2323]: 8d
+          - button "Split with Add a settings toggle" [ref=e2324] [cursor=pointer]
+          - button "Actions for Add a settings toggle" [ref=e2328] [cursor=pointer]
+        - generic [ref=e2333]:
+          - button "Fix Skills UI and Top Bar Layout GLM 5.3 Flash 8d" [ref=e2334] [cursor=pointer]:
+            - generic [ref=e2336]:
+              - generic [ref=e2337]: Fix Skills UI and Top Bar Layout
+              - generic [ref=e2338]: GLM 5.3 Flash
+            - generic [ref=e2343]: 8d
+          - button "Split with Fix Skills UI and Top Bar Layout" [ref=e2344] [cursor=pointer]
+          - button "Actions for Fix Skills UI and Top Bar Layout" [ref=e2348] [cursor=pointer]
+        - generic [ref=e2353]:
+          - button "Ponytail zip in pi-web Claude Opus 5 · high 8d" [ref=e2354] [cursor=pointer]:
+            - generic [ref=e2356]:
+              - generic [ref=e2357]: Ponytail zip in pi-web
+              - generic [ref=e2358]: Claude Opus 5 · high
+            - generic [ref=e2363]: 8d
+          - button "Split with Ponytail zip in pi-web" [ref=e2364] [cursor=pointer]
+          - button "Actions for Ponytail zip in pi-web" [ref=e2368] [cursor=pointer]
+        - generic [ref=e2373]:
+          - button "Ponytail Review Command GLM 5.3 8d" [ref=e2374] [cursor=pointer]:
+            - generic [ref=e2376]:
+              - generic [ref=e2377]: Ponytail Review Command
+              - generic [ref=e2378]: GLM 5.3
+            - generic [ref=e2383]: 8d
+          - button "Split with Ponytail Review Command" [ref=e2384] [cursor=pointer]
+          - button "Actions for Ponytail Review Command" [ref=e2388] [cursor=pointer]
+        - generic [ref=e2393]:
+          - button "Project usefulness assessment Claude Opus 5 · max 8d" [ref=e2394] [cursor=pointer]:
+            - generic [ref=e2396]:
+              - generic [ref=e2397]: Project usefulness assessment
+              - generic [ref=e2398]: Claude Opus 5 · max
+            - generic [ref=e2403]: 8d
+          - button "Split with Project usefulness assessment" [ref=e2404] [cursor=pointer]
+          - button "Actions for Project usefulness assessment" [ref=e2408] [cursor=pointer]
+        - generic [ref=e2413]:
+          - 'button "Reply with exactly: ok Claude Sonnet 5 · high 8d" [ref=e2414] [cursor=pointer]':
+            - generic [ref=e2416]:
+              - generic [ref=e2417]: "Reply with exactly: ok"
+              - generic [ref=e2418]: Claude Sonnet 5 · high
+            - generic [ref=e2423]: 8d
+          - 'button "Split with Reply with exactly: ok" [ref=e2424] [cursor=pointer]'
+          - 'button "Actions for Reply with exactly: ok" [ref=e2428] [cursor=pointer]'
+        - generic [ref=e2433]:
+          - button "Deploy Status Indicator for Pi Web UI GLM 5.3 8d" [ref=e2434] [cursor=pointer]:
+            - generic [ref=e2436]:
+              - generic [ref=e2437]: Deploy Status Indicator for Pi Web UI
+              - generic [ref=e2438]: GLM 5.3
+            - generic [ref=e2443]: 8d
+          - button "Split with Deploy Status Indicator for Pi Web UI" [ref=e2444] [cursor=pointer]
+          - button "Actions for Deploy Status Indicator for Pi Web UI" [ref=e2448] [cursor=pointer]
+        - generic [ref=e2453]:
+          - button "Oracle Always Free Ampere A1 Limits 2026 Grok 4.6 · high 8d" [ref=e2454] [cursor=pointer]:
+            - generic [ref=e2456]:
+              - generic [ref=e2457]: Oracle Always Free Ampere A1 Limits 2026
+              - generic [ref=e2458]: Grok 4.6 · high
+            - generic [ref=e2463]: 8d
+          - button "Split with Oracle Always Free Ampere A1 Limits 2026" [ref=e2464] [cursor=pointer]
+          - button "Actions for Oracle Always Free Ampere A1 Limits 2026" [ref=e2468] [cursor=pointer]
+        - generic [ref=e2473]:
+          - 'button "Reply with exactly the word: hi Claude Sonnet 5 · high 8d" [ref=e2474] [cursor=pointer]':
+            - generic [ref=e2476]:
+              - generic [ref=e2477]: "Reply with exactly the word: hi"
+              - generic [ref=e2478]: Claude Sonnet 5 · high
+            - generic [ref=e2483]: 8d
+          - 'button "Split with Reply with exactly the word: hi" [ref=e2484] [cursor=pointer]'
+          - 'button "Actions for Reply with exactly the word: hi" [ref=e2488] [cursor=pointer]'
+        - generic [ref=e2493]:
+          - button "Git UI feature expansion Claude Opus 5 · high 8d" [ref=e2494] [cursor=pointer]:
+            - generic [ref=e2496]:
+              - generic [ref=e2497]: Git UI feature expansion
+              - generic [ref=e2498]: Claude Opus 5 · high
+            - generic [ref=e2503]: 8d
+          - button "Split with Git UI feature expansion" [ref=e2504] [cursor=pointer]
+          - button "Actions for Git UI feature expansion" [ref=e2508] [cursor=pointer]
+        - generic [ref=e2513]:
+          - button "Use the Write tool to create… Claude Sonnet 5 · high 8d" [ref=e2514] [cursor=pointer]:
+            - generic [ref=e2516]:
+              - generic [ref=e2517]: Use the Write tool to create…
+              - generic [ref=e2518]: Claude Sonnet 5 · high
+            - generic [ref=e2523]: 8d
+          - button "Split with Use the Write tool to create…" [ref=e2524] [cursor=pointer]
+          - button "Actions for Use the Write tool to create…" [ref=e2528] [cursor=pointer]
+        - generic [ref=e2533]:
+          - button "Use the Write tool to create… Claude Sonnet 5 · high 8d" [ref=e2534] [cursor=pointer]:
+            - generic [ref=e2536]:
+              - generic [ref=e2537]: Use the Write tool to create…
+              - generic [ref=e2538]: Claude Sonnet 5 · high
+            - generic [ref=e2543]: 8d
+          - button "Split with Use the Write tool to create…" [ref=e2544] [cursor=pointer]
+          - button "Actions for Use the Write tool to create…" [ref=e2548] [cursor=pointer]
+        - generic [ref=e2553]:
+          - button "Use the Write tool to create… Claude Sonnet 5 · high 8d" [ref=e2554] [cursor=pointer]:
+            - generic [ref=e2556]:
+              - generic [ref=e2557]: Use the Write tool to create…
+              - generic [ref=e2558]: Claude Sonnet 5 · high
+            - generic [ref=e2563]: 8d
+          - button "Split with Use the Write tool to create…" [ref=e2564] [cursor=pointer]
+          - button "Actions for Use the Write tool to create…" [ref=e2568] [cursor=pointer]
+        - generic [ref=e2573]:
+          - button "Use the Write tool to create the file… Claude Sonnet 5 · high 8d" [ref=e2574] [cursor=pointer]:
+            - generic [ref=e2576]:
+              - generic [ref=e2577]: Use the Write tool to create the file…
+              - generic [ref=e2578]: Claude Sonnet 5 · high
+            - generic [ref=e2583]: 8d
+          - button "Split with Use the Write tool to create the file…" [ref=e2584] [cursor=pointer]
+          - button "Actions for Use the Write tool to create the file…" [ref=e2588] [cursor=pointer]
+        - generic [ref=e2593]:
+          - button "First principles review and simplification Claude Opus 5 · max 8d" [ref=e2594] [cursor=pointer]:
+            - generic [ref=e2596]:
+              - generic [ref=e2597]: First principles review and simplification
+              - generic [ref=e2598]: Claude Opus 5 · max
+            - generic [ref=e2603]: 8d
+          - button "Split with First principles review and simplification" [ref=e2604] [cursor=pointer]
+          - button "Actions for First principles review and simplification" [ref=e2608] [cursor=pointer]
+        - generic [ref=e2613]:
+          - button "Add Pull With Auto-Stash Options GLM 5.3 Flash 9d" [ref=e2614] [cursor=pointer]:
+            - generic [ref=e2616]:
+              - generic [ref=e2617]: Add Pull With Auto-Stash Options
+              - generic [ref=e2618]: GLM 5.3 Flash
+            - generic [ref=e2623]: 9d
+          - button "Split with Add Pull With Auto-Stash Options" [ref=e2624] [cursor=pointer]
+          - button "Actions for Add Pull With Auto-Stash Options" [ref=e2628] [cursor=pointer]
+        - generic [ref=e2633]:
+          - button "Title generation background issues Claude Opus 5 · high 9d" [ref=e2634] [cursor=pointer]:
+            - generic [ref=e2636]:
+              - generic [ref=e2637]: Title generation background issues
+              - generic [ref=e2638]: Claude Opus 5 · high
+            - generic [ref=e2643]: 9d
+          - button "Split with Title generation background issues" [ref=e2644] [cursor=pointer]
+          - button "Actions for Title generation background issues" [ref=e2648] [cursor=pointer]
+        - generic [ref=e2653]:
+          - button "Terminal Sidepane and GitHub Push UX GLM 5.3 Flash 9d" [ref=e2654] [cursor=pointer]:
+            - generic [ref=e2656]:
+              - generic [ref=e2657]: Terminal Sidepane and GitHub Push UX
+              - generic [ref=e2658]: GLM 5.3 Flash
+            - generic [ref=e2663]: 9d
+          - button "Split with Terminal Sidepane and GitHub Push UX" [ref=e2664] [cursor=pointer]
+          - button "Actions for Terminal Sidepane and GitHub Push UX" [ref=e2668] [cursor=pointer]
+        - generic [ref=e2673]:
+          - button "Shrink Running Pill and Input Spacing GLM 5.3 Flash 9d" [ref=e2674] [cursor=pointer]:
+            - generic [ref=e2676]:
+              - generic [ref=e2677]: Shrink Running Pill and Input Spacing
+              - generic [ref=e2678]: GLM 5.3 Flash
+            - generic [ref=e2683]: 9d
+          - button "Split with Shrink Running Pill and Input Spacing" [ref=e2684] [cursor=pointer]
+          - button "Actions for Shrink Running Pill and Input Spacing" [ref=e2688] [cursor=pointer]
+        - generic [ref=e2693]:
+          - button "Prompt Disappeared During Background Title Generation DeepSeek V4 Pro 9d" [ref=e2694] [cursor=pointer]:
+            - generic [ref=e2696]:
+              - generic [ref=e2697]: Prompt Disappeared During Background Title Generation
+              - generic [ref=e2698]: DeepSeek V4 Pro
+            - generic [ref=e2703]: 9d
+          - button "Split with Prompt Disappeared During Background Title Generation" [ref=e2704] [cursor=pointer]
+          - button "Actions for Prompt Disappeared During Background Title Generation" [ref=e2708] [cursor=pointer]
+        - generic [ref=e2713]:
+          - button "Untitled session Grok 4.6 · xhigh 9d" [ref=e2714] [cursor=pointer]:
+            - generic [ref=e2716]:
+              - generic [ref=e2717]: Untitled session
+              - generic [ref=e2718]: Grok 4.6 · xhigh
+            - generic [ref=e2723]: 9d
+          - button "Split with Untitled session" [ref=e2724] [cursor=pointer]
+          - button "Actions for Untitled session" [ref=e2728] [cursor=pointer]
+        - generic [ref=e2733]:
+          - button "Pi-web coding agent session setup Grok 4.6 · xhigh 9d" [ref=e2734] [cursor=pointer]:
+            - generic [ref=e2736]:
+              - generic [ref=e2737]: Pi-web coding agent session setup
+              - generic [ref=e2738]: Grok 4.6 · xhigh
+            - generic [ref=e2743]: 9d
+          - button "Split with Pi-web coding agent session setup" [ref=e2744] [cursor=pointer]
+          - button "Actions for Pi-web coding agent session setup" [ref=e2748] [cursor=pointer]
+        - generic [ref=e2753]:
+          - button "Pi-Web Conversation UI Coding Session Grok 4.6 · xhigh 9d" [ref=e2754] [cursor=pointer]:
+            - generic [ref=e2756]:
+              - generic [ref=e2757]: Pi-Web Conversation UI Coding Session
+              - generic [ref=e2758]: Grok 4.6 · xhigh
+            - generic [ref=e2763]: 9d
+          - button "Split with Pi-Web Conversation UI Coding Session" [ref=e2764] [cursor=pointer]
+          - button "Actions for Pi-Web Conversation UI Coding Session" [ref=e2768] [cursor=pointer]
+        - generic [ref=e2773]:
+          - button "Pi-Web Conversation UI Project Setup Grok 4.6 · xhigh 9d" [ref=e2774] [cursor=pointer]:
+            - generic [ref=e2776]:
+              - generic [ref=e2777]: Pi-Web Conversation UI Project Setup
+              - generic [ref=e2778]: Grok 4.6 · xhigh
+            - generic [ref=e2783]: 9d
+          - button "Split with Pi-Web Conversation UI Project Setup" [ref=e2784] [cursor=pointer]
+          - button "Actions for Pi-Web Conversation UI Project Setup" [ref=e2788] [cursor=pointer]
+        - generic [ref=e2793]:
+          - button "Untitled session Grok 4.6 · xhigh 9d" [ref=e2794] [cursor=pointer]:
+            - generic [ref=e2796]:
+              - generic [ref=e2797]: Untitled session
+              - generic [ref=e2798]: Grok 4.6 · xhigh
+            - generic [ref=e2803]: 9d
+          - button "Split with Untitled session" [ref=e2804] [cursor=pointer]
+          - button "Actions for Untitled session" [ref=e2808] [cursor=pointer]
+        - generic [ref=e2813]:
+          - button "Ok currently my Pi-web harness is not asking fr any questions… GLM 5.3 9d" [ref=e2814] [cursor=pointer]:
+            - generic [ref=e2816]:
+              - generic [ref=e2817]: Ok currently my Pi-web harness is not asking fr any questions…
+              - generic [ref=e2818]: GLM 5.3
+            - generic [ref=e2823]: 9d
+          - button "Split with Ok currently my Pi-web harness is not asking fr any questions…" [ref=e2824] [cursor=pointer]
+          - button "Actions for Ok currently my Pi-web harness is not asking fr any questions…" [ref=e2828] [cursor=pointer]
+        - generic [ref=e2833]:
+          - button "Restore Codex models from Ollama DeepSeek V4 Flash 9d" [ref=e2834] [cursor=pointer]:
+            - generic [ref=e2836]:
+              - generic [ref=e2837]: Restore Codex models from Ollama
+              - generic [ref=e2838]: DeepSeek V4 Flash
+            - generic [ref=e2843]: 9d
+          - button "Split with Restore Codex models from Ollama" [ref=e2844] [cursor=pointer]
+          - button "Actions for Restore Codex models from Ollama" [ref=e2848] [cursor=pointer]
+        - generic [ref=e2853]:
+          - button "In this Pi-web project, this input box has gone up, instead of… GLM 5.3 Flash 9d" [ref=e2854] [cursor=pointer]:
+            - generic [ref=e2856]:
+              - generic [ref=e2857]: In this Pi-web project, this input box has gone up, instead of…
+              - generic [ref=e2858]: GLM 5.3 Flash
+            - generic [ref=e2863]: 9d
+          - button "Split with In this Pi-web project, this input box has gone up, instead of…" [ref=e2864] [cursor=pointer]
+          - button "Actions for In this Pi-web project, this input box has gone up, instead of…" [ref=e2868] [cursor=pointer]
+        - generic [ref=e2873]:
+          - button "Can u review this project GLM 5.3 9d" [ref=e2874] [cursor=pointer]:
+            - generic [ref=e2876]:
+              - generic [ref=e2877]: Can u review this project
+              - generic [ref=e2878]: GLM 5.3
+            - generic [ref=e2883]: 9d
+          - button "Split with Can u review this project" [ref=e2884] [cursor=pointer]
+          - button "Actions for Can u review this project" [ref=e2888] [cursor=pointer]
+        - generic [ref=e2893]:
+          - button "Pi-web coding assistant session setup Grok 4.6 · medium 10d" [ref=e2894] [cursor=pointer]:
+            - generic [ref=e2896]:
+              - generic [ref=e2897]: Pi-web coding assistant session setup
+              - generic [ref=e2898]: Grok 4.6 · medium
+            - generic [ref=e2903]: 10d
+          - button "Split with Pi-web coding assistant session setup" [ref=e2904] [cursor=pointer]
+          - button "Actions for Pi-web coding assistant session setup" [ref=e2908] [cursor=pointer]
+        - generic [ref=e2913]:
+          - button "Apple on-device AI runtime comparison Grok 4.6 · high 10d" [ref=e2914] [cursor=pointer]:
+            - generic [ref=e2916]:
+              - generic [ref=e2917]: Apple on-device AI runtime comparison
+              - generic [ref=e2918]: Grok 4.6 · high
+            - generic [ref=e2923]: 10d
+          - button "Split with Apple on-device AI runtime comparison" [ref=e2924] [cursor=pointer]
+          - button "Actions for Apple on-device AI runtime comparison" [ref=e2928] [cursor=pointer]
+        - generic [ref=e2933]:
+          - button "File Read-Write-Remove Then Prolonged Tool Calls Grok 4.6 · high 10d" [ref=e2934] [cursor=pointer]:
+            - generic [ref=e2936]:
+              - generic [ref=e2937]: File Read-Write-Remove Then Prolonged Tool Calls
+              - generic [ref=e2938]: Grok 4.6 · high
+            - generic [ref=e2943]: 10d
+          - button "Split with File Read-Write-Remove Then Prolonged Tool Calls" [ref=e2944] [cursor=pointer]
+          - button "Actions for File Read-Write-Remove Then Prolonged Tool Calls" [ref=e2948] [cursor=pointer]
+        - generic [ref=e2953]:
+          - button "Pi-web reasoning summary reappearing Claude Sonnet 5 · xhigh 10d" [ref=e2954] [cursor=pointer]:
+            - generic [ref=e2956]:
+              - generic [ref=e2957]: Pi-web reasoning summary reappearing
+              - generic [ref=e2958]: Claude Sonnet 5 · xhigh
+            - generic [ref=e2963]: 10d
+          - button "Split with Pi-web reasoning summary reappearing" [ref=e2964] [cursor=pointer]
+          - button "Actions for Pi-web reasoning summary reappearing" [ref=e2968] [cursor=pointer]
+        - generic [ref=e2973]:
+          - button "Apple On-Device AI Runtime Guide Grok 4.6 · high 10d" [ref=e2974] [cursor=pointer]:
+            - generic [ref=e2976]:
+              - generic [ref=e2977]: Apple On-Device AI Runtime Guide
+              - generic [ref=e2978]: Grok 4.6 · high
+            - generic [ref=e2983]: 10d
+          - button "Split with Apple On-Device AI Runtime Guide" [ref=e2984] [cursor=pointer]
+          - button "Actions for Apple On-Device AI Runtime Guide" [ref=e2988] [cursor=pointer]
+        - generic [ref=e2993]:
+          - button "Apple on-device AI coding assistant Grok 4.6 · high 10d" [ref=e2994] [cursor=pointer]:
+            - generic [ref=e2996]:
+              - generic [ref=e2997]: Apple on-device AI coding assistant
+              - generic [ref=e2998]: Grok 4.6 · high
+            - generic [ref=e3003]: 10d
+          - button "Split with Apple on-device AI coding assistant" [ref=e3004] [cursor=pointer]
+          - button "Actions for Apple on-device AI coding assistant" [ref=e3008] [cursor=pointer]
+        - generic [ref=e3013]:
+          - button "Scratch file write-read-bash demo then cleanup Grok 4.6 · high 10d" [ref=e3014] [cursor=pointer]:
+            - generic [ref=e3016]:
+              - generic [ref=e3017]: Scratch file write-read-bash demo then cleanup
+              - generic [ref=e3018]: Grok 4.6 · high
+            - generic [ref=e3023]: 10d
+          - button "Split with Scratch file write-read-bash demo then cleanup" [ref=e3024] [cursor=pointer]
+          - button "Actions for Scratch file write-read-bash demo then cleanup" [ref=e3028] [cursor=pointer]
+      - generic [ref=e3034]:
+        - button "⌄ tmp 2" [ref=e3035] [cursor=pointer]:
+          - generic [ref=e3036]: ⌄
+          - generic [ref=e3039]: tmp
+          - emphasis [ref=e3040]: "2"
+        - button "Actions for workspace tmp" [ref=e3042] [cursor=pointer]
+      - generic [ref=e3048]:
+        - button "⌄ usage-test-FCQEEj 1" [ref=e3049] [cursor=pointer]:
+          - generic [ref=e3050]: ⌄
+          - generic [ref=e3053]: usage-test-FCQEEj
+          - emphasis [ref=e3054]: "1"
+        - button "Actions for workspace usage-test-FCQEEj" [ref=e3056] [cursor=pointer]
+      - generic [ref=e3062]:
+        - button "⌄ Home 27" [ref=e3063] [cursor=pointer]:
+          - generic [ref=e3064]: ⌄
+          - generic [ref=e3067]: Home
+          - emphasis [ref=e3068]: "27"
+        - button "Actions for workspace Home" [ref=e3070] [cursor=pointer]
+      - generic [ref=e3076]:
+        - button "⌄ yutyftydrtdr 1" [ref=e3077] [cursor=pointer]:
+          - generic [ref=e3078]: ⌄
+          - generic [ref=e3081]: yutyftydrtdr
+          - emphasis [ref=e3082]: "1"
+        - button "Actions for workspace yutyftydrtdr" [ref=e3084] [cursor=pointer]
+      - generic [ref=e3090]:
+        - button "⌄ ai-learning-app 15" [ref=e3091] [cursor=pointer]:
+          - generic [ref=e3092]: ⌄
+          - generic [ref=e3095]: ai-learning-app
+          - emphasis [ref=e3096]: "15"
+        - button "Actions for workspace ai-learning-app" [ref=e3098] [cursor=pointer]
+      - generic [ref=e3104]:
+        - button "⌄ frontend 1" [ref=e3105] [cursor=pointer]:
+          - generic [ref=e3106]: ⌄
+          - generic [ref=e3109]: frontend
+          - emphasis [ref=e3110]: "1"
+        - button "Actions for workspace frontend" [ref=e3112] [cursor=pointer]
+      - generic [ref=e3118]:
+        - button "⌄ tmp 1" [ref=e3119] [cursor=pointer]:
+          - generic [ref=e3120]: ⌄
+          - generic [ref=e3123]: tmp
+          - emphasis [ref=e3124]: "1"
+        - button "Actions for workspace tmp" [ref=e3126] [cursor=pointer]
+      - generic [ref=e3132]:
+        - button "⌄ grok-start-probe-X7Wirw 1" [ref=e3133] [cursor=pointer]:
+          - generic [ref=e3134]: ⌄
+          - generic [ref=e3137]: grok-start-probe-X7Wirw
+          - emphasis [ref=e3138]: "1"
+        - button "Actions for workspace grok-start-probe-X7Wirw" [ref=e3140] [cursor=pointer]
+      - generic [ref=e3146]:
+        - button "⌄ InkPress 4" [ref=e3147] [cursor=pointer]:
+          - generic [ref=e3148]: ⌄
+          - generic [ref=e3151]: InkPress
+          - emphasis [ref=e3152]: "4"
+        - button "Actions for workspace InkPress" [ref=e3154] [cursor=pointer]
+      - generic [ref=e3160]:
+        - button "⌄ scratchpad 4" [ref=e3161] [cursor=pointer]:
+          - generic [ref=e3162]: ⌄
+          - generic [ref=e3165]: scratchpad
+          - emphasis [ref=e3166]: "4"
+        - button "Actions for workspace scratchpad" [ref=e3168] [cursor=pointer]
+    - button "Resize sidebar" [ref=e67]
+    - generic [ref=e68]:
+      - button "Use dark theme" [ref=e69] [cursor=pointer]:
+        - generic [ref=e72]: Light
+      - button "Settings" [ref=e74] [cursor=pointer]
+      - generic [ref=e79]: ⌘K
+  - main [ref=e80]:
+    - generic [ref=e3174]:
+      - generic [ref=e3175]:
+        - generic [ref=e3176]:
+          - heading "New note" [level=1] [ref=e3185]
+          - paragraph [ref=e3178]: 9/13/2026, 7:39:16 PM
+        - generic [ref=e3186]:
+          - button "Delete" [ref=e3187] [cursor=pointer]
+          - button "All notes" [ref=e3190] [cursor=pointer]
+      - textbox "Note body" [active] [ref=e3191]:
+        - /placeholder: "Write a note…\nType “1. ” and press Enter to keep numbering."

@@ -13,18 +13,12 @@ import {
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { AGENT_BACKENDS } from "./agent-registry.js";
+import { isSubagentToolName } from "./agent-subagent.js";
+
+export { isSubagentToolName };
 
 const AGENT_ROOT = join(homedir(), ".pi", "agent");
-
-/** Task / spawn_subagent — the tool calls that stand up a background child.
- *  Shared with grok-agent.js (which re-exports) so session-file parsing and
- *  live event routing agree on what counts as a subagent spawn. */
-export function isSubagentToolName(name) {
-  const n = String(name ?? "")
-    .toLowerCase()
-    .replace(/[-\s]/g, "_");
-  return n === "task" || n === "spawn_subagent";
-}
 
 /** The child id from a spawn receipt ("Subagent started in background.
  *  subagent_id: …"). Shared with grok-agent.js, which re-exports it. */
@@ -87,7 +81,7 @@ export async function listSessions({ archived = false, backend = "pi" } = {}) {
   // of the UI being scoped to whichever backend the page was opened with.
   if (backend === "all") {
     const lists = await Promise.all(
-      ["pi", "claude", "grok", "codex"].map((name) =>
+      AGENT_BACKENDS.map((name) =>
         listSessions({ archived, backend: name }).catch(() => ({
           ok: false,
           sessions: [],
@@ -361,34 +355,20 @@ export async function readSessionMessages(path) {
   try {
     const { path: safePath, backend } = await resolveSessionPath(path);
     const contents = await readFile(safePath, "utf8");
-    // grok children keep their findings in their own session dir
-    // (subagents/<id>/output.json); the parent log only has the spawn
-    // receipt. Without re-attaching them here, a page refresh emptied the
-    // subagent panel and the findings existed only in the parent's
-    // after-the-fact narration.
-    const loadChildFindings =
+    // grok children keep tools in a sibling session (updates.jsonl) and
+    // findings in the parent's subagents/<id>/output.json. The parent log
+    // only has the spawn receipt — without splicing both back in, a refresh
+    // emptied the panel of every nested call.
+    const loadChild =
       backend === "grok"
-        ? (childId) => {
-            try {
-              const parsed = JSON.parse(
-                readFileSync(
-                  join(dirname(safePath), "subagents", childId, "output.json"),
-                  "utf8",
-                ),
-              );
-              return typeof parsed?.output === "string" && parsed.output.trim()
-                ? parsed.output
-                : undefined;
-            } catch {
-              return undefined;
-            }
-          }
+        ? (childId, parentToolUseId) =>
+            loadGrokChildMessages(safePath, childId, parentToolUseId)
         : undefined;
     const messages =
       backend === "claude"
         ? messagesFromClaudeLog(contents, safePath)
         : backend === "grok"
-          ? messagesFromGrokLog(contents, loadChildFindings)
+          ? messagesFromGrokLog(contents, loadChild)
           : backend === "codex"
             ? messagesFromCodexLog(contents)
             : messagesFromPiLog(contents);
@@ -408,7 +388,7 @@ export async function readSessionMessages(path) {
 // numeric prompt_index; synthetic context grok injects for itself
 // (<user_info>, skill listings, etc.) carries synthetic_reason instead and
 // is skipped so the preview matches what the user actually typed.
-export function messagesFromGrokLog(contents, loadChildFindings) {
+export function messagesFromGrokLog(contents, loadChild) {
   const messages = [];
   // tool_result entries name only the call id, so the tool name is carried
   // forward from the assistant entry that made the call.
@@ -481,20 +461,197 @@ export function messagesFromGrokLog(contents, loadChildFindings) {
         content: [{ type: "text", text: resultText }],
         timestamp: Date.now(),
       });
-      // A spawn receipt names the child; its findings live in the child's
-      // own files, so hydrate re-attaches them under the spawn call — the
-      // panel then shows them after a refresh exactly as it did live.
-      if (loadChildFindings && isSubagentToolName(name)) {
+      // A spawn receipt names the child; its tools and findings live in the
+      // child's own files, so hydrate re-attaches them under the spawn call.
+      if (loadChild && isSubagentToolName(name)) {
         const childId = parseSubagentId(resultText);
-        const findings = childId ? loadChildFindings(childId) : undefined;
-        if (findings)
+        if (!childId) continue;
+        const extra = loadChild(childId, id);
+        if (typeof extra === "string" && extra) {
           messages.push({
             role: "assistant",
-            content: [{ type: "text", text: findings }],
+            content: [{ type: "text", text: extra }],
             parentToolUseId: id,
             timestamp: Date.now(),
           });
+        } else if (Array.isArray(extra) && extra.length) {
+          messages.push(...extra);
+        }
       }
+    }
+  }
+  return messages;
+}
+
+/** Replay a grok child session's updates.jsonl as nested history messages
+ *  tagged with the spawn call that owns them. Used on refresh so the panel
+ *  keeps the child's tools, not just output.json findings. */
+export function childMessagesFromGrokUpdates(contents, parentToolUseId) {
+  const messages = [];
+  const toolNames = new Map();
+  const ended = new Set();
+  let text = "";
+
+  const flushText = () => {
+    const content = text.trim();
+    text = "";
+    if (!content) return;
+    messages.push({
+      role: "assistant",
+      parentToolUseId,
+      content: [{ type: "text", text: content }],
+      timestamp: Date.now(),
+    });
+  };
+
+  const endTool = (id, update, failed) => {
+    if (!id || ended.has(id)) return;
+    ended.add(id);
+    messages.push({
+      role: "toolResult",
+      toolCallId: id,
+      toolName: toolNames.get(id) ?? "tool",
+      content: [{ type: "text", text: grokToolOutputText(update) }],
+      isError: Boolean(failed),
+      timestamp: Date.now(),
+    });
+  };
+
+  for (const line of String(contents || "").split("\n")) {
+    if (!line.trim()) continue;
+    let event;
+    try {
+      event = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (event.method && event.method !== "session/update") continue;
+    const update = event.params?.update;
+    if (!update || typeof update !== "object") continue;
+    const kind = update.sessionUpdate;
+    if (kind === "agent_message_chunk") {
+      const delta =
+        update.content?.type === "text" ? String(update.content.text ?? "") : "";
+      if (delta) text += delta;
+    } else if (kind === "tool_call") {
+      flushText();
+      const id = String(update.toolCallId ?? "");
+      const name = String(update.title || id || "tool");
+      if (id) toolNames.set(id, name);
+      messages.push({
+        role: "assistant",
+        parentToolUseId,
+        content: [
+          {
+            type: "toolCall",
+            id,
+            name,
+            arguments: update.rawInput ?? {},
+          },
+        ],
+        timestamp: Date.now(),
+      });
+      if (update.status === "completed" || update.status === "failed")
+        endTool(id, update, update.status === "failed");
+    } else if (kind === "tool_call_update") {
+      if (update.rawInput && update.toolCallId && !toolNames.has(update.toolCallId)) {
+        flushText();
+        const id = String(update.toolCallId);
+        const name = String(update.title ?? id);
+        toolNames.set(id, name);
+        messages.push({
+          role: "assistant",
+          parentToolUseId,
+          content: [
+            {
+              type: "toolCall",
+              id,
+              name,
+              arguments: update.rawInput,
+            },
+          ],
+          timestamp: Date.now(),
+        });
+      }
+      if (update.status === "completed" || update.status === "failed")
+        endTool(
+          String(update.toolCallId ?? ""),
+          update,
+          update.status === "failed",
+        );
+    }
+  }
+  flushText();
+  return messages;
+}
+
+function acpToolResultText(content) {
+  return (content ?? [])
+    .map((entry) => {
+      if (entry?.type === "content" && entry.content?.type === "text")
+        return String(entry.content.text ?? "");
+      if (typeof entry?.text === "string") return entry.text;
+      return "";
+    })
+    .filter(Boolean)
+    .join("\n");
+}
+
+/** Grok's ACP tool completion often carries `rawOutput` and no `content`. */
+export function grokToolOutputText(update) {
+  const fromContent = acpToolResultText(update?.content);
+  if (fromContent) return fromContent;
+  return rawOutputText(update?.rawOutput);
+}
+
+function rawOutputText(value) {
+  if (value == null) return "";
+  if (typeof value === "string") return value;
+  if (typeof value !== "object") return String(value);
+  const nested =
+    value.Content?.content ?? value.content ?? value.output ?? value.text;
+  if (typeof nested === "string" && nested.trim()) return nested;
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return "";
+  }
+}
+
+export function loadGrokChildMessages(parentChatPath, childId, parentToolUseId) {
+  const parentDir = dirname(parentChatPath);
+  const cwdDir = dirname(parentDir);
+  const messages = [];
+  try {
+    const updates = readFileSync(join(cwdDir, childId, "updates.jsonl"), "utf8");
+    messages.push(...childMessagesFromGrokUpdates(updates, parentToolUseId));
+  } catch {
+    /* child session not on disk (still running, or already pruned) */
+  }
+  let findings = "";
+  try {
+    const parsed = JSON.parse(
+      readFileSync(join(parentDir, "subagents", childId, "output.json"), "utf8"),
+    );
+    findings =
+      typeof parsed?.output === "string" && parsed.output.trim()
+        ? parsed.output.trim()
+        : "";
+  } catch {
+    /* output.json lands at completion */
+  }
+  if (findings) {
+    const already = messages.some(
+      (message) =>
+        message.role === "assistant" && grokMessageText(message).includes(findings),
+    );
+    if (!already) {
+      messages.push({
+        role: "assistant",
+        parentToolUseId,
+        content: [{ type: "text", text: findings }],
+        timestamp: Date.now(),
+      });
     }
   }
   return messages;
@@ -913,6 +1070,7 @@ export async function readResumeSession(path) {
     let firstPrompt = "";
     let lastModel;
     let lastModelProvider;
+    let lastEffort;
     // Cumulative usage across the session's assistant turns — the composer's
     // "USED tokens" chip for sessions whose agent is not running.
     let usage;
@@ -951,6 +1109,8 @@ export async function readResumeSession(path) {
             lastModelProvider = entry.provider;
           models.add(entry.modelId);
         }
+        if (typeof entry.thinkingLevel === "string" && entry.thinkingLevel.trim())
+          lastEffort = entry.thinkingLevel.trim();
       } else if (entry.type === "message") {
         messageCount++;
         if (typeof entry.timestamp === "string")
@@ -964,6 +1124,11 @@ export async function readResumeSession(path) {
             if (typeof message.provider === "string")
               lastModelProvider = message.provider;
           }
+          if (
+            typeof message.thinkingLevel === "string" &&
+            message.thinkingLevel.trim()
+          )
+            lastEffort = message.thinkingLevel.trim();
           if (message.usage) {
             const input = Number(message.usage.input ?? 0);
             const output = Number(message.usage.output ?? 0);
@@ -1017,6 +1182,7 @@ export async function readResumeSession(path) {
           : undefined,
       lastModel,
       lastModelProvider,
+      lastEffort,
       usage,
       models: [...models],
     };

@@ -15,9 +15,9 @@
  * adoptLiveAgent() rebinds the running agent to whatever key the page comes
  * back with.
  */
-import { readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 const STATE_PATH = join(homedir(), ".pi", "agent", "pi-web-inflight.json");
 // A turn interrupted days ago is stale context, not work in progress; the
@@ -34,6 +34,9 @@ const running = new Map();
 function persist() {
   try {
     const entries = [...running.values()].filter((entry) => entry.sessionPath);
+    // On a host that has never run pi, ~/.pi/agent does not exist and every
+    // write failed into the catch below -- auto-resume silently never worked.
+    mkdirSync(dirname(STATE_PATH), { recursive: true });
     writeFileSync(STATE_PATH, `${JSON.stringify(entries, null, 2)}\n`);
   } catch {
     // Losing the record only costs the auto-resume; never fail a live turn
@@ -83,8 +86,32 @@ export function noteTurnSettled(sessionKey) {
   persist();
 }
 
+/**
+ * Move a record onto the key that adopted its agent. A page reload mints a
+ * new conversation key, so without this the abandoned key's record never
+ * settles -- and every later boot resumes a turn that finished long ago,
+ * stealing the turn slot from whatever the user types next.
+ */
+export function rekeySession(oldKey, newKey) {
+  const entry = running.get(oldKey);
+  if (!entry || oldKey === newKey) return;
+  running.delete(oldKey);
+  running.set(newKey, { ...entry, sessionKey: newKey });
+  persist();
+}
+
 export function forgetSession(sessionKey) {
   noteTurnSettled(sessionKey);
+}
+
+/** Session files that currently have a live turn. The sidebar uses this to
+ *  blink every running row, not only the ones already open as tabs. */
+export function runningSessionPaths() {
+  const paths = new Set();
+  for (const entry of running.values()) {
+    if (entry.sessionPath) paths.add(entry.sessionPath);
+  }
+  return paths;
 }
 
 /**

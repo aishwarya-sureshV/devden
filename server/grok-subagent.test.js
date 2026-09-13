@@ -17,6 +17,8 @@ import {
   parentTextAfterChild,
   subagentFindings,
   setStallMsForTesting,
+  setQueueIdleMsForTesting,
+  readJsonlFromOffset,
 } from "./grok-agent.js";
 
 test("parseSubagentId reads the background spawn receipt", () => {
@@ -148,8 +150,48 @@ test("subagentFindings keeps streamed blocks in order, appending only absent fin
   assert.equal(resultText, findings);
 });
 
+test("idle turn is not busy so a user prompt is not queued", () => {
+  const agent = new GrokAgentPool().get("idle-not-busy");
+  agent.sessionId = "s1";
+  agent.cwd = "/tmp";
+  agent.startIdleTurn();
+  assert.equal(agent.turn?.idle, true);
+  assert.equal(agent.isBusy(), false);
+  agent.handleSessionUpdate({
+    update: { sessionUpdate: "turn_completed" },
+  });
+});
+
+test("session-open chunks do not start an idle turn", () => {
+  const agent = new GrokAgentPool().get("opening-check");
+  agent.sessionId = "s-open";
+  agent.cwd = "/tmp";
+  agent.opening = true;
+  agent.handleSessionUpdate({
+    update: {
+      sessionUpdate: "agent_message_chunk",
+      content: { type: "text", text: "injected user_info" },
+    },
+  });
+  assert.equal(agent.turn, undefined);
+  assert.equal(agent.status === "working", false);
+  agent.opening = false;
+  agent.handleSessionUpdate({
+    update: {
+      sessionUpdate: "agent_message_chunk",
+      content: { type: "text", text: "The subagent finished." },
+    },
+  });
+  assert.equal(agent.turn?.idle, true);
+  agent.handleSessionUpdate({
+    update: { sessionUpdate: "turn_completed" },
+  });
+});
+
 test("idle reminder turn streams the parent's handover live", () => {
   const agent = new GrokAgentPool().get("idle-check");
+  agent.sessionId = "idle-1";
+  agent.cwd = "/tmp";
   const events = [];
   agent.onEvent((event) => events.push(event));
   // The background-subagent completion reminder triggers a parent turn with
@@ -241,6 +283,42 @@ test("abort ends an in-flight follow so the spawn tool does not stay running", a
       event.toolCallId === "call-abort-1",
   );
   assert.equal(end?.isError, true);
+});
+
+test("a follow that never drains still settles the parent turn", async () => {
+  // The stall that survived every previous fix: runTurn awaits
+  // waitForSubagentFollows() *after* clearing watchTurnCompletion's file
+  // timer, so a follow that never calls back left the turn open with no
+  // watchdog behind it — "grok is still thinking" while the reply sat on
+  // disk, cleared only by a manual refresh.
+  setStallMsForTesting(5);
+  try {
+    const agent = stubAliveAgent("drain-backstop");
+    agent.followSubagent("call-never-drains", "no-such-child");
+    assert.equal(agent.subagentFollows.size, 1);
+    await agent.waitForSubagentFollows();
+    assert.equal(
+      agent.subagentFollows.size,
+      0,
+      "the backstop must close the pane too, or the next turn reads as busy",
+    );
+  } finally {
+    setStallMsForTesting(DEFAULT_STALL_MS);
+  }
+});
+
+test("a follow that drains normally resolves without waiting for the backstop", async () => {
+  setStallMsForTesting(60_000);
+  try {
+    const agent = stubAliveAgent("drain-normal");
+    agent.followSubagent("call-drains", "no-such-child");
+    const waited = agent.waitForSubagentFollows();
+    agent.stopSubagentFollows();
+    await waited;
+    assert.equal(agent.subagentFollows.size, 0);
+  } finally {
+    setStallMsForTesting(DEFAULT_STALL_MS);
+  }
 });
 
 test("stop emits tool_execution_end on an in-flight follow", () => {
@@ -359,3 +437,351 @@ test("idle turn closes as soon as grok journals turn_completed", async () => {
     rmSync(home, { recursive: true, force: true });
   }
 });
+
+test("a hung prompt settles when grok journals turn_completed", async () => {
+  // Same journal as the idle turn: ACP prompt() never returns, but grok
+  // already wrote the reply. Without watching updates.jsonl on a normal
+  // turn the UI stayed on "Grok is thinking" until a refresh.
+  const home = mkdtempSync(join(tmpdir(), "grok-prompt-"));
+  const prevHome = process.env.GROK_HOME;
+  process.env.GROK_HOME = home;
+  try {
+    const agent = stubAliveAgent("prompt-file-check");
+    agent.cwd = "/tmp/pi-web-prompt-cwd";
+    agent.sessionId = "sess-prompt";
+    const updates = join(
+      home,
+      "sessions",
+      encodeURIComponent(agent.cwd),
+      "sess-prompt",
+      "updates.jsonl",
+    );
+    mkdirSync(dirname(updates), { recursive: true });
+    writeFileSync(updates, "");
+    const events = [];
+    agent.onEvent((event) => events.push(event));
+    const pending = agent.prompt("hello");
+    assert.equal(agent.turn?.idle, undefined);
+    appendFileSync(
+      updates,
+      JSON.stringify({
+        method: "_x.ai/session/update",
+        params: { update: { sessionUpdate: "turn_completed" } },
+      }) + "\n",
+    );
+    const result = await pending;
+    assert.equal(result.ok, true);
+    assert.equal(agent.turn, undefined);
+    assert.ok(events.some((event) => event.type === "agent_settled"));
+  } finally {
+    if (prevHome === undefined) delete process.env.GROK_HOME;
+    else process.env.GROK_HOME = prevHome;
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+function acpLine(update, method = "session/update") {
+  return JSON.stringify({ method, params: { update } }) + "\n";
+}
+
+function withGrokHome(fn) {
+  return async () => {
+    const home = mkdtempSync(join(tmpdir(), "grok-sub-"));
+    const prevHome = process.env.GROK_HOME;
+    process.env.GROK_HOME = home;
+    try {
+      await fn(home);
+    } finally {
+      if (prevHome === undefined) delete process.env.GROK_HOME;
+      else process.env.GROK_HOME = prevHome;
+      rmSync(home, { recursive: true, force: true });
+    }
+  };
+}
+
+function childLayout(home, cwd, parentId, childId) {
+  const root = join(home, "sessions", encodeURIComponent(cwd));
+  const childDir = join(root, childId);
+  const parentDir = join(root, parentId);
+  mkdirSync(childDir, { recursive: true });
+  mkdirSync(join(parentDir, "subagents", childId), { recursive: true });
+  return {
+    updates: join(childDir, "updates.jsonl"),
+    output: join(parentDir, "subagents", childId, "output.json"),
+    meta: join(parentDir, "subagents", childId, "meta.json"),
+  };
+}
+
+test("readJsonlFromOffset tails new rows without rereading the prefix", () => {
+  const dir = mkdtempSync(join(tmpdir(), "jsonl-tail-"));
+  const path = join(dir, "updates.jsonl");
+  writeFileSync(path, '{"n":1}\n');
+  const first = readJsonlFromOffset(path, 0);
+  assert.deepEqual(first.lines, ['{"n":1}']);
+  assert.equal(first.missing, false);
+  appendFileSync(path, '{"n":2}\n');
+  const second = readJsonlFromOffset(path, first.offset);
+  assert.deepEqual(second.lines, ['{"n":2}']);
+  const empty = readJsonlFromOffset(path, second.offset);
+  assert.deepEqual(empty.lines, []);
+  const missing = readJsonlFromOffset(join(dir, "nope.jsonl"), 0);
+  assert.equal(missing.missing, true);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test(
+  "pumpSubagent emits nested tools and text from the child jsonl",
+  withGrokHome(async (home) => {
+    const cwd = "/tmp/pi-web-pump-cwd";
+    const childId = "child-pump-1";
+    const files = childLayout(home, cwd, "parent-1", childId);
+    writeFileSync(
+      files.updates,
+      acpLine({
+        sessionUpdate: "agent_message_chunk",
+        content: { type: "text", text: "I'll look around." },
+      }) +
+        acpLine({
+          sessionUpdate: "tool_call",
+          toolCallId: "grep-1",
+          title: "grep",
+          rawInput: { pattern: "health" },
+        }) +
+        acpLine({
+          sessionUpdate: "tool_call_update",
+          toolCallId: "grep-1",
+          status: "completed",
+          content: [
+            {
+              type: "content",
+              content: { type: "text", text: "found /api/health" },
+            },
+          ],
+        }),
+    );
+    const agent = stubAliveAgent("pump-jsonl-check");
+    agent.cwd = cwd;
+    agent.sessionId = "parent-1";
+    const events = [];
+    agent.onEvent((event) => events.push(event));
+    agent.followSubagent("spawn-1", childId);
+    assert.equal(
+      events.some(
+        (event) =>
+          event.type === "tool_execution_start" &&
+          event.toolCallId === "grep-1" &&
+          event.parentToolUseId === "spawn-1",
+      ),
+      true,
+    );
+    assert.equal(
+      events.some(
+        (event) =>
+          event.type === "tool_execution_end" && event.toolCallId === "grep-1",
+      ),
+      true,
+    );
+    assert.equal(
+      events.some(
+        (event) =>
+          event.type === "message_update" &&
+          event.parentToolUseId === "spawn-1" &&
+          event.assistantMessageEvent?.delta === "I'll look around.",
+      ),
+      true,
+    );
+    agent.stopSubagentFollows();
+  }),
+);
+
+test(
+  "parent ACP child tools are hidden once the jsonl pump has their ids",
+  withGrokHome(async (home) => {
+    const cwd = "/tmp/pi-web-hide-cwd";
+    const childId = "child-hide-1";
+    const files = childLayout(home, cwd, "parent-1", childId);
+    writeFileSync(
+      files.updates,
+      acpLine({
+        sessionUpdate: "tool_call",
+        toolCallId: "bash-1",
+        title: "bash",
+        rawInput: { command: "ls" },
+      }),
+    );
+    const agent = stubAliveAgent("hide-pump-check");
+    agent.cwd = cwd;
+    agent.sessionId = "parent-1";
+    agent.turn = {
+      content: [],
+      toolIndex: new Map(),
+      openKind: undefined,
+      message: { usage: {} },
+    };
+    const events = [];
+    agent.onEvent((event) => events.push(event));
+    agent.followSubagent("spawn-1", childId);
+    events.length = 0;
+    agent.handleSessionUpdate({
+      update: {
+        sessionUpdate: "tool_call",
+        toolCallId: "bash-1",
+        title: "bash",
+        rawInput: { command: "ls" },
+      },
+    });
+    const untagged = events.filter(
+      (event) =>
+        event.type === "tool_execution_start" &&
+        event.toolCallId === "bash-1" &&
+        !event.parentToolUseId,
+    );
+    assert.equal(untagged.length, 0);
+    agent.stopSubagentFollows();
+  }),
+);
+
+test(
+  "a background follow holds the parent turn until the child is done",
+  async () => {
+    const agent = stubAliveAgent("hold-parent-check");
+    let resolvePrompt;
+    agent.connection.prompt = () =>
+      new Promise((resolve) => {
+        resolvePrompt = resolve;
+      });
+    const events = [];
+    agent.onEvent((event) => events.push(event));
+    const pending = agent.prompt("go");
+    for (let i = 0; i < 20 && !agent.turn; i += 1) await sleep(5);
+    assert.ok(agent.turn, "prompt should have opened a turn");
+    agent.followSubagent("spawn-1", "no-such-child");
+    assert.equal(agent.subagentFollows.size, 1);
+    resolvePrompt({ stopReason: "end_turn" });
+    await sleep(40);
+    assert.equal(agent.subagentFollows.size, 1, "follow still live");
+    assert.ok(agent.turn, "parent turn waits for the child");
+    assert.equal(
+      events.some((event) => event.type === "agent_settled"),
+      false,
+    );
+    agent.stopSubagentFollows();
+    const result = await pending;
+    assert.equal(result.ok, true);
+    assert.equal(agent.turn, undefined);
+    assert.equal(agent.subagentFollows.size, 0);
+    assert.ok(events.some((event) => event.type === "agent_settled"));
+    agent.stop();
+  },
+);
+
+test("a queued follow-up waits until the spawn follow has finished printing", async () => {
+  setQueueIdleMsForTesting(20);
+  try {
+    const agent = stubAliveAgent("queue-follow-check");
+    const prompts = [];
+    let resolvePrompt;
+    agent.connection.prompt = (args) => {
+      prompts.push(args);
+      return new Promise((resolve) => {
+        resolvePrompt = resolve;
+      });
+    };
+    const first = agent.prompt("spawn it");
+    for (let i = 0; i < 20 && !agent.turn; i += 1) await sleep(5);
+    agent.followSubagent("spawn-1", "no-such-child");
+    const queued = await agent.enqueue("fgdfgds");
+    assert.equal(queued.data?.queued, true);
+    assert.equal(agent.queuedMessages.length, 1);
+    assert.equal(prompts.length, 1);
+    resolvePrompt({ stopReason: "end_turn" });
+    await sleep(40);
+    assert.equal(agent.queuedMessages.length, 1, "must not flush mid-follow");
+    assert.equal(prompts.length, 1);
+    agent.stopSubagentFollows();
+    const result = await first;
+    assert.equal(result.ok, true);
+    await sleep(80);
+    assert.equal(prompts.length, 2, "queued prompt sends after the follow");
+    const second = JSON.stringify(prompts[1] ?? {});
+    assert.match(second, /fgdfgds/);
+    agent.stop();
+  } finally {
+    setQueueIdleMsForTesting(500);
+  }
+});
+
+test("waitForSubagentFollows wakes every waiter when the last follow ends", async () => {
+  const agent = stubAliveAgent("multi-wait-check");
+  agent.followSubagent("a", "no-such-a");
+  agent.followSubagent("b", "no-such-b");
+  const first = agent.waitForSubagentFollows();
+  const second = agent.waitForSubagentFollows();
+  agent.stopSubagentFollows();
+  await Promise.all([first, second]);
+  assert.equal(agent.subagentFollows.size, 0);
+});
+
+test(
+  "parent ACP chunks during a follow do not start an idle turn",
+  withGrokHome(async (home) => {
+    const cwd = "/tmp/pi-web-noidle-cwd";
+    const childId = "child-noidle-1";
+    childLayout(home, cwd, "parent-1", childId);
+    const agent = stubAliveAgent("no-idle-while-follow");
+    agent.cwd = cwd;
+    agent.sessionId = "parent-1";
+    agent.followSubagent("spawn-1", childId);
+    agent.handleSessionUpdate({
+      update: {
+        sessionUpdate: "agent_message_chunk",
+        content: { type: "text", text: "I'll look around." },
+      },
+    });
+    assert.equal(agent.turn, undefined);
+    agent.stopSubagentFollows();
+  }),
+);
+
+test(
+  "turn_completed waits for a late output.json before finishing",
+  withGrokHome(async (home) => {
+    setStallMsForTesting(5 * 60_000);
+    try {
+    const cwd = "/tmp/pi-web-output-cwd";
+    const childId = "child-output-1";
+    const files = childLayout(home, cwd, "parent-1", childId);
+    writeFileSync(
+      files.updates,
+      acpLine({
+        sessionUpdate: "agent_message_chunk",
+        content: { type: "text", text: "chatter only" },
+      }) +
+        acpLine(
+          { sessionUpdate: "turn_completed" },
+          "_x.ai/session/update",
+        ),
+    );
+    const agent = stubAliveAgent("output-retry-check");
+    agent.cwd = cwd;
+    agent.sessionId = "parent-1";
+    const events = [];
+    agent.onEvent((event) => events.push(event));
+    agent.followSubagent("spawn-1", childId);
+    assert.equal(agent.subagentFollows.size, 1, "should wait for output.json");
+    writeFileSync(
+      files.output,
+      JSON.stringify({ output: "## What I found\n- 42" }),
+    );
+    await sleep(400);
+    assert.equal(agent.subagentFollows.size, 0);
+    const end = events.find(
+      (event) =>
+        event.type === "tool_execution_end" && event.toolCallId === "spawn-1",
+    );
+    assert.match(String(end?.result?.content?.[0]?.text ?? ""), /What I found/);
+    } finally {
+      setStallMsForTesting(DEFAULT_STALL_MS);
+    }
+  }),
+);

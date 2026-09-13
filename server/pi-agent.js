@@ -8,21 +8,26 @@
  */
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
-import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join } from "node:path";
 import { StringDecoder } from "node:string_decoder";
+import { AgentPool } from "./agent-pool.js";
+import { attachQueue } from "./agent-queue.js";
 import {
-  PiSubagentFollows,
-  isPiSubagentTool,
-  isSpawnArgs,
-} from "./pi-subagent.js";
+  attachSubagentFollows,
+  noteSubagentToolEvent,
+  subagentBusy,
+} from "./agent-subagent.js";
 import { loadCodexUsage } from "./codex-usage.js";
+import { loadGrokUsage } from "./grok-usage.js";
+import { ollamaResets } from "./ollama-resets.js";
 import { readResumeSession } from "./sessions.js";
+import { logFault } from "./log-fault.js";
 import {
   CO_PARTNER_PROMPT,
   CLARIFY_PROMPT,
+  HOST_PROMPT,
   REPORT_PROMPT,
+  SUBAGENT_PROMPT,
 } from "./co-partner-prompt.js";
 import {
   listOllamaModels,
@@ -52,6 +57,9 @@ const DEFAULT_RPC_TIMEOUT_MS = 60_000;
 // bookkeeping call.
 const COMPACT_TIMEOUT_MS = 5 * 60_000;
 const UNTIMED_COMMANDS = new Set(["prompt", "steer", "follow_up"]);
+/** How long agent_settled gets to show up on its own after the turn's RPC
+ *  response, before the response is taken as the end of the turn. */
+const STRANDED_TURN_GRACE_MS = 5_000;
 
 function resolvePiExecutable() {
   return process.env.PI_WEB_PI_BIN || "pi";
@@ -118,6 +126,68 @@ function listPiModelsStandalone(cwd) {
   });
 }
 
+const LIST_COMMANDS_TIMEOUT_MS = 20_000;
+
+/**
+ * Cold sessions have no pi process yet (pi only spawns on the first
+ * message), so get_commands over the live pipe rejects and the command
+ * menu 500s. Spawn a throwaway `pi --mode rpc` that answers the same RPC
+ * once and dies — the command-menu twin of listPiModelsStandalone.
+ * ponytail: uncached, so each cold-session menu load pays one pi startup
+ * (~seconds); cache per cwd if that ever feels slow.
+ */
+function listPiCommandsStandalone(cwd) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(resolvePiExecutable(), ["--mode", "rpc", "--approve"], {
+      cwd: cwd || homedir(),
+      stdio: ["pipe", "pipe", "ignore"],
+    });
+    let stdout = "";
+    let settled = false;
+    const settle = (fn, value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      child.kill();
+      fn(value);
+    };
+    const timer = setTimeout(
+      () => settle(reject, new Error("pi get_commands timed out")),
+      LIST_COMMANDS_TIMEOUT_MS,
+    );
+    timer.unref?.();
+    child.stdout.on("data", (chunk) => {
+      if (settled) return;
+      stdout += chunk;
+      for (const line of stdout.split("\n")) {
+        if (!line.trim()) continue;
+        let parsed;
+        try {
+          parsed = JSON.parse(line);
+        } catch {
+          continue; // partial line at the chunk boundary — more coming
+        }
+        if (parsed?.type === "response" && parsed.id === "cold-commands") {
+          if (parsed.success === false)
+            return settle(reject, new Error(parsed.error ?? "failed"));
+          const data = parsed.data;
+          return settle(
+            resolve,
+            Array.isArray(data) ? data : (data?.commands ?? []),
+          );
+        }
+      }
+    });
+    child.once("error", (error) => settle(reject, error));
+    child.once("exit", () =>
+      settle(reject, new Error("pi exited before answering get_commands")),
+    );
+    child.stdin.write(
+      JSON.stringify({ type: "get_commands", id: "cold-commands" }) + "\n",
+    );
+  });
+}
+
 /** "gpt-5.6-luna" -> "Gpt 5.6 Luna"; good enough for a fallback listing. */
 function titleizeModelId(id) {
   return String(id ?? "")
@@ -140,18 +210,7 @@ function parsePiModelListing(text) {
   });
 }
 
-function formatResetTime(epochSeconds) {
-  if (!Number.isFinite(epochSeconds)) return undefined;
-  return new Intl.DateTimeFormat("en-US", {
-    month: "short",
-    day: "numeric",
-    hour: "numeric",
-    minute: "2-digit",
-    timeZoneName: "short",
-  }).format(new Date(epochSeconds * 1000));
-}
-
-class PiAgentProcess {
+export class PiAgentProcess {
   constructor(sessionKey) {
     this.sessionKey = sessionKey;
     this.process = undefined;
@@ -168,17 +227,33 @@ class PiAgentProcess {
     // First-response watchdog state (see armFirstResponseWatchdog).
     this.awaitingFirstActivity = false;
     this.firstActivityTimer = undefined;
+    // Stranded-turn backstop (see settleAfterResponse). turnSeq identifies
+    // which turn a pending backstop belongs to.
+    this.strandedTurnTimer = undefined;
+    this.turnSeq = 0;
     // Messages held while a turn is running; delivered as fresh prompts when
     // the turn settles. Mirrors the claude-agent queue (pi's own follow_up
     // queue can't cancel a single message or keep an orderable snapshot).
     this.queuedMessages = [];
     this.queueSeq = 0;
+    attachQueue(this, {
+      isBusy() {
+        // pi flips back to "ready" the moment it hands a subagent off to the
+        // detached runner, so status alone reports idle while the panel is
+        // still filling in.
+        return this.status === "working" || subagentBusy(this);
+      },
+      sendNow(message, images) {
+        return this.prompt(message, images);
+      },
+      steerNow(message, images) {
+        return this.steer(message, images);
+      },
+    });
     // Live `subagent` runs (pi-subagents extension). Their children work in a
     // detached runner, so their tool calls only reach the UI by tailing the
-    // run's artifacts — see pi-subagent.js.
-    this.subagents = new PiSubagentFollows((event) =>
-      this.emit({ ...event, sessionKey: this.sessionKey }),
-    );
+    // run's artifacts — see pi-subagent.js. Same follower every backend uses.
+    attachSubagentFollows(this);
   }
 
   onEvent(listener) {
@@ -236,6 +311,72 @@ class PiAgentProcess {
     }
   }
 
+  /** Everything that has to happen when a turn is over, from whichever signal
+   *  got here first. */
+  settleTurn() {
+    if (this.strandedTurnTimer) {
+      clearTimeout(this.strandedTurnTimer);
+      this.strandedTurnTimer = undefined;
+    }
+    // A child's closing report can be written after its run is marked
+    // complete; by the time the parent turn settles it is certainly on
+    // disk, so pick up anything the live follow missed.
+    this.subagents.reconcile();
+    this.setStatus("ready");
+    // Drain first so the state snapshot cannot resurrect a chip the
+    // queue_updated event just cleared.
+    this.sendNextQueued();
+    void this.getState()
+      .then((state) =>
+        this.emit({ type: "state", sessionKey: this.sessionKey, state }),
+      )
+      .catch(() => {});
+  }
+
+  /**
+   * Backstop for a turn that ended without saying so.
+   *
+   * prompt/steer are in UNTIMED_COMMANDS because their RPC response resolves
+   * only once the whole turn is over -- which makes that response an
+   * authoritative end-of-turn signal. But "ready" was reached solely through
+   * the agent_settled *event*, so when that event never arrived the agent sat
+   * on "working" forever: nothing times out an untimed command, the
+   * first-response watchdog had already disarmed at the first chunk, and
+   * getState() kept answering isStreaming -- which is why even the page's
+   * reconcile poll was correctly told the turn was still live. The reply was
+   * on screen and on disk the whole time; only the spinner disagreed.
+   *
+   * The grace window is what keeps this a backstop: agent_settled normally
+   * lands within milliseconds of the response, and settling ahead of it would
+   * cut off the trailing events of a healthy turn.
+   */
+  settleAfterResponse(delayMs = STRANDED_TURN_GRACE_MS) {
+    // Already settled: pi's agent_settled normally lands *before* the
+    // response resolves, which is the healthy path and needs no backstop at
+    // all. Arming here anyway left a live timer that the NEXT turn's
+    // "working" satisfied -- so a perfectly good turn got the stranded notice
+    // and, worse, was settled out from under itself.
+    if (this.status !== "working") return;
+    if (this.strandedTurnTimer) clearTimeout(this.strandedTurnTimer);
+    const turn = this.turnSeq;
+    this.strandedTurnTimer = setTimeout(() => {
+      this.strandedTurnTimer = undefined;
+      // Only ever settle the turn this backstop was armed for.
+      if (this.status !== "working" || this.turnSeq !== turn) return;
+      // Recorded, not announced. This lands at the bottom of the transcript,
+      // where it reads as if it describes whatever the user just sent -- and
+      // by now the settle is a handled condition, not something they can act
+      // on. server-faults.log is where it belongs.
+      logFault(
+        "stranded pi turn settled from its RPC response",
+        this.sessionKey,
+      );
+      this.settleTurn();
+      this.emit({ type: "agent_settled", sessionKey: this.sessionKey });
+    }, delayMs);
+    this.strandedTurnTimer.unref?.();
+  }
+
   setStatus(status, error) {
     this.status = status;
     this.emit({
@@ -278,7 +419,9 @@ class PiAgentProcess {
     const systemPrompt = [
       CO_PARTNER_PROMPT,
       CLARIFY_PROMPT,
+      HOST_PROMPT,
       REPORT_PROMPT,
+      SUBAGENT_PROMPT,
       ...(options.agentMode === "plan" ? [PLAN_MODE_PROMPT] : []),
     ].join("\n\n");
     const args = [
@@ -345,24 +488,55 @@ class PiAgentProcess {
       );
     }
     this.setStatus(state.isStreaming ? "working" : "ready");
+    if (state.isStreaming) {
+      // A persisted session can contain an interrupted turn from another Pi
+      // process. This spawn is new, so that flag is stale — leaving it
+      // "working" made enqueue() park the first prompt forever.
+      await this.abort();
+      this.setStatus("ready");
+      try {
+        state = {
+          ...(await this.getState(10_000)),
+          isStreaming: false,
+        };
+      } catch {
+        state = { ...state, isStreaming: false };
+      }
+    }
+    if (this.status === "ready") this.sendNextQueued();
     return { ok: true, state };
   }
 
   prompt(message, images) {
+    this.turnSeq += 1;
+    this.setStatus("working");
     this.armFirstResponseWatchdog();
     return this.runCommand({
       type: "prompt",
       message,
       ...(images?.length ? { images } : {}),
-    });
+    }).then((result) => this.recoverIdleAfterFailedTurn(result));
   }
   steer(message, images) {
+    this.turnSeq += 1;
+    this.setStatus("working");
     this.armFirstResponseWatchdog();
     return this.runCommand({
       type: "steer",
       message,
       ...(images?.length ? { images } : {}),
-    });
+    }).then((result) => this.recoverIdleAfterFailedTurn(result));
+  }
+  recoverIdleAfterFailedTurn(result) {
+    if (!result?.ok) {
+      this.disarmFirstResponseWatchdog();
+      if (this.status === "working") this.setStatus("ready");
+      return result;
+    }
+    // The turn's response came back, so the turn is over whether or not its
+    // event says so.
+    this.settleAfterResponse();
+    return result;
   }
   followUp(message, images) {
     return this.runCommand({
@@ -372,6 +546,7 @@ class PiAgentProcess {
     });
   }
   abort() {
+    this.holdQueue();
     return this.runCommand({ type: "abort" });
   }
   newSession() {
@@ -406,8 +581,8 @@ class PiAgentProcess {
    * timeout, which reported a failure for a compaction that then finished
    * anyway (hence "already compacted" on the retry). It also rewrites the
    * transcript, so the fresh history is returned with the result: without it
-   * the UI kept showing the pre-compaction messages and nothing on screen
-   * ever confirmed the compaction had happened.
+   * the UI kept showing the pre-compaction messages. That is now the
+   * intended display: compact is for the model's context, not the transcript.
    */
   async compact(customInstructions) {
     const result = await this.runCommand(
@@ -493,79 +668,6 @@ class PiAgentProcess {
     return this.lastState;
   }
 
-  /** Snapshot for the UI: what is waiting, in the order it will be sent. */
-  queueSnapshot() {
-    return this.queuedMessages.map(({ id, message, at }) => ({
-      id,
-      message,
-      at,
-    }));
-  }
-
-  emitQueue() {
-    this.emit({
-      type: "queue_updated",
-      sessionKey: this.sessionKey,
-      queued: this.queueSnapshot(),
-    });
-  }
-
-  /** Hold the message until the running turn settles; send now if idle. */
-  enqueue(message, images) {
-    const text = String(message ?? "");
-    if (!text.trim())
-      return Promise.resolve({ ok: false, error: "Empty message" });
-    if (!this.process)
-      return this.prompt(text, images).then((result) =>
-        result.ok ? { ok: true, data: { queued: false } } : result,
-      );
-    this.queueSeq += 1;
-    this.queuedMessages.push({
-      id: `q-${Date.now()}-${this.queueSeq}`,
-      message: text,
-      images: Array.isArray(images) ? images : [],
-      at: Date.now(),
-    });
-    this.emitQueue();
-    return Promise.resolve({
-      ok: true,
-      data: { queued: true, position: this.queuedMessages.length },
-    });
-  }
-
-  /** Drop one waiting message, or all of them when no id is given. */
-  cancelQueued(id) {
-    const before = this.queuedMessages.length;
-    this.queuedMessages = id
-      ? this.queuedMessages.filter((entry) => entry.id !== id)
-      : [];
-    if (this.queuedMessages.length === before)
-      return { ok: false, error: "That message is no longer queued" };
-    this.emitQueue();
-    return {
-      ok: true,
-      data: { cancelled: before - this.queuedMessages.length },
-    };
-  }
-
-  /** Called when the turn settles: send the next waiting message, if any. */
-  sendNextQueued() {
-    const next = this.queuedMessages.shift();
-    if (!next) return;
-    this.emitQueue();
-    this.prompt(next.message, next.images.length ? next.images : undefined)
-      .then((result) => {
-        if (result.ok) return;
-        // Delivery failed: hand it back so the user can retry or cancel.
-        this.queuedMessages.unshift(next);
-        this.emitQueue();
-      })
-      .catch(() => {
-        this.queuedMessages.unshift(next);
-        this.emitQueue();
-      });
-  }
-
   async getMessages(timeoutMs) {
     const response = await this.send({ type: "get_messages" }, timeoutMs);
     if (response.success === false)
@@ -622,9 +724,35 @@ class PiAgentProcess {
           candidate?.message?.role === "user" &&
           candidate?.id,
       );
-    return nextUser
-      ? this.runSessionCommand({ type: "fork", entryId: nextUser.id })
-      : this.runSessionCommand({ type: "clone" });
+    // pi's fork/clone rebinds this live process to the new branch file.
+    // Capture the original first, then hand the branch to its own tab and
+    // put the live conversation back where it was, so a forked session runs
+    // independently instead of stealing this agent.
+    const originalFile = this.lastState?.sessionFile;
+    const result = nextUser
+      ? await this.runSessionCommand({ type: "fork", entryId: nextUser.id })
+      : await this.runSessionCommand({ type: "clone" });
+    if (!result.ok) return result;
+    if (result.data?.cancelled)
+      return { ok: false, error: "The fork was cancelled by an extension." };
+    const forkFile = result.state?.sessionFile;
+    if (forkFile && forkFile !== originalFile && originalFile) {
+      const restore = await this.switchSession(originalFile);
+      if (!restore.ok)
+        return {
+          ok: false,
+          error:
+            restore.error ??
+            "Could not restore the original session after forking.",
+        };
+    }
+    return {
+      ok: true,
+      restored: true,
+      state: result.state,
+      messages: result.messages,
+      forkCwd: this.cwd,
+    };
   }
 
   async runSessionCommand(command, timeoutMs) {
@@ -642,7 +770,15 @@ class PiAgentProcess {
   }
 
   // pi answers these with envelopes like { models: [...] } — unwrap to arrays.
-  async getCommands() {
+  // A cold session has no process (pi spawns on the first message), so ask a
+  // throwaway rpc child in the session's cwd instead of letting the send
+  // reject 500 the command menu. cwd arrives as a request param because the
+  // agent itself only learns cwd at start().
+  async getCommands(cwd) {
+    if (!this.process) {
+      if (cwd) this.cwd = cwd;
+      return { ok: true, commands: await listPiCommandsStandalone(this.cwd) };
+    }
     const response = await this.send({ type: "get_commands" });
     if (response.success === false)
       return { ok: false, error: response.error ?? "failed" };
@@ -732,8 +868,7 @@ class PiAgentProcess {
       if (sessionPath) {
         const summary = await readResumeSession(sessionPath).catch(() => null);
         if (summary?.usage?.total > 0) {
-          if (summary.lastModelProvider === "grok-sdk")
-            return this.loadGrokUsage();
+          if (summary.lastModelProvider === "grok-sdk") return loadGrokUsage();
           if (summary.lastModelProvider === "ollama")
             return this.loadOllamaUsage();
           const providerName = summary.lastModelProvider ?? "Provider";
@@ -761,7 +896,7 @@ class PiAgentProcess {
     }
     const identity =
       `${state?.model?.provider ?? ""}/${state?.model?.id ?? ""}`.toLowerCase();
-    if (identity.includes("grok")) return this.loadGrokUsage();
+    if (identity.includes("grok")) return loadGrokUsage();
     if (identity.includes("openai-codex"))
       return loadCodexUsage(state?.model?.id);
     if (identity.includes("ollama")) return this.loadOllamaUsage();
@@ -773,69 +908,6 @@ class PiAgentProcess {
         windows: [],
       },
     };
-  }
-
-  async loadGrokUsage() {
-    try {
-      const grokHome = process.env.GROK_HOME || join(homedir(), ".grok");
-      const auth = JSON.parse(
-        await readFile(join(grokHome, "auth.json"), "utf8"),
-      );
-      const token =
-        auth?.["https://accounts.x.ai/sign-in"]?.key ??
-        Object.values(auth ?? {}).find(
-          (entry) => typeof entry?.key === "string",
-        )?.key;
-      if (typeof token !== "string" || token.length === 0) {
-        return {
-          ok: true,
-          usage: { available: false, provider: "Grok", windows: [] },
-        };
-      }
-
-      const response = await fetch(
-        "https://cli-chat-proxy.grok.com/v1/billing?format=credits",
-        {
-          headers: {
-            Accept: "application/json",
-            Authorization: `Bearer ${token}`,
-            "User-Agent": "grok-cli",
-            "x-xai-token-auth": "xai-grok-cli",
-          },
-          signal: AbortSignal.timeout(10_000),
-        },
-      );
-      if (!response.ok)
-        throw new Error(`Grok usage returned ${response.status}`);
-      const payload = await response.json();
-      const config = payload?.config ?? payload;
-      const usedPercent = Number(config?.creditUsagePercent);
-      const resetAt =
-        Date.parse(
-          String(config?.currentPeriod?.end ?? config?.billingPeriodEnd ?? ""),
-        ) / 1000;
-      const resetsAt = formatResetTime(resetAt);
-      const windows = Number.isFinite(usedPercent)
-        ? [
-            {
-              label: "Current week",
-              usedPercent,
-              ...(resetsAt ? { resetsAt } : {}),
-            },
-          ]
-        : [];
-      return {
-        ok: true,
-        usage: {
-          available: windows.length > 0,
-          provider: "Grok",
-          windows,
-          updatedAt: new Date().toISOString(),
-        },
-      };
-    } catch (error) {
-      return { ok: false, error: String(error?.message ?? error) };
-    }
   }
 
   async loadOllamaUsage() {
@@ -872,6 +944,15 @@ class PiAgentProcess {
             : null;
         })
         .filter(Boolean);
+      // The API carries no reset time at all, so the instants are computed
+      // from Ollama's own schedules (a 5 hour session grid and a Sunday 04:30
+      // week) rather than fetched -- see ollama-resets.js. Always present.
+      const resets = ollamaResets();
+      const byLabel = { Session: resets.session, Weekly: resets.weekly };
+      for (const window of windows) {
+        const at = byLabel[window.label];
+        if (at) window.resetsAt = at;
+      }
       return {
         ok: true,
         usage: {
@@ -980,35 +1061,13 @@ class PiAgentProcess {
     }
     if (event.type === "agent_start") this.setStatus("working");
     if (
-      event.type === "tool_execution_start" &&
-      isPiSubagentTool(event.toolName) &&
-      isSpawnArgs(event.args)
+      event.type === "tool_execution_start" ||
+      event.type === "tool_execution_end"
     ) {
-      this.emit({
-        type: "subagent_start",
-        sessionKey: this.sessionKey,
-        parentToolUseId: event.toolCallId,
-      });
-      // Bound here rather than on the spawn's result: that event can arrive
-      // under a different tool call id than its start, and its details do not
-      // reliably name the run. The runner's own directory for this cwd does.
-      this.subagents.expect(event.toolCallId, this.cwd, Date.now());
+      const { holdEnd } = noteSubagentToolEvent(this, event);
+      if (holdEnd) return;
     }
-    if (event.type === "agent_settled") {
-      // A child's closing report can be written after its run is marked
-      // complete; by the time the parent turn settles it is certainly on
-      // disk, so pick up anything the live follow missed.
-      this.subagents.reconcile();
-      this.setStatus("ready");
-      void this.getState()
-        .then((state) =>
-          this.emit({ type: "state", sessionKey: this.sessionKey, state }),
-        )
-        .catch(() => {});
-      // Queue only ever queues: the next waiting message starts a fresh
-      // turn here, never mid-run.
-      this.sendNextQueued();
-    }
+    if (event.type === "agent_settled") this.settleTurn();
     this.emit({ ...event, sessionKey: this.sessionKey });
   }
 
@@ -1019,6 +1078,10 @@ class PiAgentProcess {
 
   stop() {
     this.status = "stopped";
+    if (this.strandedTurnTimer) {
+      clearTimeout(this.strandedTurnTimer);
+      this.strandedTurnTimer = undefined;
+    }
     if (this.process) {
       this.process.kill();
       this.process = undefined;
@@ -1033,29 +1096,9 @@ class PiAgentProcess {
   }
 }
 
-export class PiAgentPool {
+export class PiAgentPool extends AgentPool {
   constructor() {
-    /** @type {Map<string, PiAgentProcess>} */
-    this.agents = new Map();
-  }
-
-  get(sessionKey) {
-    let agent = this.agents.get(sessionKey);
-    if (!agent) {
-      agent = new PiAgentProcess(sessionKey);
-      this.agents.set(sessionKey, agent);
-    }
-    return agent;
-  }
-
-  stop(sessionKey) {
-    if (sessionKey) {
-      this.agents.get(sessionKey)?.stop();
-      this.agents.delete(sessionKey);
-      return;
-    }
-    for (const agent of this.agents.values()) agent.stop();
-    this.agents.clear();
+    super((sessionKey) => new PiAgentProcess(sessionKey));
   }
 }
 
@@ -1080,7 +1123,7 @@ function cleanGeneratedTitle(value) {
     .trim()}…`;
 }
 
-function assistantText(message) {
+export function assistantText(message) {
   const content = message?.content;
   if (typeof content === "string") return content.trim();
   if (Array.isArray(content)) {

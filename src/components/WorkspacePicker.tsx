@@ -46,8 +46,7 @@ export const WorkspacePicker = forwardRef<
     onPick: (path: string) => Promise<void>;
     onViewWorkspace?: () => void;
     hideTrigger?: boolean;
-    /** Show the whole workspace path instead of the bare folder name. */
-    fullPath?: boolean;
+    variant?: "default" | "chip";
   }
 >(function WorkspacePicker(
   {
@@ -57,7 +56,7 @@ export const WorkspacePicker = forwardRef<
     onPick,
     onViewWorkspace,
     hideTrigger = false,
-    fullPath = false,
+    variant = "default",
   },
   ref,
 ) {
@@ -194,7 +193,7 @@ export const WorkspacePicker = forwardRef<
 
   return (
     <div
-      className="workspace-picker"
+      className={`workspace-picker${variant === "chip" ? " workspace-picker--chip" : ""}`}
       ref={rootRef}
       hidden={hideTrigger && !browserOpen ? true : undefined}
     >
@@ -207,10 +206,9 @@ export const WorkspacePicker = forwardRef<
         title={cwd}
         onClick={toggleMenu}
       >
-        <IconFolder size={15} />
-        <span>{fullPath ? cwd : folderLabel(cwd)}</span>
-        {/* Header variant (fullPath) reads as a plain label: no dropdown arrow. */}
-        {!fullPath && <IconChevronDown size={13} />}
+        <IconFolder size={variant === "chip" ? 12 : 15} />
+        <span>{folderLabel(cwd)}</span>
+        {variant !== "chip" && <IconChevronDown size={13} />}
       </button>
 
       {open && (

@@ -402,6 +402,20 @@ export function IconDownload({ size = 16 }: { size?: number }) {
   );
 }
 
+export function IconPlay({ size = 15 }: { size?: number }) {
+  return (
+    <svg
+      viewBox="0 0 16 16"
+      width={size}
+      height={size}
+      aria-hidden
+      fill="currentColor"
+    >
+      <path d="M5.2 3.3v9.4L13.2 8Z" />
+    </svg>
+  );
+}
+
 export function IconCopy({ size = 15 }: { size?: number }) {
   return (
     <svg
@@ -626,6 +640,65 @@ export function IconContract({ size = 16 }: { size?: number }) {
   );
 }
 
+/** Chat pane: used in the compact/dense view switcher. */
+export function IconChat({ size = 16 }: { size?: number }) {
+  return (
+    <svg
+      viewBox="0 0 16 16"
+      width={size}
+      height={size}
+      aria-hidden
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.35"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d="M3.2 3.2h9.6v7.2H6.4L3.2 13.2z" />
+    </svg>
+  );
+}
+
+/** Git-style branch: trajectory / history of a turn. */
+export function IconBranch({ size = 16 }: { size?: number }) {
+  return (
+    <svg
+      viewBox="0 0 16 16"
+      width={size}
+      height={size}
+      aria-hidden
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.35"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <circle cx="4.2" cy="3.4" r="1.4" />
+      <circle cx="4.2" cy="12.6" r="1.4" />
+      <circle cx="11.8" cy="8" r="1.4" />
+      <path d="M4.2 4.8v6.4M4.2 8h4.2a3.4 3.4 0 0 0 3.4-3.4" />
+    </svg>
+  );
+}
+
+/** Three lines: backend log. */
+export function IconList({ size = 16 }: { size?: number }) {
+  return (
+    <svg
+      viewBox="0 0 16 16"
+      width={size}
+      height={size}
+      aria-hidden
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.35"
+      strokeLinecap="round"
+    >
+      <path d="M3 4.2h10M3 8h10M3 11.8h10" />
+    </svg>
+  );
+}
+
 /** Counter-clockwise arrow over a clock: restore files to an earlier point. */
 export function IconHistory({ size = 16 }: { size?: number }) {
   return (
@@ -684,4 +757,72 @@ export function IconCloud({ size = 16 }: { size?: number }) {
       <path d="M4.6 12.5a3.1 3.1 0 0 1-.5-6.16 4.1 4.1 0 0 1 8-.83 3.05 3.05 0 0 1-.6 6.99H4.6Z" />
     </svg>
   );
+}
+
+function LogoPi({ size }: { size: number }) {
+  return (
+    <svg viewBox="0 0 24 24" width={size} height={size} aria-hidden>
+      <path
+        d="M3.8 6.4h16.4M8.4 6.4v12.4M16.6 6.4c-.2 5.4-1.9 10.2-5.6 12.4"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2.4"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+function LogoClaude({ size }: { size: number }) {
+  return (
+    <svg viewBox="0 0 24 24" width={size} height={size} aria-hidden>
+      <path
+        d="M12 2.4v19.2M4.7 6.8l14.6 10.4M4.7 17.2 19.3 6.8"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2.5"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+}
+
+function LogoGrok({ size }: { size: number }) {
+  return (
+    <svg viewBox="0 0 24 24" width={size} height={size} aria-hidden>
+      <path
+        fill="currentColor"
+        d="M12 1.6 14.35 9.65 22.4 12 14.35 14.35 12 22.4 9.65 14.35 1.6 12 9.65 9.65Z"
+      />
+    </svg>
+  );
+}
+
+function LogoCodex({ size }: { size: number }) {
+  return (
+    <svg viewBox="0 0 24 24" width={size} height={size} aria-hidden>
+      <path
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.9"
+        strokeLinejoin="round"
+        d="M12 2.8 19.2 7v10L12 21.2 4.8 17V7Z"
+      />
+    </svg>
+  );
+}
+
+/** Agent marks without the square tile — π / asterisk / spark / hex. */
+export function BackendLogo({
+  backend,
+  size = 24,
+}: {
+  backend: "pi" | "claude" | "grok" | "codex";
+  size?: number;
+}) {
+  if (backend === "claude") return <LogoClaude size={size} />;
+  if (backend === "grok") return <LogoGrok size={size} />;
+  if (backend === "codex") return <LogoCodex size={size} />;
+  return <LogoPi size={size} />;
 }

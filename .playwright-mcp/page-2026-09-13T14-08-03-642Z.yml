@@ -1,0 +1,37 @@
+- generic [ref=e3]:
+  - complementary [ref=e4]:
+    - generic [ref=e5]:
+      - button "New sessions start on Pi. Choose the agent for new sessions." [ref=e7] [cursor=pointer]:
+        - generic [ref=e11]:
+          - strong [ref=e12]: pi
+          - emphasis [ref=e13]: local shell agent
+      - button "Collapse sidebar" [ref=e17] [cursor=pointer]
+    - button "New session" [ref=e22] [cursor=pointer]:
+      - generic [ref=e27]: ⌘N
+    - navigation "Workbench" [ref=e28]:
+      - button "Terminal" [ref=e29] [cursor=pointer]
+      - button "Notes" [ref=e34] [cursor=pointer]
+      - button "Skills" [ref=e39] [cursor=pointer]
+      - button "Extensions" [ref=e44] [cursor=pointer]
+      - button "Settings" [ref=e48] [cursor=pointer]
+    - generic [ref=e53]:
+      - generic [ref=e54]:
+        - tablist "Sessions and fleet" [ref=e55]:
+          - tab "Sessions" [selected] [ref=e56] [cursor=pointer]
+          - tab "Fleet" [ref=e57] [cursor=pointer]
+        - generic [ref=e58]:
+          - button "Search transcripts" [ref=e59] [cursor=pointer]
+          - button "Session filters" [ref=e63] [cursor=pointer]
+      - generic [ref=e66]: Loading sessions…
+    - button "Resize sidebar" [ref=e67]
+    - generic [ref=e68]:
+      - button "Use dark theme" [ref=e69] [cursor=pointer]:
+        - generic [ref=e72]: Light
+      - button "Settings" [ref=e74] [cursor=pointer]
+      - generic [ref=e79]: ⌘K
+  - main [ref=e80]:
+    - generic [ref=e84]:
+      - generic [ref=e85]:
+        - generic [ref=e90]: Onwards & Upwards
+        - generic [ref=e91]: Preview
+      - generic [ref=e92]: Opening your workspace…

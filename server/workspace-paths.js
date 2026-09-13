@@ -93,3 +93,18 @@ export function defaultWorkspaceRoots() {
   }
   return roots;
 }
+
+/**
+ * Safe filename for an auto-saved transcript. The name comes from the browser,
+ * so it is a trust boundary: everything but [A-Za-z0-9._-] is flattened (which
+ * removes every separator) and a leading dot is refused, so "../../etc/passwd"
+ * cannot escape the transcripts directory or land as a dotfile.
+ * Returns "" when the input cannot be made into a usable name.
+ */
+export function safeTranscriptName(requested) {
+  const name = String(requested ?? "")
+    .replace(/[^a-zA-Z0-9._-]/g, "-")
+    .slice(0, 120);
+  if (!name || name.startsWith(".")) return "";
+  return name;
+}

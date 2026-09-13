@@ -4,7 +4,7 @@
  * callers; this helper is intentionally only for prompt-derived labels.
  */
 export function isLocalCommandText(value: string | undefined): boolean {
-  return /<local-command-caveat>|<command-name>|<command-message>|<command-args>/.test(value || '')
+  return /<local-command-caveat>|<command-name>|<command-message>|<command-args>|<task-notification>/.test(value || '')
 }
 
 export function contextualSessionTitle(value: string | undefined, fallback: string): string {

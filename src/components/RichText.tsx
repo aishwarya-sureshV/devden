@@ -1,7 +1,10 @@
-import { memo, type JSX, type ReactNode } from "react";
+import { memo, useState, type JSX, type ReactNode } from "react";
 import { highlightCode, NumberedCode } from "../lib/highlight";
+import { clipOutput, isShellLanguage } from "../lib/runInTerminal";
+import { useTerminalRuns, type TerminalRun } from "../lib/terminalRuns";
 import { CopyButton } from "./CopyButton";
 import { AskCard } from "./AskCard";
+import { IconPlay } from "./icons";
 import { hasAskBlock, messageAsk, parseAsk } from "../lib/askBlock";
 
 /** Start of a fence-less questions payload still streaming in. */
@@ -51,6 +54,7 @@ export const RichText = memo(function RichText({
             key={index}
             code={segment.text}
             language={segment.language}
+            live={live}
             onAnswer={onAnswer}
           />
         ) : (
@@ -65,27 +69,89 @@ export const RichText = memo(function RichText({
 function MaybeAskBlock({
   code,
   language,
+  live,
   onAnswer,
 }: {
   code: string;
   language?: string;
+  live?: boolean;
   onAnswer?: (text: string) => void;
 }) {
   const questions = language === "ask" ? parseAsk(code) : null;
-  if (!questions) return <CodeBlock code={code} language={language} />;
+  if (!questions)
+    return <CodeBlock code={code} language={language} live={live} />;
   return <AskCard questions={questions} onAnswer={onAnswer} />;
 }
 
-function CodeBlock({ code, language }: { code: string; language?: string }) {
+function CodeBlock({
+  code,
+  language,
+  live,
+}: {
+  code: string;
+  language?: string;
+  live?: boolean;
+}) {
+  const terminalRuns = useTerminalRuns();
+  const [runId, setRunId] = useState<string | null>(null);
+  const run = runId ? terminalRuns?.runs[runId] : undefined;
+  const runnable =
+    Boolean(terminalRuns) &&
+    !live &&
+    isShellLanguage(language) &&
+    Boolean(code.trim());
+  const running = run?.status === "queued" || run?.status === "running";
+
   return (
-    <div className="md-code-block">
+    <div
+      className={`md-code-block${runnable ? " md-code-block--runnable" : ""}`}
+    >
       <NumberedCode code={code} language={language} />
-      <CopyButton
-        text={code}
-        label="Copy command"
-        className="md-code-block__copy"
-        iconOnly
-      />
+      <div className="md-code-block__actions">
+        {runnable && (
+          <button
+            type="button"
+            className="md-code-block__run"
+            aria-label="Run in terminal"
+            title="Run in terminal"
+            disabled={running}
+            onClick={() => {
+              const id = terminalRuns?.runCommand(code);
+              if (id) setRunId(id);
+            }}
+          >
+            <IconPlay />
+          </button>
+        )}
+        <CopyButton
+          text={code}
+          label="Copy command"
+          className="md-code-block__copy"
+          iconOnly
+        />
+      </div>
+      {run && <CodeRunResult run={run} />}
+    </div>
+  );
+}
+
+function CodeRunResult({ run }: { run: TerminalRun }) {
+  const running = run.status === "queued" || run.status === "running";
+  const failed =
+    run.status === "error" || (run.status === "exited" && run.exitCode !== 0);
+  const head = running
+    ? "Running in terminal…"
+    : run.status === "error"
+      ? run.error || "Failed"
+      : `Exit ${run.exitCode ?? "?"}`;
+  const output = clipOutput(run.output);
+  return (
+    <div
+      className={`md-code-run${running ? " is-running" : ""}${failed ? " is-fail" : ""}${run.status === "exited" && run.exitCode === 0 ? " is-ok" : ""}`}
+      role="status"
+    >
+      <div className="md-code-run__head">{head}</div>
+      {output ? <pre className="md-code-run__out">{output}</pre> : null}
     </div>
   );
 }

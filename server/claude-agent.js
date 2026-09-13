@@ -6,13 +6,25 @@
  * consumed by pi-web's Timeline, while exposing the same public surface as
  * PiAgentProcess.
  */
-import { spawn } from "node:child_process";
-import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { execFile, spawn } from "node:child_process";
+import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { StringDecoder } from "node:string_decoder";
-import { CO_PARTNER_PROMPT, CLARIFY_PROMPT } from "./co-partner-prompt.js";
+import { AgentPool } from "./agent-pool.js";
+import { attachQueue } from "./agent-queue.js";
+import {
+  attachSubagentFollows,
+  isSubagentToolName,
+  noteSubagentToolEvent,
+  subagentBusy,
+} from "./agent-subagent.js";
+import {
+  CO_PARTNER_PROMPT,
+  CLARIFY_PROMPT,
+  HOST_PROMPT,
+} from "./co-partner-prompt.js";
 
 function formatClaudeModelName(value) {
   const stripped = String(value || "")
@@ -56,6 +68,15 @@ const CLAUDE_EFFORT_LEVELS = ["low", "medium", "high", "xhigh", "max"];
 const DEFAULT_CLAUDE_MODEL_ID = "claude-sonnet-5";
 const DEFAULT_CLAUDE_EFFORT = "high";
 const USAGE_TTL_MS = 5 * 60_000;
+/**
+ * Floor on the forced path. The composer polls usage every 30s for as long as
+ * a turn streams, and `force` used to skip the cache outright -- so a ten
+ * minute turn spawned twenty `claude` CLI processes. Forced still means
+ * "fresher than the idle TTL", just not "respawn unconditionally": these are
+ * subscription windows measured in hours, so a two-minute floor still moves
+ * the composer chip several times a turn.
+ */
+const USAGE_FORCE_TTL_MS = 2 * 60_000;
 let usageCache = { at: 0, promise: undefined, result: undefined };
 
 function claudeModelInfo(modelId) {
@@ -102,17 +123,76 @@ function parseClaudeUsageText(stdout) {
       }
     }
   }
-  return [
+  const legacy = [
     ...resultText.matchAll(
       /^(Current session|Current week[^:]*):\s*(\d+(?:\.\d+)?)% used(?:\s*·\s*resets\s+(.+))?$/gim,
     ),
-  ].map((match) => ({
-    label: /^Current session$/i.test(match[1])
-      ? "Current session"
-      : "Current week",
-    usedPercent: Number(match[2]),
-    ...(match[3] ? { resetsAt: match[3].trim() } : {}),
-  }));
+  ].map((match) => {
+    // The CLI prints the reset as prose ("Sep 11, 9:08 AM"); the chip wants an
+    // instant so it can count down, so it is parsed here.
+    const resetsAt = match[3] ? Date.parse(match[3].trim()) : Number.NaN;
+    return {
+      label: /^Current session$/i.test(match[1])
+        ? "Current session"
+        : "Current week",
+      usedPercent: Number(match[2]),
+      ...(Number.isFinite(resetsAt) ? { resetsAt } : {}),
+    };
+  });
+  if (legacy.length > 0) return legacy;
+  // Newer CLIs dropped "N% used" for request counts: "Last 24h · 410 requests".
+  return [
+    ...resultText.matchAll(/^Last\s+(24h|7d)\s*·\s*([\d,]+)\s+requests?/gim),
+  ].map((match) => ({ label: match[1], usedText: `${match[2]} req` }));
+}
+
+// Rolling windows never announce their reset: a window frees up when its
+// oldest in-window request ages out, so reset = oldest request + span. The
+// OAuth usage endpoint (five_hour/seven_day.resets_at) is the real source but
+// 429s persistently for some plans, so estimate from the same local
+// transcripts the CLI's "approximate, based on local sessions" stats use.
+// ponytail: reads every transcript written in the last 7d per poll; move to
+// the OAuth endpoint (or cache with a longer TTL) if that scan shows up.
+const CLAUDE_USAGE_WINDOW_SPANS = {
+  "24h": 24 * 60 * 60_000,
+  "7d": 7 * 24 * 60 * 60_000,
+};
+
+async function claudeWindowResets() {
+  const now = Date.now();
+  let entries;
+  try {
+    entries = readdirSync(join(homedir(), ".claude", "projects"), {
+      recursive: true,
+      withFileTypes: true,
+    });
+  } catch {
+    return {};
+  }
+  const earliest = {};
+  for (const entry of entries) {
+    if (!entry.isFile() || !entry.name.endsWith(".jsonl")) continue;
+    const path = join(entry.parentPath, entry.name);
+    try {
+      if (now - statSync(path).mtimeMs > CLAUDE_USAGE_WINDOW_SPANS["7d"])
+        continue;
+      const contents = await readFile(path, "utf8");
+      for (const match of contents.matchAll(/"timestamp":"([^"]+)"/g)) {
+        const at = Date.parse(match[1]);
+        if (!Number.isFinite(at)) continue;
+        for (const [label, span] of Object.entries(CLAUDE_USAGE_WINDOW_SPANS))
+          if (at >= now - span && at < (earliest[label] ?? Infinity))
+            earliest[label] = at;
+      }
+    } catch {
+      /* unreadable transcript, skip */
+    }
+  }
+  const resets = {};
+  for (const [label, span] of Object.entries(CLAUDE_USAGE_WINDOW_SPANS))
+    if (Number.isFinite(earliest[label]))
+      resets[label] = earliest[label] + span;
+  return resets;
 }
 
 async function readClaudeSessionRuntime(path) {
@@ -139,6 +219,214 @@ async function readClaudeSessionRuntime(path) {
   } catch {
     return {};
   }
+}
+
+/**
+ * Exact five_hour/seven_day utilization + reset instants -- the same data the
+ * CLI's own usage bars fetch (GET /api/oauth/usage, utilization as a percent,
+ * resets_at RFC3339). The endpoint 429s persistently for some plans, so
+ * callers fall back to the prose + transcript estimate.
+ */
+async function claudeOAuthToken() {
+  try {
+    const parsed = JSON.parse(
+      await readFile(join(homedir(), ".claude", ".credentials.json"), "utf8"),
+    );
+    const token = parsed?.claudeAiOauth?.accessToken;
+    if (token) return token;
+  } catch {
+    /* Linux has no keychain but does have this file; macOS has the keychain */
+  }
+  let raw;
+  try {
+    raw = await new Promise((resolve, reject) =>
+      execFile(
+        "security",
+        ["find-generic-password", "-s", "Claude Code-credentials", "-w"],
+        { timeout: 5_000 },
+        (error, stdout) => (error ? reject(error) : resolve(stdout)),
+      ),
+    );
+    return JSON.parse(String(raw).trim())?.claudeAiOauth?.accessToken;
+  } catch {
+    return undefined; // no keychain item, or unreadable credential
+  }
+}
+
+/**
+ * unifiedWindows from a rate_limit_event ({five_hour, seven_day} with
+ * fractional utilization and epoch-second resetsAt) -> chip windows.
+ * Expired windows drop rather than counting into the past.
+ */
+function usageWindowsFromUnified(unifiedWindows) {
+  const now = Date.now();
+  return Object.entries(unifiedWindows ?? {})
+    .map(([key, window]) => {
+      const resetsAt = Number(window?.resetsAt) * 1000;
+      const usedPercent = Number(window?.utilization) * 100;
+      if (!Number.isFinite(resetsAt) || resetsAt <= now) return null;
+      return {
+        label: key === "five_hour" ? "Session" : "Weekly",
+        ...(Number.isFinite(usedPercent) && usedPercent >= 0
+          ? { usedPercent }
+          : {}),
+        resetsAt,
+      };
+    })
+    .filter(Boolean);
+}
+
+async function claudeOAuthUsage() {
+  const token = await claudeOAuthToken();
+  if (!token) throw new Error("no claude oauth token");
+  const response = await fetch("https://api.anthropic.com/api/oauth/usage", {
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "anthropic-beta": "oauth-2025-04-20",
+      Accept: "application/json",
+      "User-Agent": "claude-cli/2.1.267 (external, cli)",
+    },
+    signal: AbortSignal.timeout(10_000),
+  });
+  if (!response.ok) throw new Error(`claude usage ${response.status}`);
+  const payload = await response.json();
+  return [
+    ["Session", payload?.five_hour],
+    ["Weekly", payload?.seven_day],
+  ]
+    .map(([label, window]) => {
+      const usedPercent = Number(window?.utilization);
+      const resetsAt = Date.parse(window?.resets_at ?? "");
+      return {
+        label,
+        ...(Number.isFinite(usedPercent) && usedPercent > 0
+          ? { usedPercent }
+          : {}),
+        ...(Number.isFinite(resetsAt) ? { resetsAt } : {}),
+      };
+    })
+    .filter(
+      (window) =>
+        window.usedPercent !== undefined || window.resetsAt !== undefined,
+    );
+}
+
+let claudeOAuthUsageFailedAt = 0;
+
+/**
+ * Fallback probe: one tiny inference turn through the CLI. Every turn's stream
+ * carries a rate_limit_event with exact five_hour/seven_day utilization, so
+ * this beats both the /usage prose (no percents) and the OAuth endpoint
+ * (persistent 429s -- claude-code#31021, and refreshing is not possible when
+ * auth is delegated to a host like Claude Desktop, which holds the refresh
+ * token itself). Cost: one haiku "ok" per cache-expired poll.
+ */
+function loadClaudeProbeUsage() {
+  return new Promise((resolve) => {
+    const child = spawn(
+      resolveClaudeExecutable(),
+      [
+        "-p",
+        "Reply with exactly: ok",
+        "--model",
+        "haiku",
+        "--output-format",
+        "stream-json",
+        "--verbose",
+        "--no-session-persistence",
+        "--dangerously-skip-permissions",
+      ],
+      {
+        cwd: homedir(),
+        env: subscriptionEnvironment(),
+        stdio: ["ignore", "pipe", "pipe"],
+      },
+    );
+    let stdout = "";
+    let settled = false;
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      try {
+        child.kill();
+      } catch {
+        /* already exited */
+      }
+      resolve(result);
+    };
+    const timeout = setTimeout(
+      () => finish({ ok: false, error: "Claude usage probe timed out." }),
+      30_000,
+    );
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk.toString("utf8");
+    });
+    child.once("error", (error) => finish({ ok: false, error: error.message }));
+    child.once("exit", () => {
+      if (settled) return;
+      let windows = [];
+      for (const line of stdout.split("\n")) {
+        try {
+          const event = JSON.parse(line);
+          if (event.type === "rate_limit_event")
+            windows = usageWindowsFromUnified(
+              event.rate_limit_info?.unifiedWindows,
+            );
+          if (windows.length > 0) break;
+        } catch {
+          /* non-JSON line */
+        }
+      }
+      if (windows.length > 0) {
+        finish({
+          ok: true,
+          usage: {
+            available: true,
+            provider: "Claude",
+            windows,
+            updatedAt: new Date().toISOString(),
+          },
+        });
+        return;
+      }
+      finish({
+        ok: false,
+        usage: { available: false, provider: "Claude", windows: [] },
+        error: "no rate limit data in probe output",
+      });
+    });
+  });
+}
+
+async function getClaudeUsage() {
+  // A 429'd endpoint shouldn't be re-poked on every 30s poll; back off.
+  const RETRY_AFTER_FAILURE_MS = 10 * 60_000;
+  if (
+    !claudeOAuthUsageFailedAt ||
+    Date.now() - claudeOAuthUsageFailedAt > RETRY_AFTER_FAILURE_MS
+  ) {
+    try {
+      const windows = await claudeOAuthUsage();
+      if (windows.length > 0)
+        return {
+          ok: true,
+          usage: {
+            available: true,
+            provider: "Claude",
+            windows,
+            updatedAt: new Date().toISOString(),
+          },
+        };
+    } catch {
+      claudeOAuthUsageFailedAt = Date.now();
+    }
+  }
+  // Exact data beats estimates: a probe turn carries real utilization, so try
+  // it before falling back to the prose + transcript arithmetic.
+  const probed = await loadClaudeProbeUsage().catch(() => null);
+  if (probed?.ok) return probed;
+  return loadClaudeUsage();
 }
 
 function loadClaudeUsage() {
@@ -184,16 +472,21 @@ function loadClaudeUsage() {
       stderr += chunk.toString("utf8");
     });
     child.once("error", (error) => finish({ ok: false, error: error.message }));
-    child.once("exit", (code) => {
+    child.once("exit", async (code) => {
       if (settled) return;
       const windows = parseClaudeUsageText(stdout);
       if (windows.length > 0) {
+        const resets = await claudeWindowResets().catch(() => ({}));
         finish({
           ok: true,
           usage: {
             available: true,
             provider: "Claude",
-            windows,
+            windows: windows.map((window) =>
+              resets[window.label]
+                ? { ...window, resetsAt: resets[window.label] }
+                : window,
+            ),
             updatedAt: new Date().toISOString(),
           },
         });
@@ -213,11 +506,46 @@ function loadClaudeUsage() {
   });
 }
 
+// Claude Code refreshes its OAuth tokens only when the CLI actually runs, and
+// the refresh token behind them has a hard expiry measured in weeks. A pi-web
+// host that sits idle past it — or a freshly deployed one that nobody has
+// opened yet — is logged out for real, and the only way back is an interactive
+// `claude` + /login on that machine. So re-run the usage check on a timer: it
+// spawns the CLI, which renews the token as a side effect, and a failure here
+// is the earliest warning that the session is gone rather than a mid-turn one.
+// Validated, not just coerced: a non-numeric override (PI_WEB_..._MS=6h)
+// yields NaN, which setInterval silently treats as 1ms -- spawning the CLI
+// a thousand times a second.
+const AUTH_KEEPALIVE_MS = (() => {
+  const ms = Number(process.env.PI_WEB_CLAUDE_KEEPALIVE_MS);
+  return Number.isFinite(ms) && ms > 0 ? ms : 6 * 60 * 60 * 1000;
+})();
+
+export function startClaudeAuthKeepalive() {
+  const ping = () =>
+    loadClaudeUsage().then(
+      (result) => {
+        if (result?.ok) return;
+        console.warn(
+          `[claude] auth keepalive failed: ${result?.error || "unknown error"}`,
+        );
+        console.warn(
+          "[claude] run `claude auth login` on this host — pi-web strips" +
+            " ANTHROPIC_API_KEY and Claude Desktop host-auth, so there is" +
+            " no fallback credential.",
+        );
+      },
+      () => {},
+    );
+  void ping();
+  return setInterval(ping, AUTH_KEEPALIVE_MS).unref();
+}
+
 function resolveClaudeExecutable() {
   return process.env.PI_WEB_CLAUDE_BIN || "claude";
 }
 
-function subscriptionEnvironment() {
+export function subscriptionEnvironment() {
   const env = {
     ...process.env,
     FORCE_COLOR: "0",
@@ -238,8 +566,29 @@ function subscriptionEnvironment() {
     "CLAUDE_CODE_USE_BEDROCK",
     "CLAUDE_CODE_USE_VERTEX",
     "CLAUDE_CODE_USE_FOUNDRY",
+    // If pi-web was started from Claude Desktop / Claude Code, these make the
+    // child CLI treat this process as an SDK host that will refresh OAuth.
+    // There is no such host, so you get "OAuth session expired and could not
+    // be refreshed" even when a stored login exists. Refresh tokens are
+    // single-use, so leaving them also lets a parent Desktop session burn
+    // the token out from under us.
+    "CLAUDE_CODE_SDK_HAS_HOST_AUTH_REFRESH",
+    "CLAUDE_CODE_SDK_HAS_OAUTH_REFRESH",
+    "CLAUDE_CODE_CHILD_SESSION",
+    "CLAUDE_CODE_ENTRYPOINT",
+    "CLAUDE_CODE_MESSAGING_TOKEN",
+    "CLAUDE_CODE_MESSAGING_SOCKET",
+    "CLAUDE_CODE_HOST_SESSION_ID",
+    "CLAUDE_CODE_SESSION_ID",
+    "CLAUDE_CODE_EXECPATH",
+    "CLAUDE_PID",
   ])
     delete env[name];
+  // Desktop also injects session scopes. Keep them only when the operator
+  // actually provisioned a long-lived env token / refresh token for headless
+  // use (`claude setup-token` or CLAUDE_CODE_OAUTH_REFRESH_TOKEN).
+  if (!env.CLAUDE_CODE_OAUTH_TOKEN && !env.CLAUDE_CODE_OAUTH_REFRESH_TOKEN)
+    delete env.CLAUDE_CODE_OAUTH_SCOPES;
   return env;
 }
 
@@ -283,6 +632,103 @@ function stripSystemReminders(text) {
     .trim();
 }
 
+function userMessageText(message) {
+  const content = message?.content;
+  if (typeof content === "string") return content;
+  return contentText(content);
+}
+
+/** Claude injects this as a user turn when a background Agent/Task finishes.
+ *  It is harness plumbing — same class of noise as isMeta / command caveats. */
+export function parseTaskNotification(text) {
+  const raw = String(text ?? "");
+  if (!raw.includes("<task-notification>")) return null;
+  const tag = (name) => {
+    const match = new RegExp(`<${name}>([\\s\\S]*?)</${name}>`).exec(raw);
+    return match ? match[1].trim() : "";
+  };
+  const toolUseId = tag("tool-use-id");
+  if (!toolUseId) return null;
+  return {
+    toolUseId,
+    taskId: tag("task-id"),
+    status: tag("status").toLowerCase(),
+    summary: tag("summary"),
+    result: tag("result"),
+  };
+}
+
+/** The completion XML is written as a user turn, a queue-operation enqueue,
+ *  or an attachment — stream-json often never emits the user turn, so the
+ *  session jsonl is the source of truth. */
+export function taskNotificationFromEvent(event) {
+  if (!event || typeof event !== "object") return null;
+  const attachment =
+    event.attachment && typeof event.attachment === "object"
+      ? event.attachment
+      : {};
+  return parseTaskNotification(
+    userMessageText(event.message) ||
+      event.content ||
+      attachment.prompt ||
+      attachment.content ||
+      "",
+  );
+}
+
+/** How long a held background Agent may stay silent before the spawn card
+ *  is closed out. Matches grok/pi: without this the UI spins on "running"
+ *  until a page refresh reloads the log and skips the live hold. */
+let stallMs = 5 * 60_000;
+
+/** Tests only: shrink the stall watchdog so the bail-out is observable. */
+export function setStallMsForTesting(ms) {
+  stallMs = ms;
+}
+
+function jsonlSize(path) {
+  if (!path) return 0;
+  try {
+    return statSync(path).size;
+  } catch {
+    return 0;
+  }
+}
+
+function readNewJsonlLines(path, offset) {
+  if (!path) return { lines: [], offset };
+  let text;
+  try {
+    text = readFileSync(path, "utf8");
+  } catch {
+    return { lines: [], offset };
+  }
+  if (text.length < offset) offset = 0;
+  const chunk = text.slice(offset);
+  const lastNl = chunk.lastIndexOf("\n");
+  if (lastNl < 0) return { lines: [], offset };
+  const complete = chunk.slice(0, lastNl + 1);
+  return {
+    lines: complete.split("\n").filter((line) => line.trim()),
+    offset: offset + complete.length,
+  };
+}
+
+export function parseClaudeAgentId(text, details = {}) {
+  if (typeof details.agentId === "string" && details.agentId.trim())
+    return details.agentId.trim();
+  const match = /agentId:\s*([a-zA-Z0-9_-]+)/.exec(String(text ?? ""));
+  return match ? match[1] : "";
+}
+
+/** Background Agent/Task returns immediately with a receipt, the way grok's
+ *  spawn_subagent returns `subagent_id` and keeps working in a child session. */
+export function isAsyncAgentLaunch(text, details = {}) {
+  if (details.isAsync === true || details.status === "async_launched")
+    return true;
+  return /Async agent launched successfully/i.test(String(text ?? ""));
+}
+
 function normalizeHistoryEntry(entry) {
   const timestamp = Date.parse(entry?.timestamp ?? "") || Date.now();
   const message = entry?.message;
@@ -312,6 +758,7 @@ function normalizeHistoryEntry(entry) {
   const text = typeof content === "string" ? content : contentText(content);
   if (/<local-command-caveat>|<command-name>|<command-message>/.test(text))
     return [];
+  if (parseTaskNotification(text)) return [];
   if (
     Array.isArray(content) &&
     content.some((part) => part?.type === "tool_result")
@@ -433,6 +880,17 @@ export class ClaudeAgentProcess {
     this.slashCommands = [];
     this.skills = new Set();
     this.seenSubagents = new Set();
+    /** Root-level Task/Agent spawns whose tool_result has not come back yet.
+     *  The CLI never emits a tool_result for a tool that was in flight when
+     *  the user interrupted — it writes a plain "[Request interrupted by
+     *  user for tool use]" message — so an interrupt has to close these out
+     *  itself or the spawn card spins until the stall timer fires. */
+    this.openSubagents = new Set();
+    /** Background Agent/Task calls whose tool_execution_end is held until the
+     *  child actually finishes (task-notification), keyed by the spawn id. */
+    this.pendingBackgroundAgents = new Map();
+    this.backgroundWatch = undefined;
+    this.backgroundLogOffset = 0;
     /**
      * Control requests this host sent to the CLI, awaiting their responses.
      * @type {Map<string, { resolve: (value: object) => void, timer: NodeJS.Timeout }>}
@@ -447,6 +905,19 @@ export class ClaudeAgentProcess {
      */
     this.queuedMessages = [];
     this.queueSeq = 0;
+    attachQueue(this, {
+      isBusy() {
+        return this.pendingTurns.length > 0 || subagentBusy(this);
+      },
+      sendNow(message, images) {
+        return this.prompt(message, images);
+      },
+      steerNow(message, images) {
+        return this.steer(message, images);
+      },
+      requeueOnFailure: false,
+    });
+    attachSubagentFollows(this);
     /** @type {Set<(event: object) => void>} */
     this.listeners = new Set();
   }
@@ -575,7 +1046,7 @@ export class ClaudeAgentProcess {
       "--include-hook-events",
       "--verbose",
       "--append-system-prompt",
-      `${CO_PARTNER_PROMPT}\n\n${CLARIFY_PROMPT}`,
+      `${CO_PARTNER_PROMPT}\n\n${CLARIFY_PROMPT}\n\n${HOST_PROMPT}`,
     ];
     if (this.options.agentMode === "plan") {
       args.push("--permission-mode", "plan");
@@ -587,6 +1058,15 @@ export class ClaudeAgentProcess {
       args.push("--dangerously-skip-permissions");
     }
     if (this.sessionId) args.push("--resume", this.sessionId);
+    // A fork tab resumes the ORIGINAL session with --fork-session: claude
+    // copies the whole conversation into a new session id when the fork's
+    // first prompt runs, so the original conversation is never touched.
+    if (this.options.forkResume && this.sessionId) {
+      args.push("--fork-session");
+      this.resumedSessionId = this.sessionId;
+    } else {
+      this.resumedSessionId = this.sessionId || undefined;
+    }
     if (this.model?.id) args.push("--model", this.model.id);
     if (this.thinkingLevel) args.push("--effort", this.thinkingLevel);
     args.push(...extraArgs);
@@ -688,17 +1168,98 @@ export class ClaudeAgentProcess {
     });
   }
 
+  /**
+   * Interrupt the way the CLI's own esc does: a control request, not a kill.
+   *
+   * Killing the process took the session's queue down with it (failPending
+   * clears it), so a message the user had lined up while a turn — or a
+   * subagent — was running vanished on interrupt. In the CLI and the desktop
+   * app that message is exactly what Claude answers next. Interrupting in
+   * place keeps the process, the queue and the transcript: the CLI ends the
+   * turn with a `result`, and the existing flushQueue on that result sends
+   * the queued message, which is the CLI's behaviour reproduced rather than
+   * imitated. Restarting stays as the fallback for a CLI that cannot
+   * interrupt.
+   */
   async abort() {
     if (!this.process) return { ok: true };
+    const turn = this.pendingTurns[0];
+    // Before the request, not after: the CLI can emit the interrupted turn's
+    // `result` — and with it the settle that flushes the queue — before the
+    // control response is settled here.
+    this.holdQueue();
+    this.endRunningSubagents();
+    // Nothing on the wire: the only thing still rendering as running was
+    // subagent work, and the CLI does not restart itself to end a Task.
+    if (!turn) return { ok: true };
+    const interrupted = await this.sendControlRequest(
+      { subtype: "interrupt" },
+      10000,
+    );
+    if (interrupted.ok) {
+      // The CLI answers the control request before it emits the turn's
+      // `result`. If that result never lands, this turn never resolves and
+      // the composer spins with the stop button already spent — so fall back
+      // to the restart if the turn is still pending a few seconds later.
+      const guard = setTimeout(() => {
+        if (this.pendingTurns.includes(turn)) void this.restartAfterAbort();
+      }, 5000);
+      guard.unref?.();
+      return { ok: true };
+    }
+    return this.restartAfterAbort();
+  }
+
+  /**
+   * Close out everything the UI is still drawing as a live subagent. The CLI
+   * emits no tool_result for a tool it interrupted, so without this the spawn
+   * card runs until the stall timer, and the composer — which counts a
+   * running subagent as streaming — spins with it.
+   */
+  endRunningSubagents() {
+    for (const toolCallId of this.openSubagents) {
+      this.emit({
+        type: "tool_execution_end",
+        sessionKey: this.sessionKey,
+        toolCallId,
+        result: {
+          content: [
+            {
+              type: "text",
+              text: "[Request interrupted by user for tool use]",
+            },
+          ],
+        },
+        isError: true,
+      });
+    }
+    this.openSubagents.clear();
+    this.endPendingBackgroundAgents();
+    this.subagents?.stopAll();
+    this.emit({
+      type: "notice",
+      sessionKey: this.sessionKey,
+      message: "[Request interrupted by user]",
+      tone: "info",
+    });
+  }
+
+  /** Hard restart, preserving the queue an interrupt must not eat. */
+  async restartAfterAbort() {
     const resumeId = this.sessionId;
+    const queued = this.queuedMessages.slice();
     await this.terminateProcess(new Error("Claude run aborted"));
     if (resumeId) this.sessionId = resumeId;
     try {
       await this.spawnProcess();
-      return { ok: true };
     } catch (error) {
       return { ok: false, error: String(error?.message ?? error) };
     }
+    if (queued.length > 0) {
+      this.queuedMessages = queued;
+      this.emitQueue();
+    }
+    return { ok: true };
   }
 
   async newSession() {
@@ -798,12 +1359,20 @@ export class ClaudeAgentProcess {
   async forkAt() {
     if (!this.sessionId)
       return { ok: false, error: "No Claude session is available to fork." };
-    const messages = await this.getMessages();
-    const result = await this.restart(["--fork-session"]);
-    if (!result.ok) return result;
-    this.sessionId = "";
-    this.sessionFile = undefined;
-    return { ok: true, state: await this.getState(), messages };
+    // Claude Code has no fork-at-a-message: --fork-session copies the whole
+    // conversation into a new session id when the fork's first prompt runs.
+    // So hand back this session with forkResume set -- the fork tab opens on
+    // the same file and diverges into its own session on the first prompt,
+    // leaving this conversation untouched.
+    // ponytail: full-history fork only; claude's CLI offers no point cutoff.
+    return {
+      ok: true,
+      restored: true,
+      forkResume: true,
+      forkCwd: this.cwd,
+      state: await this.getState(),
+      messages: await this.getMessages(),
+    };
   }
 
   getCommands() {
@@ -826,12 +1395,34 @@ export class ClaudeAgentProcess {
     return Promise.resolve({ ok: true, levels: CLAUDE_EFFORT_LEVELS });
   }
 
+  /**
+   * Windows captured from the last turn's rate_limit_event: exact utilization
+   * and absolute reset instants straight from the API. Reset instants stay
+   * valid while idle, so staleness only matters per window: an expired one is
+   * dropped rather than shown counting into the past.
+   */
+  liveUsageWindows() {
+    return usageWindowsFromUnified(this.rateLimits?.windows);
+  }
+
   getUsage(force = false) {
+    const live = this.liveUsageWindows();
+    if (live.length > 0)
+      return Promise.resolve({
+        ok: true,
+        usage: {
+          available: true,
+          provider: "Claude",
+          windows: live,
+          updatedAt: new Date().toISOString(),
+        },
+      });
     const now = Date.now();
-    if (!force && usageCache.result && now - usageCache.at < USAGE_TTL_MS)
+    const ttl = force ? USAGE_FORCE_TTL_MS : USAGE_TTL_MS;
+    if (usageCache.result && now - usageCache.at < ttl)
       return Promise.resolve(usageCache.result);
     if (usageCache.promise) return usageCache.promise;
-    usageCache.promise = loadClaudeUsage()
+    usageCache.promise = getClaudeUsage()
       .then((result) => {
         if (result?.ok) {
           usageCache = { at: Date.now(), promise: undefined, result };
@@ -1045,72 +1636,6 @@ export class ClaudeAgentProcess {
     };
   }
 
-  /** Snapshot for the UI: what is waiting, in the order it will be sent. */
-  queueSnapshot() {
-    return this.queuedMessages.map(({ id, message, at }) => ({
-      id,
-      message,
-      at,
-    }));
-  }
-
-  emitQueue() {
-    this.emit({
-      type: "queue_updated",
-      sessionKey: this.sessionKey,
-      queued: this.queueSnapshot(),
-    });
-  }
-
-  /**
-   * Send now if the agent is idle, otherwise hold it until the running turn
-   * finishes. Returns which of the two happened so the UI can say so.
-   */
-  enqueue(message, images) {
-    const text = String(message ?? "");
-    if (!text.trim())
-      return Promise.resolve({ ok: false, error: "Empty message" });
-    if (this.pendingTurns.length === 0)
-      return this.prompt(text, images).then((result) =>
-        result.ok ? { ok: true, data: { queued: false } } : result,
-      );
-    this.queueSeq += 1;
-    this.queuedMessages.push({
-      id: `q-${Date.now()}-${this.queueSeq}`,
-      message: text,
-      images: Array.isArray(images) ? images : [],
-      at: Date.now(),
-    });
-    this.emitQueue();
-    return Promise.resolve({
-      ok: true,
-      data: { queued: true, position: this.queuedMessages.length },
-    });
-  }
-
-  /** Drop one waiting message, or all of them when no id is given. */
-  cancelQueued(id) {
-    const before = this.queuedMessages.length;
-    this.queuedMessages = id
-      ? this.queuedMessages.filter((entry) => entry.id !== id)
-      : [];
-    if (this.queuedMessages.length === before)
-      return { ok: false, error: "That message is no longer queued" };
-    this.emitQueue();
-    return {
-      ok: true,
-      data: { cancelled: before - this.queuedMessages.length },
-    };
-  }
-
-  /** Called when the agent goes idle: send the next waiting message, if any. */
-  flushQueue() {
-    const next = this.queuedMessages.shift();
-    if (!next) return;
-    this.emitQueue();
-    void this.prompt(next.message, next.images);
-  }
-
   /**
    * Settings as the agent resolved them: the merged view, each file that
    * contributed, and the hooks in force.
@@ -1247,6 +1772,15 @@ export class ClaudeAgentProcess {
       event,
     });
 
+    if (event.parent_tool_use_id)
+      this.noteBackgroundProgress(event.parent_tool_use_id);
+
+    const notification = taskNotificationFromEvent(event);
+    if (notification) {
+      this.finishBackgroundAgent(notification);
+      return;
+    }
+
     if (event.type === "control_request") {
       // This host implements no inbound control requests. Refuse explicitly:
       // a silent non-answer would leave the CLI waiting forever.
@@ -1284,7 +1818,21 @@ export class ClaudeAgentProcess {
       }
       if (typeof event.session_id === "string")
         this.sessionId = event.session_id;
+      // The CLI reports the realpath'd cwd (this.cwd may be a /tmp symlink
+      // while session files live under /private/tmp), so it must land before
+      // any path is derived from it.
       if (typeof event.cwd === "string") this.cwd = event.cwd;
+      // --fork-session: the fork's first prompt rebase this process onto a
+      // new session id (reported by a later init). Rebind the file so a
+      // refresh resumes the fork, not the conversation it branched from.
+      if (
+        typeof event.session_id === "string" &&
+        this.resumedSessionId &&
+        event.session_id !== this.resumedSessionId
+      ) {
+        this.resumedSessionId = event.session_id;
+        this.sessionFile = expectedSessionPath(this.cwd, event.session_id);
+      }
       if (typeof event.model === "string")
         this.model = claudeModelInfo(event.model) ?? {
           provider: "anthropic",
@@ -1362,7 +1910,23 @@ export class ClaudeAgentProcess {
           // Set when this call was made by a subagent rather than the main
           // loop: it is the id of the Task tool call that spawned it, which
           // is what lets the UI nest the work under its parent.
-          parentToolUseId: event.parent_tool_use_id ?? "",
+          ...(event.parent_tool_use_id
+            ? { parentToolUseId: event.parent_tool_use_id }
+            : {}),
+        });
+        if (isSubagentToolName(part.name) && !event.parent_tool_use_id) {
+          this.openSubagents.add(part.id);
+          this.emit({
+            type: "subagent_start",
+            sessionKey: this.sessionKey,
+            parentToolUseId: part.id,
+          });
+        }
+        noteSubagentToolEvent(this, {
+          type: "tool_execution_start",
+          toolCallId: part.id,
+          toolName: part.name,
+          args: part.input ?? {},
         });
       });
       const message = {
@@ -1399,7 +1963,10 @@ export class ClaudeAgentProcess {
         : [];
       for (const part of content) {
         if (part?.type !== "tool_result") continue;
-        this.emit({
+        // Background launches come back here too, with their receipt; from
+        // that point holdBackgroundAgentEnd owns the call, not this set.
+        this.openSubagents.delete(part.tool_use_id);
+        const endEvent = {
           type: "tool_execution_end",
           sessionKey: this.sessionKey,
           toolCallId: part.tool_use_id,
@@ -1408,7 +1975,13 @@ export class ClaudeAgentProcess {
             details: event.toolUseResult ?? {},
           },
           isError: Boolean(part.is_error),
-        });
+          ...(event.parent_tool_use_id
+            ? { parentToolUseId: event.parent_tool_use_id }
+            : {}),
+        };
+        if (this.holdBackgroundAgentEnd(endEvent)) continue;
+        if (noteSubagentToolEvent(this, endEvent).holdEnd) continue;
+        this.emit(endEvent);
       }
       return;
     }
@@ -1434,7 +2007,8 @@ export class ClaudeAgentProcess {
       if (this.pendingTurns.length === 0) {
         this.setStatus("ready");
         this.emit({ type: "agent_settled", sessionKey: this.sessionKey });
-        // Whatever the user lined up while this turn ran goes next.
+        // Whatever the user lined up while this turn ran goes next —
+        // unless holdQueue() marked this settle as an interrupt's own.
         this.flushQueue();
       } else {
         this.setStatus("working");
@@ -1446,6 +2020,13 @@ export class ClaudeAgentProcess {
     }
 
     if (event.type === "rate_limit_event") {
+      // Exact five_hour/seven_day utilization + reset instants ride every
+      // turn (epoch-second resetsAt here) -- the freshest usage source there
+      // is, so getUsage serves it before any endpoint or CLI fallback.
+      this.rateLimits = {
+        windows: event.rate_limit_info?.unifiedWindows ?? {},
+        at: Date.now(),
+      };
       this.emit({
         type: "rate_limit_event",
         sessionKey: this.sessionKey,
@@ -1483,13 +2064,45 @@ export class ClaudeAgentProcess {
       activeStream.blocks.set(index, {
         type: block.type,
         text: block.text ?? block.thinking ?? "",
+        id: block.id,
+        name: block.name,
       });
+      if (block.type === "tool_use" && block.id) {
+        this.emit({
+          type: "tool_execution_start",
+          sessionKey: this.sessionKey,
+          toolCallId: block.id,
+          toolName: block.name ?? "tool",
+          args:
+            block.input && typeof block.input === "object" ? block.input : {},
+          ...(parentToolUseId ? { parentToolUseId } : {}),
+        });
+        if (isSubagentToolName(block.name) && !parentToolUseId) {
+          this.emit({
+            type: "subagent_start",
+            sessionKey: this.sessionKey,
+            parentToolUseId: block.id,
+          });
+        }
+      }
       return;
     }
     if (streamEvent.type === "content_block_delta") {
       const activeStream =
         this.activeStreams.get(source) ?? this.beginMessageStream(source);
       const delta = streamEvent.delta ?? {};
+      if (delta.type === "input_json_delta") {
+        const partial =
+          typeof delta.partial_json === "string" ? delta.partial_json : "";
+        if (!partial) return;
+        const block = activeStream.blocks.get(index) ?? {
+          type: "tool_use",
+          text: "",
+        };
+        block.text += partial;
+        activeStream.blocks.set(index, block);
+        return;
+      }
       const block = activeStream.blocks.get(index) ?? {
         type: delta.type === "thinking_delta" ? "thinking" : "text",
         text: "",
@@ -1521,7 +2134,27 @@ export class ClaudeAgentProcess {
       const activeStream = this.activeStreams.get(source);
       if (!activeStream) return;
       const block = activeStream.blocks.get(index);
-      if (!block || !["text", "thinking"].includes(block.type)) return;
+      if (!block) return;
+      if (block.type === "tool_use" && block.id) {
+        let args = {};
+        try {
+          args = block.text ? JSON.parse(block.text) : {};
+        } catch {
+          args = {};
+        }
+        if (args && typeof args === "object" && Object.keys(args).length) {
+          this.emit({
+            type: "tool_execution_start",
+            sessionKey: this.sessionKey,
+            toolCallId: block.id,
+            toolName: block.name ?? "tool",
+            args,
+            ...(parentToolUseId ? { parentToolUseId } : {}),
+          });
+        }
+        return;
+      }
+      if (!["text", "thinking"].includes(block.type)) return;
       this.emit({
         type: "message_update",
         sessionKey: this.sessionKey,
@@ -1534,6 +2167,119 @@ export class ClaudeAgentProcess {
         },
       });
     }
+  }
+
+  holdBackgroundAgentEnd(endEvent) {
+    const text = contentText(endEvent.result?.content);
+    const details = endEvent.result?.details ?? {};
+    if (!isAsyncAgentLaunch(text, details)) return false;
+    this.pendingBackgroundAgents.set(endEvent.toolCallId, {
+      agentId: parseClaudeAgentId(text, details),
+      receipt: text,
+      lastAdvance: Date.now(),
+    });
+    this.ensureBackgroundWatch();
+    return true;
+  }
+
+  noteBackgroundProgress(parentToolUseId) {
+    const pending = this.pendingBackgroundAgents.get(parentToolUseId);
+    if (pending) pending.lastAdvance = Date.now();
+  }
+
+  ensureBackgroundWatch() {
+    if (this.backgroundWatch) return;
+    this.backgroundLogOffset = jsonlSize(this.sessionFile);
+    this.backgroundWatch = setInterval(() => this.pollBackgroundAgents(), 200);
+    this.backgroundWatch.unref?.();
+  }
+
+  clearBackgroundWatch() {
+    if (!this.backgroundWatch) return;
+    clearInterval(this.backgroundWatch);
+    this.backgroundWatch = undefined;
+  }
+
+  pollBackgroundAgents() {
+    if (this.pendingBackgroundAgents.size === 0) {
+      this.clearBackgroundWatch();
+      return;
+    }
+    this.consumeSessionNotifications();
+    if (this.pendingBackgroundAgents.size === 0) return;
+    const now = Date.now();
+    for (const [toolCallId, pending] of [...this.pendingBackgroundAgents]) {
+      if (now - pending.lastAdvance < stallMs) continue;
+      this.finishBackgroundAgent({
+        toolUseId: toolCallId,
+        status: "error",
+        result: pending.receipt || "Subagent stalled.",
+      });
+    }
+  }
+
+  consumeSessionNotifications() {
+    if (!this.sessionFile) return;
+    const { lines, offset } = readNewJsonlLines(
+      this.sessionFile,
+      this.backgroundLogOffset ?? 0,
+    );
+    this.backgroundLogOffset = offset;
+    for (const line of lines) {
+      let event;
+      try {
+        event = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      const notification = taskNotificationFromEvent(event);
+      if (notification) this.finishBackgroundAgent(notification);
+    }
+  }
+
+  finishBackgroundAgent(notification) {
+    const pending = this.pendingBackgroundAgents.get(notification.toolUseId);
+    if (!pending) return;
+    this.pendingBackgroundAgents.delete(notification.toolUseId);
+    const failed =
+      notification.status === "failed" || notification.status === "error";
+    const text =
+      notification.result ||
+      notification.summary ||
+      pending.receipt ||
+      "Subagent finished.";
+    this.emit({
+      type: "tool_execution_end",
+      sessionKey: this.sessionKey,
+      toolCallId: notification.toolUseId,
+      result: { content: [{ type: "text", text }] },
+      isError: failed,
+    });
+    if (this.pendingBackgroundAgents.size === 0) this.clearBackgroundWatch();
+    // Same as the follower's drain: nothing else will come along to notice
+    // that the agent is finally idle.
+    if (!this.isBusy()) this.sendNextQueued();
+  }
+
+  endPendingBackgroundAgents() {
+    for (const [toolCallId, pending] of this.pendingBackgroundAgents) {
+      this.emit({
+        type: "tool_execution_end",
+        sessionKey: this.sessionKey,
+        toolCallId,
+        result: {
+          content: [
+            {
+              type: "text",
+              text: pending.receipt || "Subagent interrupted.",
+            },
+          ],
+        },
+        isError: true,
+      });
+    }
+    this.pendingBackgroundAgents.clear();
+    this.clearBackgroundWatch();
   }
 
   beginMessageStream(source) {
@@ -1568,6 +2314,7 @@ export class ClaudeAgentProcess {
     const child = this.process;
     this.process = undefined;
     this.intentionalExit = true;
+    this.endPendingBackgroundAgents();
     this.failPending(error);
     if (!child) return;
     this.signalProcess(child, "SIGTERM");
@@ -1603,6 +2350,7 @@ export class ClaudeAgentProcess {
 
   stop() {
     this.status = "stopped";
+    this.subagents?.stopAll();
     void this.terminateProcess(new Error("Claude process stopped"));
     this.emit({
       type: "__status",
@@ -1612,28 +2360,8 @@ export class ClaudeAgentProcess {
   }
 }
 
-export class ClaudeAgentPool {
+export class ClaudeAgentPool extends AgentPool {
   constructor() {
-    /** @type {Map<string, ClaudeAgentProcess>} */
-    this.agents = new Map();
-  }
-
-  get(sessionKey) {
-    let agent = this.agents.get(sessionKey);
-    if (!agent) {
-      agent = new ClaudeAgentProcess(sessionKey);
-      this.agents.set(sessionKey, agent);
-    }
-    return agent;
-  }
-
-  stop(sessionKey) {
-    if (sessionKey) {
-      this.agents.get(sessionKey)?.stop();
-      this.agents.delete(sessionKey);
-      return;
-    }
-    for (const agent of this.agents.values()) agent.stop();
-    this.agents.clear();
+    super((sessionKey) => new ClaudeAgentProcess(sessionKey));
   }
 }

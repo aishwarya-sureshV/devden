@@ -1,1 +1,1 @@
-export type WorkbenchView = 'sessions' | 'fleet' | 'skills' | 'extensions' | 'settings'
+export type WorkbenchView = 'sessions' | 'fleet' | 'skills' | 'extensions' | 'settings' | 'notes'

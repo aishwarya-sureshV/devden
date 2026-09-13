@@ -37,7 +37,13 @@ function formatAgo(ts?: number | null): string {
   return `${Math.round(hours / 24)}d ago`;
 }
 
-export function DeployButton({ cwd }: { cwd: string }) {
+export function DeployButton({
+  cwd,
+  compact = false,
+}: {
+  cwd: string;
+  compact?: boolean;
+}) {
   const [phase, setPhase] = useState<Phase>("idle");
   const [variant, setVariant] = useState<Variant>("local");
   const [status, setStatus] = useState<DeployStatusResponse | null>(null);
@@ -265,7 +271,10 @@ export function DeployButton({ cwd }: { cwd: string }) {
     : "No cloud deploy yet";
 
   return (
-    <span className="conversation-header__deploy-group" ref={groupRef}>
+    <span
+      className={`conversation-header__deploy-group${compact ? " is-compact" : ""}`}
+      ref={groupRef}
+    >
       <button
         type="button"
         className={`conversation-header__deploy${busyOnPrimary ? " is-busy" : ""}${
@@ -283,7 +292,9 @@ export function DeployButton({ cwd }: { cwd: string }) {
             <IconLaptop size={14} />
           )}
         </span>
-        <span className="conversation-header__deploy-label">{label}</span>
+        {!compact && (
+          <span className="conversation-header__deploy-label">{label}</span>
+        )}
         {failedOnPrimary && message && (
           <span className="conversation-header__deploy-error" role="status">
             {message}

@@ -36,7 +36,7 @@ export function WorkbenchPage({
   onShowThinkingChange,
   sessionKey,
 }: {
-  view: Exclude<WorkbenchView, "sessions" | "fleet">;
+  view: Exclude<WorkbenchView, "sessions" | "fleet" | "notes">;
   theme: "light" | "dark";
   onThemeChange: (theme: "light" | "dark") => void;
   showThinking: boolean;

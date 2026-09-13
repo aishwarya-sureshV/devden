@@ -3,7 +3,17 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 import { apiOrigin, api, hasAuthToken } from "../lib/api";
+import { commandToPtyInput, ingestPtyChunk } from "../lib/runInTerminal";
+import { useTerminalRuns } from "../lib/terminalRuns";
 import { IconContract, IconExpand } from "./icons";
+
+type TerminalTab = {
+  id: string;
+  label: string;
+  cwd?: string;
+  runId?: string;
+  command?: string;
+};
 
 const LIGHT_THEME = {
   background: "#f4f1e9",
@@ -73,13 +83,14 @@ export function TerminalPage({
 }) {
   const initialId = useRef(crypto.randomUUID());
   const nextNumber = useRef(2);
-  const [tabs, setTabs] = useState(() => [
+  const [tabs, setTabs] = useState<TerminalTab[]>(() => [
     { id: initialId.current, label: "Terminal 1", cwd },
   ]);
-  const [activeId, setActiveId] = useState(initialId.current);
+  const [activeId, setActiveId] = useState<string>(initialId.current);
   const [statuses, setStatuses] = useState<Record<string, TerminalStatus>>({});
   // Live working directory per tab, pushed by the server as the shell cd's.
   const [cwds, setCwds] = useState<Record<string, string>>({});
+  const terminalRuns = useTerminalRuns();
 
   const addTerminal = () => {
     const id = crypto.randomUUID();
@@ -87,6 +98,47 @@ export function TerminalPage({
     setTabs((current) => [...current, { id, label, cwd }]);
     setActiveId(id);
   };
+
+  useEffect(() => {
+    if (!terminalRuns) return;
+    const queued = Object.values(terminalRuns.runs).filter(
+      (run) => run.status === "queued",
+    );
+    for (const run of queued) {
+      if (!terminalRuns.claimRun(run.id)) continue;
+      setTabs((current) => {
+        const first = current[0];
+        const idle =
+          current.length === 1 &&
+          first != null &&
+          !first.runId &&
+          (statuses[first.id] ?? "connecting") === "connecting";
+        if (idle && first) {
+          setActiveId(first.id);
+          return [
+            {
+              ...first,
+              runId: run.id,
+              command: run.command,
+              label: run.tabLabel,
+            },
+          ];
+        }
+        const id = crypto.randomUUID();
+        setActiveId(id);
+        return [
+          ...current,
+          {
+            id,
+            label: run.tabLabel,
+            cwd,
+            runId: run.id,
+            command: run.command,
+          },
+        ];
+      });
+    }
+  }, [terminalRuns, cwd, statuses]);
 
   const closeTerminal = (id: string) => {
     setTabs((current) => {
@@ -196,6 +248,8 @@ export function TerminalPage({
             cwd={tab.cwd}
             theme={theme}
             active={tab.id === activeId}
+            command={tab.command}
+            runId={tab.runId}
             onCwd={(value) =>
               setCwds((current) =>
                 current[tab.id] === value
@@ -209,6 +263,17 @@ export function TerminalPage({
                   ? current
                   : { ...current, [tab.id]: status },
               )
+            }
+            onRunOutput={
+              tab.runId && terminalRuns
+                ? (output) => terminalRuns.reportOutput(tab.runId!, output)
+                : undefined
+            }
+            onRunExit={
+              tab.runId && terminalRuns
+                ? (code, error) =>
+                    terminalRuns.finishRun(tab.runId!, code, error)
+                : undefined
             }
           />
         ))}
@@ -227,18 +292,29 @@ export function TerminalPage({
 
 type TerminalStatus = "connecting" | "ready" | "closed";
 
+/** Survives React Strict Mode remounts so a run is pasted into the PTY once. */
+const injectedRuns = new Set<string>();
+
 function TerminalSession({
   cwd,
   theme,
   active,
+  command,
+  runId,
   onCwd,
   onStatus,
+  onRunOutput,
+  onRunExit,
 }: {
   cwd?: string;
   theme: "light" | "dark";
   active: boolean;
+  command?: string;
+  runId?: string;
   onCwd: (cwd: string) => void;
   onStatus: (status: TerminalStatus) => void;
+  onRunOutput?: (output: string) => void;
+  onRunExit?: (exitCode: number | null, error?: string) => void;
 }) {
   const hostRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<Terminal | null>(null);
@@ -246,6 +322,12 @@ function TerminalSession({
   const socketRef = useRef<WebSocket | null>(null);
   const statusCallbackRef = useRef(onStatus);
   const cwdCallbackRef = useRef(onCwd);
+  const runOutputRef = useRef(onRunOutput);
+  const runExitRef = useRef(onRunExit);
+  const capturingRef = useRef(false);
+  const injectedRef = useRef(false);
+  const outputRef = useRef("");
+  const [socketReady, setSocketReady] = useState(false);
 
   useEffect(() => {
     statusCallbackRef.current = onStatus;
@@ -254,6 +336,14 @@ function TerminalSession({
   useEffect(() => {
     cwdCallbackRef.current = onCwd;
   }, [onCwd]);
+
+  useEffect(() => {
+    runOutputRef.current = onRunOutput;
+  }, [onRunOutput]);
+
+  useEffect(() => {
+    runExitRef.current = onRunExit;
+  }, [onRunExit]);
 
   useEffect(() => {
     const host = hostRef.current;
@@ -299,6 +389,7 @@ function TerminalSession({
       socketRef.current = socket;
       socket.addEventListener("open", () => {
         statusCallbackRef.current("ready");
+        setSocketReady(true);
         socket.send(
           JSON.stringify({
             type: "resize",
@@ -324,10 +415,23 @@ function TerminalSession({
           return;
         }
         terminal.write(data);
+        if (!capturingRef.current) return;
+        const next = ingestPtyChunk(outputRef.current, data);
+        outputRef.current = next.output;
+        runOutputRef.current?.(next.output);
+        if (next.exitCode != null) {
+          capturingRef.current = false;
+          runExitRef.current?.(next.exitCode);
+        }
       });
-      socket.addEventListener("close", () =>
-        statusCallbackRef.current("closed"),
-      );
+      socket.addEventListener("close", () => {
+        statusCallbackRef.current("closed");
+        setSocketReady(false);
+        if (capturingRef.current) {
+          capturingRef.current = false;
+          runExitRef.current?.(null, "Terminal closed");
+        }
+      });
       socket.addEventListener("error", () =>
         terminal.write("\r\n\x1b[31mTerminal connection failed.\x1b[0m\r\n"),
       );
@@ -359,8 +463,34 @@ function TerminalSession({
       terminalRef.current = null;
       fitRef.current = null;
       socketRef.current = null;
+      setSocketReady(false);
+      if (capturingRef.current) {
+        capturingRef.current = false;
+        runExitRef.current?.(null, "Terminal closed");
+      }
     };
   }, [cwd]);
+
+  useEffect(() => {
+    if (!command || !socketReady) return;
+    if (runId && injectedRuns.has(runId)) return;
+    if (injectedRef.current) return;
+    const socket = socketRef.current;
+    if (socket?.readyState !== WebSocket.OPEN) return;
+    const timer = window.setTimeout(() => {
+      if (injectedRef.current) return;
+      if (runId && injectedRuns.has(runId)) return;
+      if (socketRef.current?.readyState !== WebSocket.OPEN) return;
+      injectedRef.current = true;
+      if (runId) injectedRuns.add(runId);
+      capturingRef.current = true;
+      outputRef.current = "";
+      socketRef.current.send(
+        JSON.stringify({ type: "input", data: commandToPtyInput(command) }),
+      );
+    }, 250);
+    return () => window.clearTimeout(timer);
+  }, [command, runId, socketReady]);
 
   useEffect(() => {
     if (terminalRef.current)

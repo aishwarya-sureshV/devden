@@ -11,7 +11,9 @@ import { join } from "node:path";
 import { messagesFromClaudeLog } from "./claude-agent.js";
 import {
   archiveSession,
+  childMessagesFromGrokUpdates,
   deleteSession,
+  loadGrokChildMessages,
   loadSessionLog,
   messagesFromGrokLog,
   readSessionMessages,
@@ -235,6 +237,142 @@ describe("grok history conversion", () => {
       false,
     );
   });
+
+  it("replays child tools from updates.jsonl under the spawn", () => {
+    const updates =
+      [
+        {
+          method: "session/update",
+          params: {
+            update: {
+              sessionUpdate: "agent_message_chunk",
+              content: { type: "text", text: "I'll look." },
+            },
+          },
+        },
+        {
+          method: "session/update",
+          params: {
+            update: {
+              sessionUpdate: "tool_call",
+              toolCallId: "grep-1",
+              title: "grep",
+              rawInput: { pattern: "health" },
+            },
+          },
+        },
+        {
+          method: "session/update",
+          params: {
+            update: {
+              sessionUpdate: "tool_call_update",
+              toolCallId: "grep-1",
+              status: "completed",
+              content: [
+                {
+                  type: "content",
+                  content: { type: "text", text: "hit" },
+                },
+              ],
+            },
+          },
+        },
+        {
+          method: "session/update",
+          params: {
+            update: {
+              sessionUpdate: "agent_message_chunk",
+              content: { type: "text", text: "## findings" },
+            },
+          },
+        },
+      ]
+        .map((row) => JSON.stringify(row))
+        .join("\n") + "\n";
+    const nested = childMessagesFromGrokUpdates(updates, "call-spawn");
+    assert.equal(nested[0].role, "assistant");
+    assert.equal(nested[0].parentToolUseId, "call-spawn");
+    assert.equal(nested[0].content[0].text, "I'll look.");
+    assert.equal(nested[1].content[0].type, "toolCall");
+    assert.equal(nested[1].content[0].id, "grep-1");
+    assert.equal(nested[1].parentToolUseId, "call-spawn");
+    assert.equal(nested[2].role, "toolResult");
+    assert.equal(nested[2].content[0].text, "hit");
+    assert.equal(nested[3].content[0].text, "## findings");
+  });
+
+  it("reads grok child tool output from rawOutput when content is empty", () => {
+    const updates =
+      JSON.stringify({
+        method: "session/update",
+        params: {
+          update: {
+            sessionUpdate: "tool_call",
+            toolCallId: "list-1",
+            title: "list_dir",
+            rawInput: { target_directory: "/tmp" },
+          },
+        },
+      }) +
+      "\n" +
+      JSON.stringify({
+        method: "session/update",
+        params: {
+          update: {
+            sessionUpdate: "tool_call_update",
+            toolCallId: "list-1",
+            status: "completed",
+            rawOutput: {
+              type: "ListDir",
+              Content: { content: "- /tmp/\n  - alpha.txt" },
+            },
+          },
+        },
+      }) +
+      "\n";
+    const nested = childMessagesFromGrokUpdates(updates, "spawn-1");
+    const result = nested.find((message) => message.role === "toolResult");
+    assert.match(result.content[0].text, /alpha\.txt/);
+  });
+
+  it("loadGrokChildMessages splices tools and late findings from disk", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "grok-child-"));
+    try {
+      const parentDir = join(dir, "encoded-cwd", "parent-1");
+      const childId = "01a08782-f05a-7770-b454-686a549ba415";
+      const childDir = join(dir, "encoded-cwd", childId);
+      await mkdir(join(parentDir, "subagents", childId), { recursive: true });
+      await mkdir(childDir, { recursive: true });
+      await writeFile(
+        join(childDir, "updates.jsonl"),
+        JSON.stringify({
+          method: "session/update",
+          params: {
+            update: {
+              sessionUpdate: "tool_call",
+              toolCallId: "read-1",
+              title: "read_file",
+              rawInput: { target_file: "a.ts" },
+            },
+          },
+        }) + "\n",
+      );
+      await writeFile(
+        join(parentDir, "subagents", childId, "output.json"),
+        JSON.stringify({ output: "## official" }),
+      );
+      const extra = loadGrokChildMessages(
+        join(parentDir, "chat_history.jsonl"),
+        childId,
+        "call-spawn",
+      );
+      assert.equal(extra[0].content[0].id, "read-1");
+      assert.equal(extra[0].parentToolUseId, "call-spawn");
+      assert.equal(extra.at(-1).content[0].text, "## official");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("claude history conversion", () => {
@@ -272,6 +410,15 @@ describe("claude history conversion", () => {
               text: "<system-reminder>only noise</system-reminder>",
             },
           ],
+        },
+      }),
+      line({
+        type: "user",
+        timestamp: "2026-01-01T00:00:03Z",
+        message: {
+          role: "user",
+          content:
+            "<task-notification>\n<task-id>abc</task-id>\n<tool-use-id>toolu_1</tool-use-id>\n<status>completed</status>\n<summary>Agent finished</summary>\n<result>found it</result>\n</task-notification>",
         },
       }),
     ].join("\n");

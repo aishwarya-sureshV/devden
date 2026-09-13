@@ -10,6 +10,8 @@
  *   POST /api/sessions/delete              { sessionPath }
  *   GET  /api/workspace?path=              -> files + folders in a project directory
  *   GET  /api/workspace/file?path=         -> text contents of a source file
+ *   GET  /api/workspace/grep?root=&q=      -> content matches across the project
+ *   GET  /api/workspace/definition?root=&symbol= -> where a symbol is defined
  *   PUT  /api/workspace/file               { path, content }
  *   POST /api/workspace/rename|delete|copy|move|reveal|open
  *   GET  /api/events                       -> SSE stream of all agent events
@@ -67,20 +69,42 @@ import { homedir, tmpdir } from "node:os";
 import { spawn, execFile, execSync } from "node:child_process";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
+import { logFault } from "./log-fault.js";
 import { WebSocketServer } from "ws";
 import pty from "node-pty";
-import { PiAgentPool, generateSessionTitle } from "./pi-agent.js";
-import { ClaudeAgentPool } from "./claude-agent.js";
+import {
+  PiAgentPool,
+  assistantText,
+  generateSessionTitle,
+} from "./pi-agent.js";
+import { cacheMissNotice, resetCacheTracking } from "./cache-stats.js";
+import { ClaudeAgentPool, startClaudeAuthKeepalive } from "./claude-agent.js";
 import { GrokAgentPool } from "./grok-agent.js";
 import { CodexAgentPool } from "./codex-agent.js";
 import { closeSharedCodex } from "./codex-app-server.js";
 import {
+  AGENT_BACKENDS,
+  backendName,
+  capabilitiesFor,
+  listBackends,
+  sessionScope,
+} from "./agent-registry.js";
+import {
+  agentIsAlive,
+  callAgentMethod,
+  hasMethod,
+  unsupported,
+} from "./agent-methods.js";
+import {
   noteTurnContext,
   noteTurnSettled,
   noteTurnStarted,
+  rekeySession,
+  runningSessionPaths,
   takeInterruptedTurns,
 } from "./inflight.js";
 import { resumePrompt } from "./co-partner-prompt.js";
+import { restoreSnapshot, takeSnapshot } from "./snapshots.js";
 import {
   archiveSession,
   deleteSession,
@@ -92,10 +116,17 @@ import {
 } from "./sessions.js";
 import { deleteSkill, loadCatalog, readSkill, writeSkill } from "./catalog.js";
 import { listOllamaModels, syncOllamaModelsJson } from "./ollama-models.js";
-import { confinePath, defaultWorkspaceRoots } from "./workspace-paths.js";
+import {
+  confinePath,
+  defaultWorkspaceRoots,
+  safeTranscriptName,
+} from "./workspace-paths.js";
+import { findDefinition, grepWorkspace } from "./workspace-search.js";
+import { saveDisplayOverlay, withDisplayHistory } from "./display-history.js";
 
 const __dirname = fileURLToPath(new URL(".", import.meta.url));
 const ROOT = join(__dirname, "..");
+
 const DIST = join(ROOT, "dist");
 const PORT = Number(process.env.PI_WEB_PORT || 4319);
 const HOST = process.env.PI_WEB_HOST || "127.0.0.1";
@@ -110,6 +141,13 @@ const execFileAsync = promisify(execFile);
  * these roots; read-only browsing is confined to the user's home directory.
  */
 const workspaceRoots = new Set(defaultWorkspaceRoots());
+/**
+ * The subset that is infrastructure rather than a workspace: the launch
+ * directory and any configured roots. These are never themselves deletable.
+ * A session cwd is a workspace you happen to work in, so deleting it from the
+ * sessions pane is legitimate and must not be blocked by its own confinement.
+ */
+const protectedRoots = new Set(defaultWorkspaceRoots());
 
 function addWorkspaceRoot(path) {
   if (typeof path === "string" && path.trim())
@@ -321,6 +359,15 @@ setInterval(pruneAuthTickets, 60_000).unref();
  */
 const CONVERSATION_GOALS = new Map();
 const GOAL_CHECKIN_DELAYS_MS = [30, 60, 120].map((minutes) => minutes * 60_000);
+/**
+ * Hard stop on the check-in loop. Every check-in is a full turn on the whole
+ * conversation, fired hours apart -- always past the prompt-cache TTL, so each
+ * one re-bills the entire context at the full input rate. The agent is asked
+ * to end the loop itself by saying GOAL DONE, but a model that never says it
+ * would otherwise keep spending for as long as the tab stays open. Eight
+ * covers ~13h (30m + 1h + 2h x 6) before the user has to re-park the goal.
+ */
+const MAX_GOAL_CHECKINS = 8;
 
 function clearSessionGoal(sessionKey) {
   const goal = CONVERSATION_GOALS.get(sessionKey);
@@ -343,8 +390,20 @@ function scheduleGoalCheckIn(sessionKey) {
       CONVERSATION_GOALS.delete(sessionKey);
       return;
     }
+    // Counted whether or not the check-in could be sent: the delays are a
+    // backoff over elapsed time, and incrementing only on a successful send
+    // pinned a session that is busy at every check-in to the 30-minute delay
+    // forever -- four times the intended rate, on the longest-running work.
+    goal.checkIns += 1;
+    if (goal.checkIns > MAX_GOAL_CHECKINS) {
+      clearSessionGoal(sessionKey);
+      publishRuntimeEvent(sessionKey, "server", {
+        type: "notice",
+        message: `Standing goal stopped after ${MAX_GOAL_CHECKINS} check-ins without a "GOAL DONE". Re-park it with /goal if it is still live.`,
+      });
+      return;
+    }
     if (agent.status === "ready") {
-      goal.checkIns += 1;
       void agent
         .followUp(
           `Goal check-in ("${goal.text}"): report progress in one line. If the goal is fully achieved, reply with exactly "GOAL DONE" plus one line of proof; otherwise continue working on it now.`,
@@ -566,6 +625,12 @@ const piPool = new PiAgentPool();
 const claudePool = new ClaudeAgentPool();
 const grokPool = new GrokAgentPool();
 const codexPool = new CodexAgentPool();
+const POOLS = {
+  pi: piPool,
+  claude: claudePool,
+  grok: grokPool,
+  codex: codexPool,
+};
 /** @type {Map<string, 'pi' | 'claude'>} */
 const sessionBackends = new Map();
 /**
@@ -608,7 +673,20 @@ const MIME = {
 };
 
 function broadcast(event) {
-  const line = `data: ${JSON.stringify(event)}\n\n`;
+  // Stringified once for the whole fan-out, but inside a guard: an agent's tool
+  // result can carry anything (a cycle, a BigInt), and this runs on the agent's
+  // event path with no handler above it -- one such event used to throw out of
+  // here and take the server down mid-turn, which loses the in-flight events
+  // and freezes every open page on stuck tool cards until a manual refresh.
+  let line;
+  try {
+    line = `data: ${JSON.stringify(event)}\n\n`;
+  } catch (error) {
+    // Named, because a silently dropped event is the exact failure mode this
+    // guard exists to survive -- and the only trace of it.
+    logFault("unstringifiable event", event?.type, error);
+    return;
+  }
   for (const res of sseClients) {
     try {
       res.write(line);
@@ -678,6 +756,36 @@ function publishRuntimeEvent(sessionKey, source, event) {
   for (const [alias, target] of KEY_ALIASES) {
     if (target !== sessionKey) continue;
     broadcast({ ...payload, sessionKey: alias });
+  }
+  // Prompt-cache misses, for whichever backend produced this turn. Misses
+  // accumulate through the turn and are published only on the event that ends
+  // it, so the notice sits at the bottom of the final output instead of
+  // between every pair of tool calls. The recursive call carries a notice,
+  // which is not an assistant message, so it terminates immediately.
+  const missNotice = cacheMissNotice(sessionKey, event);
+  if (missNotice)
+    publishRuntimeEvent(sessionKey, source, {
+      type: "notice",
+      message: missNotice,
+    });
+  // The check-in prompt asks the agent to end a standing goal by replying
+  // GOAL DONE, but nothing read it, so a goal that was achieved kept billing
+  // a full-context turn every two hours. Checked here for the same reason the
+  // cache stats are: every backend's events pass through this one funnel.
+  if (
+    // Both types, for the same reason cache-stats.js inspects both: the
+    // completed assistant message lands on message_end for pi/Claude/Grok
+    // and on turn_end for Codex.
+    (event?.type === "message_end" || event?.type === "turn_end") &&
+    event.message?.role === "assistant" &&
+    CONVERSATION_GOALS.has(sessionKey) &&
+    assistantText(event.message).includes("GOAL DONE")
+  ) {
+    clearSessionGoal(sessionKey);
+    publishRuntimeEvent(sessionKey, source, {
+      type: "notice",
+      message: "Goal reported done — standing check-ins stopped.",
+    });
   }
   return entry;
 }
@@ -777,18 +885,24 @@ async function runLoggedCommand(sessionKey, action, body, run) {
   return result;
 }
 
-// Fan every pool event out to all SSE clients (events carry their sessionKey).
-function backendName(value) {
-  if (value === "claude") return "claude";
-  if (value === "grok") return "grok";
-  if (value === "codex") return "codex";
-  return "pi";
+function sessionPathOf(agent) {
+  return agent?.sessionFile ?? agent?.lastState?.sessionFile ?? "";
 }
 
-/** Same, but "all" survives — only the session listing/search accept it. */
-function sessionScope(value) {
-  return value === "all" ? "all" : backendName(value);
+async function rawAgentMessages(agent) {
+  try {
+    const messages = await agent.getMessages();
+    return Array.isArray(messages) ? messages : [];
+  } catch {
+    return [];
+  }
 }
+
+async function clientMessages(agent, sessionPath = sessionPathOf(agent)) {
+  return withDisplayHistory(sessionPath, await rawAgentMessages(agent));
+}
+
+// Fan every pool event out to all SSE clients (events carry their sessionKey).
 
 // This was previously sent to the active model as ordinary text when it was
 // entered in the composer. It is a display-only shortcut, though: forwarding
@@ -801,10 +915,32 @@ function isUsageShortcut(message, images) {
 }
 
 function poolFor(backend) {
-  if (backend === "claude") return claudePool;
-  if (backend === "grok") return grokPool;
-  if (backend === "codex") return codexPool;
-  return piPool;
+  return POOLS[backendName(backend)] ?? piPool;
+}
+
+/** Session files whose agent is mid-turn — inflight records plus any live
+ *  process that still says it is streaming, so the sidebar can blink every
+ *  running row even when that session is not an open tab. */
+function streamingSessionPaths() {
+  const paths = new Set(runningSessionPaths());
+  for (const name of AGENT_BACKENDS) {
+    const pool = poolFor(name);
+    for (const agent of pool.agents.values()) {
+      // A dead agent is not streaming, whatever it last believed. `status`
+      // and `lastState` live on the agent object and outlive its child, so a
+      // process that was killed, crashed, or got lease-swept mid-turn kept
+      // painting its session amber in the sidebar until the whole server
+      // restarted — sessions glowing "running" with no child process behind
+      // them at all.
+      if (!agentIsAlive(agent)) continue;
+      const streaming =
+        agent.status === "working" || agent.lastState?.isStreaming === true;
+      if (!streaming) continue;
+      const path = agent.sessionFile ?? agent.lastState?.sessionFile;
+      if (path) paths.add(path);
+    }
+  }
+  return paths;
 }
 
 /**
@@ -931,6 +1067,11 @@ function adoptLiveAgent(sessionKey, backend, sessionPath) {
       SESSION_LEASES.delete(key);
       SESSION_LEASES.set(sessionKey, lease);
     }
+    // The interrupted-turn record belongs to the conversation too. Left on
+    // the abandoned key it never settles, so every restart resumed a turn
+    // that had already finished -- and that resume held the turn slot, so
+    // the next thing the user typed was rejected as "already in progress".
+    rekeySession(key, sessionKey);
     // The runtime event log belongs to the conversation too — carry it over
     // so /api/<newKey>/log includes the in-flight turn's pre-reload events
     // (needed to replay the live run after a page refresh). Entry counts
@@ -1007,9 +1148,16 @@ function watch(sessionKey, requestedBackend) {
     agent.__unwatch?.();
     agent.__watchedKey = sessionKey;
     agent.__watchedBackend = backend;
-    agent.__unwatch = agent.onEvent((event) =>
-      publishRuntimeEvent(sessionKey, backend, event),
-    );
+    agent.__unwatch = agent.onEvent((event) => {
+      // A throw here escapes into the agent's own event pump, where nothing
+      // catches it, and an uncaught throw ends the process. Swallow it as a
+      // dropped event instead: one bad payload is not worth a dead server.
+      try {
+        publishRuntimeEvent(sessionKey, backend, event);
+      } catch (error) {
+        logFault("dropped event", event?.type, error);
+      }
+    });
   }
   return agent;
 }
@@ -1412,9 +1560,9 @@ async function renameWorkspacePath(requested, nextName) {
 
 async function deleteWorkspacePath(requested) {
   const path = resolve(requested);
-  if (path === "/" || path === homedir() || [...workspaceRoots].includes(path))
+  if (path === "/" || path === homedir() || protectedRoots.has(path))
     return { ok: false, error: "That path cannot be deleted." };
-  await rm(path, { recursive: true, force: false });
+  await rm(path, { recursive: true, force: true });
   return { ok: true, path };
 }
 
@@ -1547,6 +1695,10 @@ async function route(req, res) {
       pid: process.pid,
       cwd: process.cwd(),
     });
+  }
+
+  if (pathname === "/api/backends" && req.method === "GET") {
+    return sendJson(res, 200, { ok: true, backends: listBackends() });
   }
 
   if (pathname === "/api/auth" && req.method === "POST") {
@@ -1702,7 +1854,9 @@ async function route(req, res) {
   if (pathname === "/api/directories" && req.method === "GET") {
     const requested = url.searchParams.get("path")?.trim() || homedir();
     try {
-      const path = resolve(requested);
+      // Confined like every other browsing endpoint. Without this the folder
+      // picker enumerated any directory on the machine.
+      const path = confineHomePath(requested);
       const info = await stat(path);
       if (!info.isDirectory())
         return sendJson(res, 400, {
@@ -1778,6 +1932,46 @@ async function route(req, res) {
     }
   }
 
+  // Content search across the project, and the grep-backed definition lookup
+  // the editor's Cmd-click uses. Both confine to a workspace root first: the
+  // root is a caller-supplied path and `git grep -C <root>` would happily walk
+  // anywhere on disk.
+  if (pathname === "/api/workspace/grep" && req.method === "GET") {
+    const root = url.searchParams.get("root")?.trim();
+    if (!root)
+      return sendJson(res, 400, { ok: false, error: "Missing search root." });
+    try {
+      confineHomePath(root);
+      const result = await grepWorkspace(root, url.searchParams.get("q"), {
+        caseSensitive: url.searchParams.get("case") === "1",
+        wholeWord: url.searchParams.get("word") === "1",
+        regex: url.searchParams.get("regex") === "1",
+      });
+      return sendJson(res, result.ok ? 200 : 400, result);
+    } catch (error) {
+      return sendJson(res, 400, {
+        ok: false,
+        error: workspaceIoError(error, "directory"),
+      });
+    }
+  }
+
+  if (pathname === "/api/workspace/definition" && req.method === "GET") {
+    const root = url.searchParams.get("root")?.trim();
+    if (!root)
+      return sendJson(res, 400, { ok: false, error: "Missing search root." });
+    try {
+      confineHomePath(root);
+      const result = await findDefinition(root, url.searchParams.get("symbol"));
+      return sendJson(res, result.ok ? 200 : 400, result);
+    } catch (error) {
+      return sendJson(res, 400, {
+        ok: false,
+        error: workspaceIoError(error, "directory"),
+      });
+    }
+  }
+
   if (pathname === "/api/workspace/file" && req.method === "GET") {
     const requested = url.searchParams.get("path")?.trim();
     if (!requested)
@@ -1807,6 +2001,39 @@ async function route(req, res) {
       return sendJson(res, 400, {
         ok: false,
         error: workspaceIoError(error, "file"),
+      });
+    }
+  }
+
+  // Auto-saved conversation transcripts. Kept in ~/.pi-web/transcripts rather
+  // than the workspace on purpose: this writes after every turn, and a file
+  // that reappears in `git status` on every reply is worse than no feature.
+  if (pathname === "/api/transcript" && req.method === "PUT") {
+    const body = await readBody(req);
+    const name = safeTranscriptName(body.name);
+    if (!name)
+      return sendJson(res, 400, { ok: false, error: "Bad transcript name." });
+    const dir = join(homedir(), ".pi-web", "transcripts");
+    const path = join(dir, name);
+    try {
+      await mkdir(dir, { recursive: true });
+      await writeFile(path, String(body.content ?? ""), "utf8");
+      // The name carries the session title, which changes once the agent
+      // renames the session -- without this, one session leaves a stale
+      // 100KB copy behind under every title it ever had. The trailing id is
+      // the session's identity, so same-id siblings are earlier names.
+      const id = name.match(/-([a-zA-Z0-9]+)\.md$/)?.[1];
+      if (id) {
+        for (const other of await readdir(dir)) {
+          if (other !== name && other.endsWith(`-${id}.md`))
+            await rm(join(dir, other), { force: true });
+        }
+      }
+      return sendJson(res, 200, { ok: true, path });
+    } catch (error) {
+      return sendJson(res, 400, {
+        ok: false,
+        error: String(error?.message ?? error),
       });
     }
   }
@@ -1900,11 +2127,11 @@ async function route(req, res) {
   }
 
   if (pathname === "/api/session-messages" && req.method === "GET") {
-    return sendJson(
-      res,
-      200,
-      await readSessionMessages(url.searchParams.get("path") || ""),
-    );
+    const path = url.searchParams.get("path") || "";
+    const result = await readSessionMessages(path);
+    if (result.ok && Array.isArray(result.messages))
+      result.messages = await withDisplayHistory(path, result.messages);
+    return sendJson(res, 200, result);
   }
 
   if (pathname === "/api/sessions/search" && req.method === "GET") {
@@ -1919,14 +2146,23 @@ async function route(req, res) {
   }
 
   if (pathname === "/api/sessions" && req.method === "GET") {
-    return sendJson(
-      res,
-      200,
-      await listSessions({
-        archived: url.searchParams.get("view") === "archived",
-        backend: sessionScope(url.searchParams.get("backend")),
-      }),
-    );
+    const result = await listSessions({
+      archived: url.searchParams.get("view") === "archived",
+      backend: sessionScope(url.searchParams.get("backend")),
+    });
+    // The sessions pane lists every saved session's cwd as a workspace and
+    // offers to delete that folder, but a cwd only becomes a root when an
+    // agent starts in it -- so a workspace you have not opened this run was
+    // refused by the mutation confinement. Register what the server itself
+    // just listed: derived from the local session store, never from the
+    // request, which is strictly narrower than the client-supplied cwd
+    // /start and /prompt already trust.
+    const running = streamingSessionPaths();
+    for (const session of result.sessions ?? []) {
+      addWorkspaceRoot(session.cwd);
+      session.isStreaming = running.has(session.path);
+    }
+    return sendJson(res, 200, result);
   }
 
   if (pathname.startsWith("/api/sessions/") && req.method === "POST") {
@@ -1989,12 +2225,23 @@ async function route(req, res) {
     // Reuse a process that is already running this session file (e.g. the
     // page was refreshed and the tab key changed) instead of spawning a
     // duplicate — its live state, including isStreaming, carries over.
-    adoptLiveAgent(sessionKey, body.backend, body.sessionPath);
+    // A forkResume claude start points at the ORIGINAL session file on
+    // purpose; adopting its live agent would hand the fork tab this
+    // conversation's process.
+    if (!body.forkResume)
+      adoptLiveAgent(sessionKey, body.backend, body.sessionPath);
     const agent = watch(sessionKey, body.backend);
     // adoptOnly: attach to a live process but never spawn one. Grok stays
     // lazy for mere viewing (starting it wrote ghost session files); this
     // lets a refreshed tab re-adopt a mid-run grok turn without that cost.
     if (body.adoptOnly && !agent.process) {
+      // A lazy agent that never spawns still needs to know where it would
+      // start -- grok's ensureRunning() self-heal (queue/steer/compact/goal
+      // check-in all funnel through it) refuses to revive a cwd-less agent,
+      // and this was the only cwd this session ever offered it. Without this,
+      // any of those callers on a merely-viewed session permanently fails
+      // with "Grok session is not running" instead of reviving.
+      if (!agent.cwd && body.cwd) agent.cwd = body.cwd;
       return sendJson(res, 200, { ok: false, error: "no live agent to adopt" });
     }
     const result = await runLoggedCommand(sessionKey, "start", body, () =>
@@ -2014,8 +2261,16 @@ async function route(req, res) {
           typeof body.thinkingLevel === "string"
             ? body.thinkingLevel
             : undefined,
+        forkResume: Boolean(body.forkResume),
+        warmOnly: Boolean(body.warmOnly),
       }),
     );
+    if (result.ok && Array.isArray(result.messages)) {
+      const path =
+        (typeof body.sessionPath === "string" && body.sessionPath) ||
+        sessionPathOf(agent);
+      result.messages = await withDisplayHistory(path, result.messages);
+    }
     return sendJson(res, result.ok ? 200 : 500, result);
   }
   if (req.method === "POST" && action === "prompt") {
@@ -2044,14 +2299,7 @@ async function route(req, res) {
     // on one session file and the two fight over it.
     adoptLiveAgent(sessionKey, promptBackend, body.sessionPath);
     const promptAgent = watch(sessionKey, promptBackend);
-    // grok's ACP connection and codex's app-server connection stand in for
-    // the child process the pi/claude adapters expose.
-    const agentAlive =
-      promptBackend === "grok"
-        ? typeof promptAgent.isAlive === "function"
-          ? promptAgent.isAlive()
-          : Boolean(promptAgent.connection && promptAgent.sessionId)
-        : Boolean(promptAgent.process);
+    const agentAlive = agentIsAlive(promptAgent);
     if (!agentAlive) {
       const started = await runLoggedCommand(sessionKey, "start", body, () =>
         promptAgent.start(String(body.cwd || process.cwd()), {
@@ -2074,6 +2322,32 @@ async function route(req, res) {
       );
       if (!started.ok) return sendJson(res, 500, started);
     }
+    // Snapshot the tree before the agent touches it, so "restore files to
+    // this point" works on every backend and not just the one CLI that
+    // checkpoints for itself. Never let it block or fail a turn — awaiting
+    // `git add -A` sat on the first-token path.
+    void takeSnapshot(
+      String(body.cwd || promptAgent.cwd || process.cwd()),
+      message,
+    ).catch(() => {});
+    // A tab whose `streaming` flag lost sync (laptop wake, SSE reconnect, an
+    // auto-resume that started under another key) used to POST /prompt into a
+    // busy agent and have the message rejected outright. enqueue sends
+    // immediately when the agent is idle and queues it when it is not, so the
+    // message is never dropped on the floor.
+    const promptTarget = watch(sessionKey);
+    // /prompt starts a turn. It used to route through enqueue() with a
+    // broken isBusy (pi: "a process exists", grok: an idle reminder turn from
+    // newSession counted as busy), so the user's first message was parked in
+    // the queue and never sent. isBusy now means "a turn is actually
+    // running", so ask it directly: idle -> start the turn, genuinely busy ->
+    // queue rather than firing a second concurrent prompt down the same stdio
+    // (pi's prompt() has no re-entrancy guard of its own). The client decides
+    // between /prompt and /queue from its `streaming` flag, which this file
+    // already documents as desyncing on laptop wake, SSE reconnect and
+    // cross-key auto-resume — so the server keeps the net.
+    // The reply carries `queued` so the tab can drop its optimistic run
+    // instead of spinning on a turn that has not started.
     noteTurnStarted({
       sessionKey,
       backend: promptBackend,
@@ -2084,22 +2358,54 @@ async function route(req, res) {
       model: promptAgent.lastState?.model ?? promptAgent.model ?? undefined,
       thinkingLevel: promptAgent.lastState?.thinkingLevel,
     });
+    const promptIsBusy =
+      hasMethod(promptTarget, "isBusy") && promptTarget.isBusy();
     const result = await runLoggedCommand(sessionKey, "prompt", body, () =>
-      watch(sessionKey).prompt(message, images),
+      promptIsBusy && hasMethod(promptTarget, "enqueue")
+        ? promptTarget.enqueue(message, images)
+        : promptTarget.prompt(message, images),
     );
+    // Without this the record outlives a turn that never ran, and the next
+    // restart "resumes" a prompt the agent never accepted. A queued prompt is
+    // the same case: it is waiting, not running.
+    if (!result.ok || result.data?.queued) noteTurnSettled(sessionKey);
     if (promptBackend === "pi")
       maybeGeneratePiTitle(sessionKey, promptAgent, message);
-    return sendJson(res, result.ok ? 200 : 500, result);
+    // The agent only ever reveals its session file through getState(), and
+    // neither pi nor grok puts it on an event, so a lazily-started tab had no
+    // path at all. The sidebar matches saved rows by path, so such a tab's own
+    // row showed no open marker -- hand the path back with the prompt reply.
+    return sendJson(res, result.ok ? 200 : 500, {
+      ...result,
+      sessionPath:
+        promptAgent.sessionFile ?? promptAgent.lastState?.sessionFile,
+    });
   }
   if (req.method === "POST" && action === "steer") {
     const body = await readBody(req);
+    const steerBackend = sessionBackends.get(sessionKey) ?? "pi";
+    if (!capabilitiesFor(steerBackend).steer) {
+      return sendJson(
+        res,
+        200,
+        unsupported(
+          "steer",
+          "This agent cannot take a message mid-turn. The message was not sent.",
+        ),
+      );
+    }
     return sendJson(
       res,
       200,
       await runLoggedCommand(sessionKey, "steer", body, () =>
-        watch(sessionKey).steer(
-          String(body.message ?? ""),
-          Array.isArray(body.images) ? body.images : undefined,
+        callAgentMethod(
+          watch(sessionKey),
+          "steer",
+          [
+            String(body.message ?? ""),
+            Array.isArray(body.images) ? body.images : undefined,
+          ],
+          "steer",
         ),
       ),
     );
@@ -2107,11 +2413,15 @@ async function route(req, res) {
   if (req.method === "POST" && action === "queue") {
     const body = await readBody(req);
     const agent = watch(sessionKey);
-    if (typeof agent.enqueue !== "function")
-      return sendJson(res, 400, {
-        ok: false,
-        error: "This backend does not queue messages",
-      });
+    if (
+      !capabilitiesFor(sessionBackends.get(sessionKey) ?? "pi").queue ||
+      !hasMethod(agent, "enqueue")
+    )
+      return sendJson(
+        res,
+        200,
+        unsupported("queue", "This agent does not queue messages"),
+      );
     return sendJson(
       res,
       200,
@@ -2123,14 +2433,54 @@ async function route(req, res) {
       ),
     );
   }
+  if (req.method === "POST" && action === "queue-steer") {
+    const body = await readBody(req);
+    const agent = watch(sessionKey);
+    const steerBackend = sessionBackends.get(sessionKey) ?? "pi";
+    // `steer` is about splicing into a *running* turn. Once the agent is idle
+    // — after an interrupt, say — delivering a queued message is an ordinary
+    // send, which every backend can do; gating that on the capability left
+    // grok's queue strip with no way to send what was in it.
+    if (!capabilitiesFor(steerBackend).steer && agent.isBusy?.())
+      return sendJson(
+        res,
+        200,
+        unsupported(
+          "steer",
+          "This agent cannot take a message mid-turn. The message was not sent.",
+        ),
+      );
+    if (
+      !capabilitiesFor(steerBackend).queue ||
+      !hasMethod(agent, "steerQueued")
+    )
+      return sendJson(
+        res,
+        200,
+        unsupported("queue", "This agent does not queue messages"),
+      );
+    return sendJson(
+      res,
+      200,
+      await runLoggedCommand(sessionKey, "queue-steer", body, () =>
+        agent.steerQueued(
+          typeof body.id === "string" && body.id ? body.id : undefined,
+        ),
+      ),
+    );
+  }
   if (req.method === "POST" && action === "queue-cancel") {
     const body = await readBody(req);
     const agent = watch(sessionKey);
-    if (typeof agent.cancelQueued !== "function")
-      return sendJson(res, 400, {
-        ok: false,
-        error: "This backend does not queue messages",
-      });
+    if (
+      !capabilitiesFor(sessionBackends.get(sessionKey) ?? "pi").queue ||
+      !hasMethod(agent, "cancelQueued")
+    )
+      return sendJson(
+        res,
+        200,
+        unsupported("queue", "This agent does not queue messages"),
+      );
     return sendJson(
       res,
       200,
@@ -2155,6 +2505,12 @@ async function route(req, res) {
     const result = await runLoggedCommand(sessionKey, "stop", {}, () => {
       poolFor(backend).stop(sessionKey);
       sessionBackends.delete(sessionKey);
+      // Free the runtime log and aliases pinned to this session; a stopped
+      // conversation no longer needs reload replay or alias fan-out.
+      runtimeLogs.delete(sessionKey);
+      for (const [alias, target] of KEY_ALIASES) {
+        if (target === sessionKey) KEY_ALIASES.delete(alias);
+      }
       return { ok: true };
     });
     return sendJson(res, 200, result);
@@ -2166,14 +2522,13 @@ async function route(req, res) {
     poolFor(currentBackend).stop(sessionKey);
     sessionBackends.delete(sessionKey);
     const agent = watch(sessionKey, body.backend);
-    // A not-yet-started grok or codex conversation (fresh or lazily resumed)
-    // has nothing to reconfigure server-side: just record the requested
-    // backend and return placeholder state instead of spawning an agent that
-    // writes an empty session file. The first prompt starts it with the new
-    // cwd.
+    // A not-yet-started lazy backend (fresh or lazily resumed) has nothing
+    // to reconfigure server-side: just record the requested backend and
+    // return placeholder state instead of spawning an agent that writes an
+    // empty session file. The first prompt starts it with the new cwd.
     if (
-      ["grok", "codex"].includes(backendName(body.backend)) &&
-      !agent.process &&
+      capabilitiesFor(body.backend).lazyStart &&
+      !agentIsAlive(agent) &&
       !body.sessionPath
     ) {
       return sendJson(res, 200, {
@@ -2214,7 +2569,7 @@ async function route(req, res) {
     );
     if (result.ok && body.sessionPath) {
       try {
-        result.messages = await agent.getMessages();
+        result.messages = await clientMessages(agent, String(body.sessionPath));
       } catch (error) {
         return sendJson(res, 500, {
           ok: false,
@@ -2273,65 +2628,120 @@ async function route(req, res) {
     if (sessionPath && liveFile === sessionPath) {
       const liveState = await resumeAgent.getState().catch(() => undefined);
       if (liveState?.isStreaming) {
-        const messages = await resumeAgent.getMessages().catch(() => []);
+        const messages = await clientMessages(resumeAgent, sessionPath);
         return sendJson(res, 200, { ok: true, state: liveState, messages });
       }
     }
     return sendJson(
       res,
       200,
-      await runLoggedCommand(sessionKey, "resume", body, () =>
-        resumeAgent.switchSession(sessionPath),
-      ),
+      await runLoggedCommand(sessionKey, "resume", body, async () => {
+        const result = await resumeAgent.switchSession(sessionPath);
+        if (result?.ok && Array.isArray(result.messages))
+          result.messages = await withDisplayHistory(
+            sessionPath,
+            result.messages,
+          );
+        return result;
+      }),
     );
   }
   if (req.method === "POST" && action === "fork") {
     const body = await readBody(req);
+    const forkBackend = sessionBackends.get(sessionKey) ?? "pi";
+    if (!capabilitiesFor(forkBackend).fork) {
+      return sendJson(
+        res,
+        200,
+        unsupported("fork", "This agent cannot fork a conversation."),
+      );
+    }
     const result = await runLoggedCommand(sessionKey, "fork", body, () =>
-      watch(sessionKey).forkAt(Number(body.timestamp)),
+      callAgentMethod(
+        watch(sessionKey),
+        "forkAt",
+        [Number(body.timestamp)],
+        "fork",
+      ),
     );
-    return sendJson(res, result.ok ? 200 : 500, result);
+    return sendJson(
+      res,
+      result.ok ? 200 : result.unsupported ? 200 : 500,
+      result,
+    );
   }
   if (req.method === "GET" && action === "settings") {
     const agent = watch(sessionKey);
-    if (typeof agent.getSettings !== "function")
-      return sendJson(res, 200, {
-        ok: false,
-        error: "This backend does not expose settings",
-      });
+    if (
+      !capabilitiesFor(sessionBackends.get(sessionKey) ?? "pi").settings ||
+      !hasMethod(agent, "getSettings")
+    )
+      return sendJson(
+        res,
+        200,
+        unsupported("settings", "This agent does not expose settings"),
+      );
     return sendJson(res, 200, await agent.getSettings());
   }
   if (req.method === "GET" && action === "mcp") {
     const agent = watch(sessionKey);
-    if (typeof agent.getMcpServers !== "function")
-      return sendJson(res, 200, {
-        ok: false,
-        error: "This backend does not expose MCP servers",
-      });
+    if (
+      !capabilitiesFor(sessionBackends.get(sessionKey) ?? "pi").mcp ||
+      !hasMethod(agent, "getMcpServers")
+    )
+      return sendJson(
+        res,
+        200,
+        unsupported("mcp", "This agent does not expose MCP servers"),
+      );
     return sendJson(res, 200, await agent.getMcpServers());
   }
   if (req.method === "GET" && action === "context") {
     const agent = watch(sessionKey);
-    if (typeof agent.getContextUsage !== "function")
-      return sendJson(res, 200, {
-        ok: false,
-        error: "This backend does not report context usage",
-      });
+    if (
+      !capabilitiesFor(sessionBackends.get(sessionKey) ?? "pi").contextUsage ||
+      !hasMethod(agent, "getContextUsage")
+    )
+      return sendJson(
+        res,
+        200,
+        unsupported("contextUsage", "This agent does not report context usage"),
+      );
     return sendJson(res, 200, await agent.getContextUsage());
   }
   if (req.method === "POST" && action === "rewind-files") {
     const body = await readBody(req);
     const agent = watch(sessionKey);
-    if (typeof agent.rewindFiles !== "function")
-      return sendJson(res, 400, {
-        ok: false,
-        error: "This backend does not checkpoint files",
-      });
     // Restoring happens after the turn, so the agent may have been reaped
     // since. Resume it first — the control request needs a live CLI.
     const rewindCwd = typeof body.cwd === "string" ? body.cwd : "";
     const rewindSessionPath =
       typeof body.sessionPath === "string" ? body.sessionPath : "";
+    // Backends that keep their own per-file checkpoints (claude) restore
+    // from those; everything else rewinds to the git snapshot taken before
+    // the turn. The snapshot also covers a claude CLI that is gone or has
+    // lost the checkpoint for that message.
+    const fromSnapshot = () => {
+      // Never fall back to the server's own cwd: restoring the wrong repo is
+      // the one mistake here that costs somebody real work.
+      const snapshotCwd = rewindCwd || agent.cwd || "";
+      if (!snapshotCwd)
+        return { ok: false, error: "No workspace directory for this session." };
+      return runLoggedCommand(sessionKey, "rewind-snapshot", body, () =>
+        restoreSnapshot(
+          snapshotCwd,
+          Number(body.timestamp),
+          body.dryRun === true,
+        ),
+      );
+    };
+    if (
+      !capabilitiesFor(sessionBackends.get(sessionKey) ?? "pi").rewindFiles ||
+      !hasMethod(agent, "rewindFiles")
+    ) {
+      const snapshot = await fromSnapshot();
+      return sendJson(res, snapshot.ok ? 200 : 500, snapshot);
+    }
     if (agent.status !== "ready" && agent.status !== "working" && rewindCwd) {
       await runLoggedCommand(sessionKey, "start", { cwd: rewindCwd }, () =>
         agent.start(
@@ -2351,17 +2761,29 @@ async function route(req, res) {
           rewindSessionPath || undefined,
         ),
     );
-    return sendJson(res, result.ok ? 200 : 500, result);
+    if (result.ok) return sendJson(res, 200, result);
+    const snapshot = await fromSnapshot();
+    return sendJson(
+      res,
+      snapshot.ok ? 200 : 500,
+      snapshot.ok ? snapshot : result,
+    );
   }
   if (req.method === "POST" && action === "truncate") {
     const body = await readBody(req);
     const agent = watch(sessionKey);
-    if (typeof agent.truncateAt !== "function")
-      return sendJson(res, 400, {
-        ok: false,
-        error:
-          "This backend cannot rewind a conversation yet. Use \u201cRestore files to this point\u201d to undo the edits instead.",
-      });
+    if (
+      !capabilitiesFor(sessionBackends.get(sessionKey) ?? "pi").truncate ||
+      !hasMethod(agent, "truncateAt")
+    )
+      return sendJson(
+        res,
+        200,
+        unsupported(
+          "truncate",
+          "This agent cannot rewind a conversation yet. Use \u201cRestore files to this point\u201d to undo the edits instead.",
+        ),
+      );
     const result = await runLoggedCommand(sessionKey, "truncate", body, () =>
       agent.truncateAt(
         Number(body.userTimestamp),
@@ -2910,12 +3332,56 @@ async function route(req, res) {
   }
   if (req.method === "POST" && action === "compact") {
     const body = await readBody(req);
+    const compactBackend = sessionBackends.get(sessionKey) ?? "pi";
+    if (!capabilitiesFor(compactBackend).compact) {
+      return sendJson(
+        res,
+        200,
+        unsupported("compact", "This agent cannot compact a conversation."),
+      );
+    }
+    const instructions = capabilitiesFor(compactBackend).compactInstructions
+      ? body.customInstructions
+      : undefined;
+    // The context legitimately changed: the next turn's prompt is new content,
+    // not re-billed content, so it must not count as a miss. Keyed the way
+    // publishRuntimeEvent keys it -- an adopted tab's raw key is an alias.
+    resetCacheTracking(resolveSessionKey(sessionKey));
+    const agent = watch(sessionKey);
+    const sessionPath = sessionPathOf(agent);
+    let before = await clientMessages(agent, sessionPath);
+    // Lazy-start tabs hydrate from disk and may have an empty in-memory
+    // log; compact still has to snapshot that transcript for reload.
+    if (before.length === 0 && sessionPath) {
+      const disk = await readSessionMessages(sessionPath);
+      if (disk.ok && Array.isArray(disk.messages) && disk.messages.length > 0)
+        before = await withDisplayHistory(sessionPath, disk.messages);
+    }
     return sendJson(
       res,
       200,
-      await runLoggedCommand(sessionKey, "compact", body, () =>
-        watch(sessionKey).compact(body.customInstructions),
-      ),
+      await runLoggedCommand(sessionKey, "compact", body, async () => {
+        const result = await callAgentMethod(
+          agent,
+          "compact",
+          [instructions],
+          "compact",
+        );
+        if (result?.ok && sessionPath && before.length > 0) {
+          const after = Array.isArray(result.messages)
+            ? result.messages
+            : await rawAgentMessages(agent);
+          await saveDisplayOverlay(sessionPath, { before, after });
+        }
+        // Do not send the rewritten history to the client — the on-screen
+        // transcript stays as it was; only the model context is compacted.
+        if (result && Array.isArray(result.messages)) {
+          const rest = { ...result };
+          delete rest.messages;
+          return rest;
+        }
+        return result;
+      }),
     );
   }
   if (req.method === "POST" && action === "set-model") {
@@ -2943,24 +3409,36 @@ async function route(req, res) {
     // connection drops, the UI asks whether a mid-turn "working" flag is
     // still true instead of trusting its stale local copy.
     try {
-      const state = await watch(
-        sessionKey,
-        url.searchParams.get("backend") || undefined,
-      ).getState();
-      return sendJson(res, 200, { ok: true, state: state ?? null });
+      const requested = url.searchParams.get("backend") || undefined;
+      const state = await watch(sessionKey, requested).getState();
+      const backend = backendName(
+        requested || sessionBackends.get(sessionKey) || "pi",
+      );
+      return sendJson(res, 200, {
+        ok: true,
+        state: state
+          ? { ...state, capabilities: capabilitiesFor(backend) }
+          : null,
+      });
     } catch {
       return sendJson(res, 200, { ok: true, state: null });
     }
   }
-  if (req.method === "GET" && action === "commands")
+  if (req.method === "GET" && action === "commands") {
+    const agent = watch(
+      sessionKey,
+      url.searchParams.get("backend") || undefined,
+    );
+    if (!hasMethod(agent, "getCommands"))
+      return sendJson(res, 200, { ok: true, commands: [] });
+    // cwd lets a cold pi session (no process yet) list commands from the
+    // right project instead of 500ing — see PiAgentProcess.getCommands.
     return sendJson(
       res,
       200,
-      await watch(
-        sessionKey,
-        url.searchParams.get("backend") || undefined,
-      ).getCommands(),
+      await agent.getCommands(url.searchParams.get("cwd") || undefined),
     );
+  }
   if (req.method === "GET" && action === "models")
     return sendJson(
       res,
@@ -2969,15 +3447,15 @@ async function route(req, res) {
         watch(sessionKey, url.searchParams.get("backend") || undefined),
       ),
     );
-  if (req.method === "GET" && action === "thinking-levels")
-    return sendJson(
-      res,
-      200,
-      await watch(
-        sessionKey,
-        url.searchParams.get("backend") || undefined,
-      ).getThinkingLevels(),
+  if (req.method === "GET" && action === "thinking-levels") {
+    const agent = watch(
+      sessionKey,
+      url.searchParams.get("backend") || undefined,
     );
+    if (!hasMethod(agent, "getThinkingLevels"))
+      return sendJson(res, 200, { ok: true, levels: [] });
+    return sendJson(res, 200, await agent.getThinkingLevels());
+  }
   if (req.method === "GET" && action === "usage") {
     const refresh = url.searchParams.get("refresh") === "1";
     // Session path lets a lazily-viewed session (no live process) answer
@@ -2991,6 +3469,17 @@ async function route(req, res) {
   }
 
   return sendJson(res, 404, { ok: false, error: "unknown route" });
+}
+
+// A crash mid-turn is invisible, and its consequences read as a UI bug: the
+// in-flight events die with the process, every open page freezes on stuck tool
+// cards, and only a manual refresh recovers it. The supervisor restarts on
+// exit, so leave the stack in the inherited output instead of losing it.
+for (const signal of ["uncaughtException", "unhandledRejection"]) {
+  process.on(signal, (error) => {
+    logFault(`${signal} -- restarting`, error);
+    process.exit(1);
+  });
 }
 
 const server = createServer((req, res) => {
@@ -3120,9 +3609,10 @@ server.listen(PORT, HOST, () => {
   console.log(`pi-web ready: http://${HOST}:${PORT}`);
   // Warm the session-summary cache so the first sidebar load (and the first
   // backend switch after a restart) reads stats, not 175MB of JSONL.
-  for (const backend of ["pi", "claude", "grok", "codex"])
+  for (const backend of AGENT_BACKENDS)
     void listSessions({ backend }).catch(() => {});
   void resumeInterruptedTurns();
+  startClaudeAuthKeepalive();
   listOllamaModels()
     .then((models) => syncOllamaModelsJson(models))
     .catch(() => {});

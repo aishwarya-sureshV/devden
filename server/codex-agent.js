@@ -13,9 +13,19 @@
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
+import { AgentPool } from "./agent-pool.js";
+import { attachQueue } from "./agent-queue.js";
+import { unsupported } from "./agent-methods.js";
+import {
+  attachSubagentFollows,
+  isPiSubagentTool,
+  isSubagentToolName,
+  noteSubagentToolEvent,
+  subagentBusy,
+} from "./agent-subagent.js";
 import { CodexAppServer, codexRequest } from "./codex-app-server.js";
 import { loadCodexUsage } from "./codex-usage.js";
-import { CLARIFY_PROMPT } from "./co-partner-prompt.js";
+import { stripClarifyPrefix, withClarifyPrefix } from "./co-partner-prompt.js";
 
 export const CODEX_SESSIONS_ROOT = () =>
   join(process.env.CODEX_HOME || join(homedir(), ".codex"), "sessions");
@@ -45,27 +55,6 @@ function usageFrom(tokenUsage) {
     totalTokens: Number(last.totalTokens ?? 0),
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
   };
-}
-
-// Codex has no system-prompt channel a client can set per turn without also
-// replacing its own base instructions, so -- as with grok -- the always-on
-// clarify instruction rides along on the prompt text and is stripped back
-// out of replayed history so a reload never shows it.
-const CLARIFY_PROMPT_PREFIX = [
-  "[pi-web harness instruction — this block is not part of the user's message; do not quote, repeat, or reference it]",
-  CLARIFY_PROMPT,
-  "[end pi-web harness instruction]",
-  "",
-].join("\n");
-
-function withClarifyPrefix(text) {
-  return `${CLARIFY_PROMPT_PREFIX}${text}`;
-}
-
-function stripClarifyPrefix(text) {
-  return typeof text === "string" && text.startsWith(CLARIFY_PROMPT_PREFIX)
-    ? text.slice(CLARIFY_PROMPT_PREFIX.length)
-    : text;
 }
 
 /**
@@ -168,8 +157,23 @@ class CodexAgentProcess {
     this.modelCatalog = undefined;
     this.skills = [];
     this.messages = [];
+    // {id, timestamp} per completed turn: codex's thread/fork cuts history
+    // at a turn boundary (lastTurnId), but the UI asks by message timestamp.
+    this.turnRecords = [];
     this.queuedMessages = [];
     this.queueSeq = 0;
+    attachQueue(this, {
+      isBusy() {
+        return Boolean(this.turn) || subagentBusy(this);
+      },
+      sendNow(message, images) {
+        return this.prompt(message, images);
+      },
+      steerNow(message, images) {
+        return this.steer(message, images);
+      },
+    });
+    attachSubagentFollows(this);
     this.usageCache = { at: 0, result: undefined };
     this.usageRequest = undefined;
   }
@@ -178,6 +182,10 @@ class CodexAgentProcess {
   // connection is this backend's equivalent.
   get process() {
     return this.connection?.running ? this.connection : undefined;
+  }
+
+  isAlive() {
+    return Boolean(this.connection?.running && this.threadId);
   }
 
   onEvent(listener) {
@@ -289,7 +297,23 @@ class CodexAgentProcess {
    */
   replayHistory(turns) {
     this.messages = [];
+    this.turnRecords = [];
+    const replayed = this.buildTurnMessages(turns);
+    this.messages = [...replayed];
+    return replayed;
+  }
+
+  /**
+   * Turn a list of persisted turns into the same (user, assistant) message
+   * pairs a live turn produces, without touching this.messages. Also updates
+   * turnRecords so a later fork-at-timestamp can find the turn boundary.
+   * Restores this.turn/the replay-suppression flag so a fork read cannot
+   * corrupt an in-flight turn.
+   */
+  buildTurnMessages(turns) {
     const replayed = [];
+    const savedTurn = this.turn;
+    const savedSuppress = this.suppressReplayEvents;
     this.suppressReplayEvents = true;
     try {
       for (const turn of turns) {
@@ -324,13 +348,17 @@ class CodexAgentProcess {
           turn.status === "completed"
             ? "end_turn"
             : (turn.status ?? "end_turn");
-        this.turn = undefined;
+        if (turn.id)
+          this.turnRecords.push({
+            id: turn.id,
+            timestamp: assistantMessage.timestamp,
+          });
         replayed.push(userMessage, assistantMessage);
       }
     } finally {
-      this.suppressReplayEvents = false;
+      this.turn = savedTurn;
+      this.suppressReplayEvents = savedSuppress;
     }
-    this.messages = [...replayed];
     return replayed;
   }
 
@@ -463,6 +491,19 @@ class CodexAgentProcess {
       args: call.arguments,
       ...(call.execKind ? { execKind: call.execKind } : {}),
     });
+    noteSubagentToolEvent(this, {
+      type: "tool_execution_start",
+      toolCallId: item.id,
+      toolName: call.name,
+      args: call.arguments,
+    });
+    if (isSubagentToolName(call.name) && !isPiSubagentTool(call.name)) {
+      this.emit({
+        type: "subagent_start",
+        sessionKey: this.sessionKey,
+        parentToolUseId: item.id,
+      });
+    }
   }
 
   completeItem(item) {
@@ -503,7 +544,7 @@ class CodexAgentProcess {
         arguments: block.arguments,
       },
     });
-    this.emit({
+    const endEvent = {
       type: "tool_execution_end",
       sessionKey: this.sessionKey,
       toolCallId: item.id,
@@ -512,7 +553,9 @@ class CodexAgentProcess {
         details: item,
       },
       isError: Boolean(call.failed),
-    });
+    };
+    if (noteSubagentToolEvent(this, endEvent).holdEnd) return;
+    this.emit(endEvent);
   }
 
   closeOpenBlock(turn) {
@@ -681,15 +724,20 @@ class CodexAgentProcess {
     });
     if (turn.userMessage) this.messages.push(turn.userMessage, turn.message);
     else this.messages.push(turn.message);
+    if (turn.id)
+      this.turnRecords.push({
+        id: turn.id,
+        timestamp: turn.message.timestamp,
+      });
     this.turn = undefined;
     this.setStatus("ready");
     this.emit({ type: "agent_settled", sessionKey: this.sessionKey });
+    if (!turn.error) this.sendNextQueued();
     void this.getState().then((state) => {
       this.emit({ type: "state", sessionKey: this.sessionKey, state });
       turn.settled?.resolve(
         turn.error ? { ok: false, error: turn.error } : { ok: true, state },
       );
-      if (!turn.error) this.sendNextQueued();
     });
   }
 
@@ -705,79 +753,6 @@ class CodexAgentProcess {
   // either, so this exists to keep the contract uniform across backends.
   followUp(message, images) {
     return this.runTurn("follow_up", message, images);
-  }
-
-  // ---- queue (same contract as the other backends) ----------------------
-
-  queueSnapshot() {
-    return this.queuedMessages.map(({ id, message, at }) => ({
-      id,
-      message,
-      at,
-    }));
-  }
-
-  emitQueue() {
-    this.emit({
-      type: "queue_updated",
-      sessionKey: this.sessionKey,
-      queued: this.queueSnapshot(),
-    });
-  }
-
-  enqueue(message, images) {
-    const text = String(message ?? "");
-    if (!text.trim())
-      return Promise.resolve({ ok: false, error: "Empty message" });
-    if (this.turn) return this.queueMessage(text, images);
-    return this.prompt(text, images).then((result) =>
-      result.ok ? { ok: true, data: { queued: false } } : result,
-    );
-  }
-
-  queueMessage(text, images) {
-    this.queueSeq += 1;
-    this.queuedMessages.push({
-      id: `q-${Date.now()}-${this.queueSeq}`,
-      message: text,
-      images: Array.isArray(images) ? images : [],
-      at: Date.now(),
-    });
-    this.emitQueue();
-    return Promise.resolve({
-      ok: true,
-      data: { queued: true, position: this.queuedMessages.length },
-    });
-  }
-
-  cancelQueued(id) {
-    const before = this.queuedMessages.length;
-    this.queuedMessages = id
-      ? this.queuedMessages.filter((entry) => entry.id !== id)
-      : [];
-    if (this.queuedMessages.length === before)
-      return { ok: false, error: "That message is no longer queued" };
-    this.emitQueue();
-    return {
-      ok: true,
-      data: { cancelled: before - this.queuedMessages.length },
-    };
-  }
-
-  sendNextQueued() {
-    const next = this.queuedMessages.shift();
-    if (!next) return;
-    this.emitQueue();
-    this.prompt(next.message, next.images.length ? next.images : undefined)
-      .then((result) => {
-        if (result.ok) return;
-        this.queuedMessages.unshift(next);
-        this.emitQueue();
-      })
-      .catch(() => {
-        this.queuedMessages.unshift(next);
-        this.emitQueue();
-      });
   }
 
   // ---- session management ----------------------------------------------
@@ -796,6 +771,7 @@ class CodexAgentProcess {
   }
 
   async abort() {
+    this.holdQueue();
     if (!this.connection?.running || !this.threadId || !this.turn?.id)
       return { ok: true };
     try {
@@ -836,24 +812,61 @@ class CodexAgentProcess {
       this.threadId = started.thread.id;
       this.sessionFile = started.thread.path;
       this.messages = [];
+      this.turnRecords = [];
       return { ok: true, state: await this.getState() };
     } catch (error) {
       return { ok: false, error: String(error?.message ?? error) };
     }
   }
 
-  async forkAt() {
-    return {
-      ok: false,
-      error: "Forking a Codex conversation isn't supported yet.",
-    };
+  async forkAt(timestamp) {
+    if (!this.connection?.running || !this.threadId)
+      return { ok: false, error: "No Codex session is available to fork." };
+    // thread/fork copies stored history into a new thread, optionally cut
+    // at a turn boundary. The UI asks by message timestamp, so map it to the
+    // turn that produced the forked response (inclusive: history through
+    // that assistant reply is kept).
+    const requested = Number(timestamp);
+    const records = this.turnRecords ?? [];
+    const boundary =
+      Number.isFinite(requested) && records.length > 0
+        ? records.reduce((closest, candidate) =>
+            Math.abs(candidate.timestamp - requested) <
+            Math.abs(closest.timestamp - requested)
+              ? candidate
+              : closest,
+          )
+        : undefined;
+    try {
+      const forked = await this.connection.request("thread/fork", {
+        threadId: this.threadId,
+        ...(boundary?.id ? { lastTurnId: boundary.id } : {}),
+      });
+      const thread = forked?.thread;
+      if (!thread?.id) throw new Error("thread/fork returned no thread");
+      const messages = this.buildTurnMessages(thread.turns ?? []);
+      const state = {
+        ...(await this.getState()),
+        sessionId: thread.id,
+        sessionFile: thread.path ?? this.sessionFile,
+      };
+      return {
+        ok: true,
+        restored: true,
+        state,
+        messages,
+        forkCwd: this.cwd,
+      };
+    } catch (error) {
+      return { ok: false, error: String(error?.message ?? error) };
+    }
   }
 
   async truncateAt() {
-    return {
-      ok: false,
-      error: "Rewinding a Codex conversation isn't supported yet.",
-    };
+    return unsupported(
+      "truncate",
+      "Rewinding a Codex conversation isn't supported yet.",
+    );
   }
 
   async getState() {
@@ -1008,6 +1021,7 @@ class CodexAgentProcess {
       error: "Codex session stopped",
     });
     this.turn = undefined;
+    this.subagents?.stopAll();
     this.connection?.close();
     this.connection = undefined;
     this.threadId = undefined;
@@ -1015,27 +1029,8 @@ class CodexAgentProcess {
   }
 }
 
-export class CodexAgentPool {
+export class CodexAgentPool extends AgentPool {
   constructor() {
-    this.agents = new Map();
-  }
-
-  get(sessionKey) {
-    let agent = this.agents.get(sessionKey);
-    if (!agent) {
-      agent = new CodexAgentProcess(sessionKey);
-      this.agents.set(sessionKey, agent);
-    }
-    return agent;
-  }
-
-  stop(sessionKey) {
-    if (sessionKey) {
-      this.agents.get(sessionKey)?.stop();
-      this.agents.delete(sessionKey);
-      return;
-    }
-    for (const agent of this.agents.values()) agent.stop();
-    this.agents.clear();
+    super((sessionKey) => new CodexAgentProcess(sessionKey));
   }
 }

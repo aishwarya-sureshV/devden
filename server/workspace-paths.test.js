@@ -8,7 +8,11 @@ import { describe, it } from "node:test";
 import { mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { confinePath, isWithinRoot } from "./workspace-paths.js";
+import {
+  confinePath,
+  isWithinRoot,
+  safeTranscriptName,
+} from "./workspace-paths.js";
 
 async function scratch() {
   const dir = await mkdtemp(join(tmpdir(), "pi-web-confine-"));
@@ -94,5 +98,16 @@ describe("confinePath", () => {
     } finally {
       await cleanup();
     }
+  });
+});
+
+describe("safeTranscriptName", () => {
+  it("cannot escape the transcripts directory", () => {
+    assert.equal(safeTranscriptName("../../etc/passwd"), "");
+    assert.equal(safeTranscriptName(".ssh-config"), "");
+    assert.equal(safeTranscriptName("/etc/passwd"), "-etc-passwd");
+    assert.equal(safeTranscriptName("fix-gauge-a1b2c3.md"), "fix-gauge-a1b2c3.md");
+    assert.equal(safeTranscriptName(""), "");
+    assert.equal(safeTranscriptName(undefined), "");
   });
 });

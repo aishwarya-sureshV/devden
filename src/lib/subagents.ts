@@ -11,6 +11,9 @@ export type SubagentRun = {
   parent?: ToolItem;
   items: TimelineItem[];
   status: "running" | "done" | "error";
+  /** Why the run is stalled, when the runner says it is blocked on a reply
+   *  from the parent rather than still working. */
+  attention?: string;
 };
 
 // Claude Code names the spawn tool `Agent` (older builds and the SDK say
@@ -72,7 +75,8 @@ function itemParentId(item: TimelineItem): string | undefined {
   if (
     item.kind === "tool" ||
     item.kind === "assistant" ||
-    item.kind === "rationale"
+    item.kind === "rationale" ||
+    item.kind === "notice"
   ) {
     return item.parentToolUseId;
   }
@@ -123,6 +127,119 @@ export function isHeldMainTool(
   if (spawnIndex < 0) return item.status === "running";
   const index = items.indexOf(item);
   return index < 0 || index > spawnIndex;
+}
+
+function subagentActionArg(item: ToolItem): string {
+  const value = item.args?.["action"];
+  return typeof value === "string" ? value.trim() : "";
+}
+
+/** A call that starts a run, as opposed to one asking after a run already
+ *  going: the spawn tool is multiplexed, and only the no-`action` shape
+ *  spawns. */
+function isSpawnCall(item: TimelineItem): boolean {
+  return (
+    item.kind === "tool" &&
+    isSubagentTool(item.name) &&
+    !subagentActionArg(item)
+  );
+}
+
+/** The inline SubagentCard is a live widget. Once the run settles it must
+ *  leave the main transcript — otherwise a streaming flicker collapses the
+ *  spawn into a "1 tool call" chip and remounts the card on the handover. */
+export function isSettledSpawnTool(
+  item: TimelineItem,
+  runs: SubagentRun[],
+): boolean {
+  if (!isSpawnCall(item)) return false;
+  return !runs.some((run) => run.id === item.id && run.status === "running");
+}
+
+/** The main agent asking after a run it already started: a status poll, a
+ *  `subagent_wait`, or a direct read of the runner's own artifacts. */
+function isSubagentHousekeeping(item: TimelineItem): boolean {
+  if (item.kind !== "tool") return false;
+  if (canonicalName(item.name).startsWith("subagent")) return !isSpawnCall(item);
+  return /pi-subagents|async-subagent-runs/.test(
+    JSON.stringify(item.args ?? {}),
+  );
+}
+
+/**
+ * Untagged main-thread work that is only the model babysitting a subagent it
+ * already spawned — the status polls, waits and artifact reads, plus the
+ * narration threaded between them ("finished" … "actually still running" …).
+ *
+ * The window runs from a spawn up to the last housekeeping call that follows
+ * it, so what survives is exactly the shape a Task call has in Claude Code's
+ * CLI: the spawn, then the handover. It is deliberately positional rather
+ * than keyed on "is the run busy right now" — a live-status test un-hides
+ * the whole blow-by-blow again the moment the run settles, which is the
+ * state the transcript spends most of its life in. A new spawn closes the
+ * previous window, so several subagents in one turn each keep their own.
+ */
+export function isSubagentCheckIn(
+  item: TimelineItem,
+  items: TimelineItem[],
+): boolean {
+  if (itemParentId(item)) return false;
+  if (item.kind !== "tool" && item.kind !== "assistant") return false;
+  if (isSpawnCall(item)) return false;
+  const index = items.indexOf(item);
+  if (index < 0) return false;
+  if (!items.some((candidate, at) => at < index && isSpawnCall(candidate))) {
+    return false;
+  }
+  for (let at = index; at < items.length; at++) {
+    const candidate = items[at]!;
+    if (at > index && isSpawnCall(candidate)) return false;
+    if (isSubagentHousekeeping(candidate)) return true;
+  }
+  return false;
+}
+
+// Vocabulary that only shows up when the model is talking about the run it
+// is babysitting rather than doing work of its own.
+const CHATTER =
+  /\b(sub-?agents?|workflow|supervisor|spawn(ed|ing)?|child run|fan-?out|hand(ing)? (it )?(back|over)|in the background|wait(ing|s)? for\b|still (running|working|active|going)|wake|woken|run id|runId|returned early)\b/i;
+
+function mentionsSubagent(text: string, agents: string[]): boolean {
+  const trimmed = text.trim();
+  // Nothing has arrived yet — hold, so the first token cannot flash.
+  if (!trimmed) return true;
+  if (CHATTER.test(trimmed)) return true;
+  return agents.some((agent) => {
+    if (agent.length < 3) return false;
+    const escaped = agent.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    return new RegExp(`\\b${escaped}\\b`, "i").test(trimmed);
+  });
+}
+
+/**
+ * Narration to hold while a run is going, because it is the model talking
+ * about the run rather than doing work of its own.
+ *
+ * The positional check only catches a check-in once the tool call it
+ * introduces arrives, which leaves the last one before a run finishes with
+ * nothing after it to close the window — so this content check has to hold
+ * settled text too, not just streaming text. It leans toward holding: a
+ * wrong guess costs genuine work its token-by-token reveal, where the other
+ * way round puts the machinery on screen. Hence the run's own agent name
+ * (`worker`, `scout`) alongside the vocabulary that only shows up when a run
+ * is the subject — including the internals pi's spawn receipt teaches it.
+ */
+export function isSubagentChatter(
+  item: TimelineItem,
+  runs: SubagentRun[],
+): boolean {
+  if (item.kind !== "assistant" || item.parentToolUseId) return false;
+  const running = runs.filter((run) => run.status === "running");
+  if (running.length === 0) return false;
+  return mentionsSubagent(
+    item.text,
+    running.map((run) => subagentType(run.parent)).filter(Boolean),
+  );
 }
 
 /** Child narration also arrives untagged on the parent ACP stream. */
@@ -199,11 +316,18 @@ export function collectSubagentRuns(items: TimelineItem[]): SubagentRun[] {
     if (seen.has(id)) return;
     seen.add(id);
     const children = childrenByParent.get(id) ?? [];
+    const status = runStatus(parent, children);
+    const blocked = [...children]
+      .reverse()
+      .find((child) => child.kind === "notice" && child.tone === "warning");
     runs.push({
       id,
       parent,
       items: children,
-      status: runStatus(parent, children),
+      status,
+      ...(status === "running" && blocked?.kind === "notice"
+        ? { attention: blocked.text }
+        : {}),
     });
   };
 

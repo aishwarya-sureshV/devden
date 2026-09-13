@@ -1,13 +1,29 @@
 /** Types shared with the pi-web server. */
 
 export type RunStatus = "stopped" | "starting" | "ready" | "working" | "error";
-export type AgentBackend = "pi" | "claude" | "grok" | "codex";
+export const AGENT_BACKENDS = ["pi", "claude", "grok", "codex"] as const;
+export type AgentBackend = (typeof AGENT_BACKENDS)[number];
 
 export function backendLabel(backend: AgentBackend): string {
   if (backend === "claude") return "Claude";
   if (backend === "grok") return "Grok";
   if (backend === "codex") return "Codex";
   return "Pi";
+}
+
+/** Glyph + CSS color for the 2B sidebar agent mark. */
+export function backendMark(backend: AgentBackend): {
+  glyph: string;
+  color: string;
+  blurb: string;
+} {
+  if (backend === "claude")
+    return { glyph: "✳", color: "var(--pw-teal)", blurb: "acp" };
+  if (backend === "grok")
+    return { glyph: "✦", color: "var(--pw-accent)", blurb: "cloud" };
+  if (backend === "codex")
+    return { glyph: "◇", color: "var(--pw-fg-3)", blurb: "codex" };
+  return { glyph: "◆", color: "var(--pw-green)", blurb: "local shell agent" };
 }
 
 export interface ModelInfo {
@@ -34,12 +50,16 @@ export interface SessionState {
   messageCount: number;
   pendingMessageCount: number;
   queuedMessages?: QueuedMessage[];
+  capabilities?: import("./agentCapabilities").AgentCapabilities;
 }
 
 export interface UsageWindow {
   label: string;
-  usedPercent: number;
-  resetsAt?: string;
+  usedPercent?: number;
+  /** Pre-rendered value for providers that report counts ("410 req") instead of a percent. */
+  usedText?: string;
+  /** Epoch ms, so the client can count down rather than print a fixed string. */
+  resetsAt?: number;
 }
 
 export interface ProviderUsage {
@@ -73,6 +93,8 @@ export interface ResumeSession {
   /** Every model that produced a turn in this session, including one-off swaps. */
   models?: string[];
   lastEffort?: string;
+  /** True while an agent turn is in flight for this file. */
+  isStreaming?: boolean;
 }
 
 export interface GitChange {
@@ -186,10 +208,14 @@ export interface SessionSnapshotResponse {
   state?: SessionState;
   messages?: SessionHistoryMessage[];
   error?: string;
-  /** Pi: true when the live session was restored and `state` describes the fork. */
+  unsupported?: boolean;
+  capability?: string;
+  /** True when the live conversation was preserved and `state` describes the fork. */
   restored?: boolean;
-  /** Pi: worktree path for the forked session (falls back to the original cwd). */
+  /** Worktree/cwd for the forked session (falls back to the original cwd). */
   forkCwd?: string;
+  /** Claude: the fork tab must resume the source session with --fork-session. */
+  forkResume?: boolean;
 }
 
 /** What a file rewind did, or — with dryRun — what it would do. */
@@ -289,6 +315,22 @@ export interface WorkspaceMatch {
   path: string;
   relativePath: string;
   name: string;
+}
+
+/** One line hit from project-wide search or a definition lookup. */
+export interface WorkspaceGrepMatch {
+  path: string;
+  relativePath: string;
+  line: number;
+  column: number;
+  preview: string;
+}
+
+export interface WorkspaceGrepResponse {
+  ok: boolean;
+  matches?: WorkspaceGrepMatch[];
+  truncated?: boolean;
+  error?: string;
 }
 
 export interface WorkspaceFileResponse {
@@ -545,8 +587,33 @@ export const api = {
     get<WorkspaceFileResponse>(
       `/api/workspace/file?path=${encodeURIComponent(path)}`,
     ),
+  workspaceGrep: (
+    root: string,
+    q: string,
+    options: {
+      caseSensitive?: boolean;
+      wholeWord?: boolean;
+      regex?: boolean;
+    } = {},
+  ) => {
+    const params = new URLSearchParams({ root, q });
+    if (options.caseSensitive) params.set("case", "1");
+    if (options.wholeWord) params.set("word", "1");
+    if (options.regex) params.set("regex", "1");
+    return get<WorkspaceGrepResponse>(`/api/workspace/grep?${params}`);
+  },
+  workspaceDefinition: (root: string, symbol: string) =>
+    get<WorkspaceGrepResponse>(
+      `/api/workspace/definition?root=${encodeURIComponent(root)}&symbol=${encodeURIComponent(symbol)}`,
+    ),
   workspaceSave: (path: string, content: string) =>
     put<WorkspaceFileResponse>("/api/workspace/file", { path, content }),
+  /** Auto-saved transcript, written to ~/.pi-web/transcripts (not the repo). */
+  writeTranscript: (name: string, content: string) =>
+    put<{ ok: boolean; path?: string; error?: string }>("/api/transcript", {
+      name,
+      content,
+    }),
   workspaceRename: (path: string, name: string) =>
     post<{
       ok: boolean;
@@ -615,6 +682,8 @@ export const api = {
     sessionPath?: string,
     thinkingLevel?: string,
     adoptOnly?: boolean,
+    warmOnly?: boolean,
+    forkResume?: boolean,
   ) =>
     post<{
       ok: boolean;
@@ -628,6 +697,8 @@ export const api = {
       ...(sessionPath ? { sessionPath } : {}),
       ...(thinkingLevel ? { thinkingLevel } : {}),
       ...(adoptOnly ? { adoptOnly: true } : {}),
+      ...(warmOnly ? { warmOnly: true } : {}),
+      ...(forkResume ? { forkResume: true } : {}),
     }),
   prompt: (
     key: string,
@@ -653,7 +724,10 @@ export const api = {
     if (options?.sessionPath) body.sessionPath = options.sessionPath;
     if (options?.model) body.model = options.model;
     if (options?.thinkingLevel) body.thinkingLevel = options.thinkingLevel;
-    return post<{ ok: boolean; error?: string }>(`/api/${key}/prompt`, body);
+    return post<{ ok: boolean; error?: string; sessionPath?: string }>(
+      `/api/${key}/prompt`,
+      body,
+    );
   },
   enqueue: (key: string, message: string, images?: ImageAttachment[]) =>
     post<{
@@ -663,6 +737,10 @@ export const api = {
     }>(`/api/${key}/queue`, { message, ...(images ? { images } : {}) }),
   cancelQueued: (key: string, id?: string) =>
     post<{ ok: boolean; error?: string }>(`/api/${key}/queue-cancel`, {
+      ...(id ? { id } : {}),
+    }),
+  steerQueued: (key: string, id?: string) =>
+    post<{ ok: boolean; error?: string }>(`/api/${key}/queue-steer`, {
       ...(id ? { id } : {}),
     }),
   steer: (key: string, message: string, images?: ImageAttachment[]) =>
@@ -808,10 +886,15 @@ export const api = {
       mimeType,
       data,
     }),
-  commands: (key: string, backend?: AgentBackend) =>
-    get<{ ok: boolean; commands: SlashCommand[] }>(
-      `/api/${key}/commands${backend ? `?backend=${backend}` : ""}`,
-    ),
+  commands: (key: string, backend?: AgentBackend, cwd?: string) => {
+    const params = new URLSearchParams();
+    if (backend) params.set("backend", backend);
+    if (cwd) params.set("cwd", cwd);
+    const query = params.toString();
+    return get<{ ok: boolean; commands: SlashCommand[] }>(
+      `/api/${key}/commands${query ? `?${query}` : ""}`,
+    );
+  },
   models: (key: string, backend?: AgentBackend) =>
     get<{ ok: boolean; models: ModelInfo[] }>(
       `/api/${key}/models${backend ? `?backend=${backend}` : ""}`,
@@ -844,6 +927,14 @@ export const api = {
     post<{ ok: boolean; enabled?: boolean; ticket?: string }>("/api/auth", {
       token,
     }),
+  backends: () =>
+    get<{
+      ok: boolean;
+      backends: Array<{
+        id: AgentBackend;
+        capabilities: import("./agentCapabilities").AgentCapabilities;
+      }>;
+    }>("/api/backends"),
   authStatus: () => get<{ ok: boolean }>("/api/auth/status"),
   /** Renew the server-side lease for the given conversation keys. */
   heartbeat: (keys: string[]) =>
@@ -884,7 +975,17 @@ export function subscribeEvents(
   if (!closeSharedStream) {
     closeSharedStream = openEventStream(
       (event) => {
-        for (const listener of [...eventListeners]) listener(event);
+        // One failing subscriber must not starve the others. The loop used to
+        // abort on the first throw and the caller swallowed it, so a single bad
+        // event stopped the transcript updating with nothing in the console to
+        // say why -- indistinguishable from the server freezing.
+        for (const listener of [...eventListeners]) {
+          try {
+            listener(event);
+          } catch (error) {
+            console.error("[pi-web] event listener failed", error);
+          }
+        }
       },
       (status) => {
         for (const listener of [...statusListeners]) listener(status);
@@ -934,29 +1035,38 @@ function openEventStream(
 
   const connect = async () => {
     if (closed) return;
-    let url = apiUrl("/api/events");
-    if (authToken) {
-      try {
-        const result = await api.auth(authToken);
-        if (result.ok && result.ticket) {
-          url = `${url}?ticket=${encodeURIComponent(result.ticket)}`;
+    // Hold the reconnecting flag for the whole connect body: connect() awaits
+    // auth before assigning source, and if the flag dropped early the watchdog
+    // could arm a second timer and open a duplicate EventSource.
+    reconnecting = true;
+    try {
+      let url = apiUrl("/api/events");
+      if (authToken) {
+        try {
+          const result = await api.auth(authToken);
+          if (result.ok && result.ticket) {
+            url = `${url}?ticket=${encodeURIComponent(result.ticket)}`;
+          }
+        } catch {
+          /* cookie may already authenticate; fall through */
         }
-      } catch {
-        /* cookie may already authenticate; fall through */
       }
-    }
-    lastMessage = Date.now();
-    source = new EventSource(url);
-    source.onopen = () => onStatus?.("connected");
-    source.onmessage = (message) => {
+      if (closed) return;
       lastMessage = Date.now();
-      try {
-        onEvent(JSON.parse(message.data) as AgentEvent);
-      } catch {
-        /* ignore malformed */
-      }
-    };
-    source.onerror = scheduleReconnect;
+      source = new EventSource(url);
+      source.onopen = () => onStatus?.("connected");
+      source.onmessage = (message) => {
+        lastMessage = Date.now();
+        try {
+          onEvent(JSON.parse(message.data) as AgentEvent);
+        } catch {
+          /* ignore malformed */
+        }
+      };
+      source.onerror = scheduleReconnect;
+    } finally {
+      reconnecting = false;
+    }
   };
 
   void connect();

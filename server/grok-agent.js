@@ -31,8 +31,14 @@
  * silently queuing or corrupting state.
  */
 import { spawn } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
-import { readFile } from "node:fs/promises";
+import {
+  closeSync,
+  existsSync,
+  openSync,
+  readFileSync,
+  readSync,
+  statSync,
+} from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { Readable, Writable } from "node:stream";
@@ -40,51 +46,30 @@ import {
   ClientSideConnection,
   ndJsonStream,
 } from "@zed-industries/agent-client-protocol";
-import { CLARIFY_PROMPT } from "./co-partner-prompt.js";
+import { AgentPool } from "./agent-pool.js";
+import { attachQueue } from "./agent-queue.js";
+import { unsupported } from "./agent-methods.js";
+import { isSubagentToolName } from "./agent-subagent.js";
+import { stripClarifyPrefix, withGrokPrefix } from "./co-partner-prompt.js";
 import {
-  isSubagentToolName,
+  GROK_PROXY_BASE,
+  GROK_PROXY_HEADERS,
+  grokHome,
+  loadGrokUsage,
+  readGrokToken,
+} from "./grok-usage.js";
+import {
+  grokToolOutputText,
   messagesFromGrokLog,
   parseSubagentId,
   stripTrailingCompactTurn,
 } from "./sessions.js";
 
-export { isSubagentToolName, parseSubagentId } from "./sessions.js";
+export { isSubagentToolName } from "./agent-subagent.js";
+export { parseSubagentId } from "./sessions.js";
 
-const GROK_HOME = () => process.env.GROK_HOME || join(homedir(), ".grok");
-const GROK_HOME_AUTH = () => join(GROK_HOME(), "auth.json");
-export const GROK_SESSIONS_ROOT = () => join(GROK_HOME(), "sessions");
-const PROXY_BASE = "https://cli-chat-proxy.grok.com/v1";
-const PROXY_HEADERS = {
-  "User-Agent": "grok-cli",
-  "x-xai-token-auth": "xai-grok-cli",
-};
+export const GROK_SESSIONS_ROOT = () => join(grokHome(), "sessions");
 const ACP_PROTOCOL_VERSION = 1;
-
-function formatResetTime(epochSeconds) {
-  if (!Number.isFinite(epochSeconds)) return undefined;
-  return new Intl.DateTimeFormat("en-US", {
-    month: "short",
-    day: "numeric",
-    hour: "numeric",
-    minute: "2-digit",
-    timeZoneName: "short",
-  }).format(new Date(epochSeconds * 1000));
-}
-
-async function readGrokToken() {
-  try {
-    const auth = JSON.parse(await readFile(GROK_HOME_AUTH(), "utf8"));
-    return (
-      auth?.["https://accounts.x.ai/sign-in"]?.key ??
-      Object.values(auth ?? {}).find((entry) => typeof entry?.key === "string")
-        ?.key
-    );
-  } catch {
-    // Missing or corrupt auth file simply means "not logged in"; callers
-    // surface that as their own error instead of an unhandled throw.
-    return undefined;
-  }
-}
 
 function resolveGrokExecutable() {
   return process.env.GROK_EXECUTABLE || "grok";
@@ -101,30 +86,34 @@ function zeroUsage() {
   };
 }
 
+/**
+ * grok's turn_completed usage. Two things differ from every other backend:
+ * `inputTokens` is INCLUSIVE of the cached reads (totalTokens is exactly
+ * inputTokens + outputTokens), where pi/Codex/Anthropic report input as the
+ * uncached remainder; and cost arrives as one undifferentiated `costUsdTicks`
+ * (1e-9 USD) with no per-bucket breakdown, so the cost fields stay zero.
+ */
+export function usageFrom(raw) {
+  if (!raw || typeof raw !== "object") return zeroUsage();
+  const num = (key) => {
+    const value = Number(raw[key]);
+    return Number.isFinite(value) ? value : 0;
+  };
+  const cacheRead = num("cachedReadTokens");
+  const cacheWrite = num("cacheCreationTokens");
+  return {
+    // Re-based to the shared "input excludes cache" convention.
+    input: Math.max(0, num("inputTokens") - cacheRead - cacheWrite),
+    output: num("outputTokens"),
+    cacheRead,
+    cacheWrite,
+    totalTokens: num("totalTokens"),
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+  };
+}
+
 function acpTextOf(block) {
   return block?.type === "text" ? (block.text ?? "") : "";
-}
-
-// ACP has no system-prompt channel, so the always-on clarify instruction is
-// prepended to every outgoing prompt text instead. It stays in grok's own
-// chat history (keeping it in-context for the whole session) but is hidden
-// from pi-web's live timeline and stripped back out of replayed history so a
-// reload never shows it. The exact-string prefix makes the strip unambiguous.
-const CLARIFY_PROMPT_PREFIX = [
-  "[pi-web harness instruction — this block is not part of the user's message; do not quote, repeat, or reference it]",
-  CLARIFY_PROMPT,
-  "[end pi-web harness instruction]",
-  "",
-].join("\n");
-
-function withClarifyPrefix(text) {
-  return `${CLARIFY_PROMPT_PREFIX}${text}`;
-}
-
-function stripClarifyPrefix(text) {
-  return typeof text === "string" && text.startsWith(CLARIFY_PROMPT_PREFIX)
-    ? text.slice(CLARIFY_PROMPT_PREFIX.length)
-    : text;
 }
 
 // grok's ACP tool_call notifications don't populate the optional `kind`
@@ -140,10 +129,58 @@ const SHELL_TOOL_NAMES = new Set(["run_terminal_command"]);
 // Covers stalled subagent follows (no bytes in the child's session file) and
 // idle reminder turns whose stream stopped.
 let stallMs = 5 * 60_000;
+// turn_completed in the child stream can beat output.json to disk; wait this
+// long for the official findings before falling back to streamed narration.
+let outputWaitMs = 1_500;
+// After a spawn follow drains, grok often starts an idle handover turn.
+// Flushing the queue in that gap interleaved the follow-up with the
+// handover and scrambled the transcript.
+let queueIdleMs = 500;
 
 /** Tests only: shrink the stall watchdogs so the bail-out is observable. */
 export function setStallMsForTesting(ms) {
   stallMs = ms;
+  outputWaitMs = ms < 5 * 60_000 ? Math.max(1, ms) : 1_500;
+}
+
+/** Tests only: shrink the post-follow queue pause. */
+export function setQueueIdleMsForTesting(ms) {
+  queueIdleMs = ms;
+}
+
+/**
+ * Read complete jsonl rows added since `offset` without rereading the prefix.
+ * Incomplete trailing bytes stay unread for the next tick. A shrunk file
+ * (rewrite) resets to the start.
+ */
+export function readJsonlFromOffset(path, offset) {
+  let size = 0;
+  try {
+    size = statSync(path).size;
+  } catch {
+    return { lines: [], offset: 0, missing: true };
+  }
+  if (size < offset) offset = 0;
+  if (size <= offset) return { lines: [], offset, missing: false };
+  let fd;
+  try {
+    fd = openSync(path, "r");
+    const length = size - offset;
+    const buffer = Buffer.allocUnsafe(length);
+    const read = readSync(fd, buffer, 0, length, offset);
+    const end = buffer.lastIndexOf(0x0a, read - 1);
+    if (end < 0) return { lines: [], offset, missing: false };
+    const chunk = buffer.subarray(0, end + 1).toString("utf8");
+    return {
+      lines: chunk.split("\n").filter((line) => line.trim()),
+      offset: offset + end + 1,
+      missing: false,
+    };
+  } catch {
+    return { lines: [], offset, missing: false };
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
 }
 
 /** Child tools also arrive on the parent ACP stream, usually without a parent
@@ -310,12 +347,28 @@ class GrokAgentProcess {
     this.messages = [];
     this.queuedMessages = [];
     this.queueSeq = 0;
+    this.startPromise = undefined;
+    this.opening = false;
+    attachQueue(this, {
+      isBusy() {
+        // An idle reminder turn must not park a user prompt in the queue —
+        // grok starts those on its own after newSession / a subagent, and
+        // treating them as busy made the first hello sit unsent.
+        return (
+          Boolean(this.turn && !this.turn.idle) || this.subagentFollows.size > 0
+        );
+      },
+      sendNow(message, images) {
+        return this.prompt(message, images);
+      },
+    });
     this.usageCache = { at: 0, result: undefined };
     this.usageRequest = undefined;
     this.subagentFollows = new Map();
     this.parentHoldText = "";
     this.lastChildText = "";
-    this.followsDrained = undefined;
+    this.followsDrained = [];
+    this.queueIdleTimer = undefined;
     this.suppressCompactUi = false;
   }
 
@@ -350,12 +403,18 @@ class GrokAgentProcess {
     });
   }
 
-  isAlive() {
+  hasConnection() {
     const child = this.process;
-    const childAlive = Boolean(
-      child && child.exitCode == null && child.signalCode == null,
+    return Boolean(
+      child &&
+        child.exitCode == null &&
+        child.signalCode == null &&
+        this.connection,
     );
-    return childAlive && Boolean(this.connection) && Boolean(this.sessionId);
+  }
+
+  isAlive() {
+    return this.hasConnection() && Boolean(this.sessionId);
   }
 
   async ensureRunning() {
@@ -363,7 +422,7 @@ class GrokAgentProcess {
     const cwd = this.cwd;
     const sessionPath = this.sessionFile;
     if (!cwd) return { ok: false, error: "Grok session is not running" };
-    this.killChild();
+    if (!this.hasConnection()) this.killChild();
     return this.start(cwd, {
       sessionPath,
       model: this.model,
@@ -371,9 +430,34 @@ class GrokAgentProcess {
     });
   }
 
+  async warm(cwd, options = {}) {
+    return this.start(cwd, { ...options, warmOnly: true });
+  }
+
   async start(cwd, options = {}) {
-    if (this.isAlive()) return { ok: true, state: await this.getState() };
-    if (this.process) this.killChild();
+    if (this.isAlive() && !options.warmOnly)
+      return { ok: true, state: await this.getState() };
+    if (this.startPromise) {
+      await this.startPromise;
+      if (this.isAlive() && !options.warmOnly)
+        return { ok: true, state: await this.getState() };
+      if (options.warmOnly && this.hasConnection())
+        return { ok: true, state: await this.getState() };
+    }
+    this.startPromise = this.doStart(cwd, options);
+    try {
+      return await this.startPromise;
+    } finally {
+      this.startPromise = undefined;
+    }
+  }
+
+  async doStart(cwd, options = {}) {
+    if (this.isAlive() && !options.warmOnly)
+      return { ok: true, state: await this.getState() };
+    if (options.warmOnly && this.hasConnection())
+      return { ok: true, state: await this.getState() };
+    if (!this.hasConnection() && this.process) this.killChild();
     let effectiveCwd = cwd;
     if (effectiveCwd && !existsSync(effectiveCwd)) {
       effectiveCwd = homedir();
@@ -387,105 +471,123 @@ class GrokAgentProcess {
     }
     this.cwd = effectiveCwd;
     this.setStatus("starting");
+    this.opening = true;
 
     try {
-      const child = spawn(resolveGrokExecutable(), ["agent", "stdio"], {
-        cwd: effectiveCwd,
-        env: process.env,
-        stdio: ["pipe", "pipe", "pipe"],
-      });
-      this.process = child;
-      child.stderr.on("data", (chunk) => {
-        // grok colours its logs; raw escapes render as "[2m...[0m" noise in
-        // the transcript, which is where its network errors surface.
-        const message = chunk
-          .toString("utf8")
-          // biome-ignore lint/suspicious/noControlCharactersInRegex: ANSI SGR
-          .replace(/\u001b\[[0-9;]*m/g, "")
-          .trim();
-        if (message)
-          this.emit({ type: "stderr", sessionKey: this.sessionKey, message });
-      });
-      child.once("error", (error) => {
-        this.process = undefined;
-        this.connection = undefined;
-        this.setStatus("error", error.message);
-      });
-      child.once("exit", (code, signal) => {
-        this.process = undefined;
-        // index.js treats a truthy `connection` as "grok is alive" and skips
-        // the restart. Left set, every later prompt writes into a closed pipe
-        // and hangs forever -- the conversation looks frozen and no message
-        // can revive it.
-        this.connection = undefined;
-        if (this.turn?.idle) {
-          // The idle turn is fed by notifications from this child; with the
-          // child gone they never arrive. Close it so the composer does not
-          // stay "running" and the next prompt is not rejected with "already
-          // in progress".
-          this.finishIdleTurn();
-        } else if (this.turn) {
-          this.turn.reject?.(
-            new Error(`Grok exited (${signal ?? code ?? "unknown"})`),
-          );
-          this.turn = undefined;
-        }
-        // Parent death used to leave jsonl pumps running, so spawn_subagent
-        // stayed `running` and the main transcript kept hiding later tools.
-        this.stopSubagentFollows();
-        if (this.status !== "stopped") {
-          this.setStatus(
-            code && code !== 0 ? "error" : "stopped",
-            code && code !== 0 ? `Grok exited with code ${code}` : undefined,
-          );
-        }
-      });
-      await new Promise((resolve, reject) => {
-        child.once("spawn", resolve);
-        child.once("error", reject);
-      });
-
-      const stream = ndJsonStream(
-        Writable.toWeb(child.stdin),
-        Readable.toWeb(child.stdout),
-      );
-      const self = this;
-      this.connection = new ClientSideConnection(
-        () => ({
-          async sessionUpdate(notification) {
-            self.handleSessionUpdate(notification);
-          },
-          async requestPermission(params) {
-            const options = params.options ?? [];
-            const chosen =
-              options.find((o) => o.kind === "allow_always") ??
-              options.find((o) => o.kind === "allow_once") ??
-              options[0];
-            return chosen
-              ? { outcome: { outcome: "selected", optionId: chosen.optionId } }
-              : { outcome: { outcome: "cancelled" } };
-          },
-          async writeTextFile() {
-            throw new Error(
-              "writeTextFile not supported by pi-web's grok client",
+      if (!this.hasConnection()) {
+        const child = spawn(resolveGrokExecutable(), ["agent", "stdio"], {
+          cwd: effectiveCwd,
+          env: process.env,
+          stdio: ["pipe", "pipe", "pipe"],
+        });
+        this.process = child;
+        child.stderr.on("data", (chunk) => {
+          // grok colours its logs; raw escapes render as "[2m...[0m" noise in
+          // the transcript, which is where its network errors surface.
+          const message = chunk
+            .toString("utf8")
+            // biome-ignore lint/suspicious/noControlCharactersInRegex: ANSI SGR
+            .replace(/\u001b\[[0-9;]*m/g, "")
+            .trim();
+          if (message)
+            this.emit({ type: "stderr", sessionKey: this.sessionKey, message });
+        });
+        child.once("error", (error) => {
+          this.process = undefined;
+          this.connection = undefined;
+          this.setStatus("error", error.message);
+        });
+        child.once("exit", (code, signal) => {
+          this.process = undefined;
+          // index.js treats a truthy `connection` as "grok is alive" and skips
+          // the restart. Left set, every later prompt writes into a closed pipe
+          // and hangs forever -- the conversation looks frozen and no message
+          // can revive it.
+          this.connection = undefined;
+          if (this.turn?.idle) {
+            // The idle turn is fed by notifications from this child; with the
+            // child gone they never arrive. Close it so the composer does not
+            // stay "running" and the next prompt is not rejected with "already
+            // in progress".
+            this.finishIdleTurn();
+          } else if (this.turn) {
+            this.turn.reject?.(
+              new Error(`Grok exited (${signal ?? code ?? "unknown"})`),
             );
-          },
-          async readTextFile() {
-            throw new Error(
-              "readTextFile not supported by pi-web's grok client",
+            this.turn = undefined;
+          }
+          // Parent death used to leave jsonl pumps running, so spawn_subagent
+          // stayed `running` and the main transcript kept hiding later tools.
+          this.stopSubagentFollows();
+          if (this.status !== "stopped") {
+            this.setStatus(
+              code && code !== 0 ? "error" : "stopped",
+              code && code !== 0 ? `Grok exited with code ${code}` : undefined,
             );
-          },
-        }),
-        stream,
-      );
+          }
+        });
+        await new Promise((resolve, reject) => {
+          child.once("spawn", resolve);
+          child.once("error", reject);
+        });
 
-      await this.connection.initialize({
-        protocolVersion: ACP_PROTOCOL_VERSION,
-        clientCapabilities: {
-          fs: { readTextFile: false, writeTextFile: false },
-          terminal: false,
-        },
-      });
+        const stream = ndJsonStream(
+          Writable.toWeb(child.stdin),
+          Readable.toWeb(child.stdout),
+        );
+        const self = this;
+        this.connection = new ClientSideConnection(
+          () => ({
+            async sessionUpdate(notification) {
+              self.handleSessionUpdate(notification);
+            },
+            async requestPermission(params) {
+              const options = params.options ?? [];
+              const chosen =
+                options.find((o) => o.kind === "allow_always") ??
+                options.find((o) => o.kind === "allow_once") ??
+                options[0];
+              return chosen
+                ? {
+                    outcome: { outcome: "selected", optionId: chosen.optionId },
+                  }
+                : { outcome: { outcome: "cancelled" } };
+            },
+            async writeTextFile() {
+              throw new Error(
+                "writeTextFile not supported by pi-web's grok client",
+              );
+            },
+            async readTextFile() {
+              throw new Error(
+                "readTextFile not supported by pi-web's grok client",
+              );
+            },
+          }),
+          stream,
+        );
+
+        await this.connection.initialize({
+          protocolVersion: ACP_PROTOCOL_VERSION,
+          clientCapabilities: {
+            fs: { readTextFile: false, writeTextFile: false },
+            terminal: false,
+          },
+        });
+      }
+
+      // Prefetch so a later model picker / resolveEffort doesn't wait on
+      // the network. Must not sit on the first-token path.
+      void this.fetchModelCatalog().catch(() => {});
+
+      if (options.warmOnly) {
+        this.model = options.model?.id
+          ? { provider: "grok-sdk", id: options.model.id }
+          : (this.model ?? { provider: "grok-sdk", id: "grok-4.6" });
+        if (options.thinkingLevel) this.thinkingLevel = options.thinkingLevel;
+        this.setStatus("ready");
+        return { ok: true, state: await this.getState() };
+      }
 
       let replayedMessages;
       if (options.sessionPath) {
@@ -519,11 +621,12 @@ class GrokAgentProcess {
       // xhigh, grok-4.5 stops at high), so an unset or unsupported effort
       // falls back to whatever the model itself marks as default -- that is
       // the level the session actually runs at, and the UI reads it back
-      // from getState().
-      this.thinkingLevel = await this.resolveEffort(
-        this.model?.id,
-        options.thinkingLevel || this.thinkingLevel,
-      );
+      // from getState(). The UI already sends a level on a fresh tab;
+      // skipping the catalog fetch keeps that off the first-token path.
+      this.thinkingLevel =
+        options.thinkingLevel || this.thinkingLevel
+          ? options.thinkingLevel || this.thinkingLevel
+          : await this.resolveEffort(this.model?.id, this.thinkingLevel);
       if (this.thinkingLevel) {
         try {
           await this.connection.setSessionMode({
@@ -552,6 +655,8 @@ class GrokAgentProcess {
       this.killChild();
       this.setStatus("error", String(error?.message ?? error));
       return { ok: false, error: String(error?.message ?? error) };
+    } finally {
+      this.opening = false;
     }
   }
 
@@ -664,6 +769,20 @@ class GrokAgentProcess {
       this.replayMode.onUserChunk(acpTextOf(update.content));
       return;
     }
+    // Child tools and mirrored tokens also arrive on the parent ACP stream,
+    // usually untagged. While a jsonl follow is live those belong in the
+    // pane; the parent turn may already have settled (spawn is background).
+    // Pump first so hide sees ids the child already wrote.
+    if (!this.turn && this.subagentFollows.size > 0 && !this.replayMode) {
+      this.pumpAllSubagents();
+      if (
+        update.sessionUpdate === "agent_thought_chunk" ||
+        update.sessionUpdate === "agent_message_chunk" ||
+        update.sessionUpdate === "tool_call" ||
+        update.sessionUpdate === "tool_call_update"
+      )
+        return;
+    }
     let turn = this.turn;
     if (!turn) {
       // grok continues the session on its own after a background subagent
@@ -672,8 +791,12 @@ class GrokAgentProcess {
       // parent's handover narration streamed while `this.turn` was undefined
       // and never reached the timeline — the findings only appeared after
       // a page refresh re-read the session file.
+      // newSession/initialize also emit chunks (user_info, skills). Treating
+      // those as an idle turn marked the session working and queued the
+      // user's first prompt behind a turn nobody was running.
       if (
         !this.replayMode &&
+        !this.opening &&
         (update.sessionUpdate === "agent_message_chunk" ||
           update.sessionUpdate === "agent_thought_chunk")
       ) {
@@ -687,7 +810,13 @@ class GrokAgentProcess {
         });
         return;
       }
-    } else if (turn.idle && update.sessionUpdate === "turn_completed") {
+    }
+    // turn_completed carries the turn's token usage (including grok's cache
+    // reads). Recorded before the idle branch returns, so it lands on the
+    // message whichever way the turn finishes.
+    if (turn && update.sessionUpdate === "turn_completed" && update.usage)
+      turn.message.usage = usageFrom(update.usage);
+    if (turn?.idle && update.sessionUpdate === "turn_completed") {
       this.finishIdleTurn();
       return;
     }
@@ -699,8 +828,7 @@ class GrokAgentProcess {
       case "agent_message_chunk": {
         const delta = acpTextOf(update.content);
         if (this.subagentFollows.size > 0) {
-          for (const follow of [...this.subagentFollows.values()])
-            this.pumpSubagent(follow);
+          this.pumpAllSubagents();
           const childText = [...this.subagentFollows.values()]
             .map((follow) => follow.text)
             .join("");
@@ -716,19 +844,13 @@ class GrokAgentProcess {
         return;
       }
       case "tool_call":
-        if (this.shouldHideParentTool(update)) {
-          for (const follow of [...this.subagentFollows.values()])
-            this.pumpSubagent(follow);
-          return;
-        }
+        this.pumpAllSubagents();
+        if (this.shouldHideParentTool(update)) return;
         this.startToolCall(turn, update);
         return;
       case "tool_call_update":
-        if (this.shouldHideParentTool(update)) {
-          for (const follow of [...this.subagentFollows.values()])
-            this.pumpSubagent(follow);
-          return;
-        }
+        this.pumpAllSubagents();
+        if (this.shouldHideParentTool(update)) return;
         this.updateToolCall(turn, update);
         return;
       default:
@@ -792,10 +914,12 @@ class GrokAgentProcess {
     return parentToolBelongsToFollow(this.subagentFollows, update, this.turn);
   }
 
-  startToolCall(turn, update) {
-    for (const follow of [...this.subagentFollows.values()]) {
+  pumpAllSubagents() {
+    for (const follow of [...this.subagentFollows.values()])
       this.pumpSubagent(follow);
-    }
+  }
+
+  startToolCall(turn, update) {
     this.closeOpenBlock(turn);
     const name = update.title ?? update.toolCallId;
     const block = {
@@ -918,7 +1042,6 @@ class GrokAgentProcess {
       parentToolUseId,
       subagentId,
       offset: 0,
-      pending: "",
       text: "",
       thinking: "",
       // The child narrates in separate blocks (opening chatter, then the
@@ -943,26 +1066,14 @@ class GrokAgentProcess {
   pumpSubagent(follow) {
     if (!this.cwd) return;
     const path = childUpdatesPath(this.cwd, follow.subagentId);
-    let text = "";
-    try {
-      text = readFileSync(path, "utf8");
-    } catch {
+    const { lines, offset, missing } = readJsonlFromOffset(path, follow.offset);
+    if (missing) {
       this.checkSubagentDone(follow);
       return;
     }
-    if (text.length < follow.offset) follow.offset = 0;
-    if (text.length > follow.offset) follow.lastAdvance = Date.now();
-    const chunk = follow.pending + text.slice(follow.offset);
-    follow.offset = text.length;
-    const lastNl = chunk.lastIndexOf("\n");
-    if (lastNl < 0) {
-      follow.pending = chunk;
-      this.checkSubagentDone(follow);
-      return;
-    }
-    follow.pending = chunk.slice(lastNl + 1);
-    for (const line of chunk.slice(0, lastNl + 1).split("\n")) {
-      if (!line.trim()) continue;
+    if (offset > follow.offset) follow.lastAdvance = Date.now();
+    follow.offset = offset;
+    for (const line of lines) {
       let event;
       try {
         event = JSON.parse(line);
@@ -1055,16 +1166,17 @@ class GrokAgentProcess {
     }
   }
 
-  emitChildToolEnd(_follow, update) {
+  emitChildToolEnd(follow, update) {
     this.emit({
       type: "tool_execution_end",
       sessionKey: this.sessionKey,
       toolCallId: update.toolCallId,
       result: {
-        content: [{ type: "text", text: toolResultText(update.content) }],
+        content: [{ type: "text", text: grokToolOutputText(update) }],
         details: update.rawOutput ?? {},
       },
       isError: update.status === "failed",
+      parentToolUseId: follow.parentToolUseId,
     });
   }
 
@@ -1084,24 +1196,26 @@ class GrokAgentProcess {
         /* meta is written when the child finishes */
       }
     }
-    if (
-      !follow.turnCompleted &&
-      status !== "completed" &&
-      status !== "failed"
-    ) {
-      // A silent child is a dead child: without this bail runTurn waits on
-      // the drain forever and the session wedges on "running".
+    const failed = status === "failed";
+    const done = follow.turnCompleted || status === "completed" || failed;
+    if (!done) {
+      // A silent child is a dead child: without this bail the spawn card
+      // stays `running` and isHeldMainTool keeps hiding later parent tools.
       if (Date.now() - follow.lastAdvance < stallMs) return;
       this.finishSubagentFollow(follow, true);
       return;
     }
-    this.finishSubagentFollow(follow, status === "failed");
+    if (!failed && !this.readChildOutput(follow)) {
+      if (follow.outputWaitUntil === undefined)
+        follow.outputWaitUntil = Date.now() + outputWaitMs;
+      if (Date.now() < follow.outputWaitUntil) return;
+    }
+    this.finishSubagentFollow(follow, failed);
   }
 
   /** The child's official findings from output.json; "" when the file has
-   *  not landed yet (ponytail: turn_completed in the child stream can beat
-   *  the file to disk; the narration fallback still lands — add a retry
-   *  tick if that race is ever observed). */
+   *  not landed yet. checkSubagentDone retries for outputWaitMs after
+   *  turn_completed so a late write still wins over streamed chatter. */
   readChildOutput(follow) {
     if (!this.cwd || !this.sessionId) return "";
     try {
@@ -1158,8 +1272,8 @@ class GrokAgentProcess {
     if (this.subagentFollows.size === 0) {
       this.flushHeldParentText();
       const drained = this.followsDrained;
-      this.followsDrained = undefined;
-      drained?.();
+      this.followsDrained = [];
+      for (const resolve of drained) resolve();
     }
   }
 
@@ -1169,38 +1283,54 @@ class GrokAgentProcess {
       this.lastChildText,
     );
     this.parentHoldText = "";
-    if (!leftover) return;
-    if (this.turn) {
-      this.appendDelta(this.turn, "text", leftover);
-      return;
-    }
-    this.emit({
-      type: "message_update",
-      sessionKey: this.sessionKey,
-      streamKey: "grok-parent-handoff",
-      assistantMessageEvent: {
-        type: "text_delta",
-        contentIndex: 0,
-        delta: leftover,
-      },
-    });
-    this.emit({
-      type: "message_update",
-      sessionKey: this.sessionKey,
-      streamKey: "grok-parent-handoff",
-      assistantMessageEvent: {
-        type: "text_end",
-        contentIndex: 0,
-        content: leftover,
-      },
-    });
+    if (!leftover || !this.turn) return;
+    this.appendDelta(this.turn, "text", leftover);
   }
 
+  /** Wait for live subagent panes to drain before settling the parent turn.
+   *  Bounded: a follow whose child died, or whose artifacts stopped growing
+   *  before the pump saw a terminal state, never calls back — and this is
+   *  awaited *after* watchTurnCompletion's file timer is cleared, so an
+   *  unbounded wait left the turn open with no watchdog behind it. That is
+   *  the "grok is still thinking but the reply is already on disk, refresh
+   *  to see it" stall. A late settle beats a turn that never ends. */
   waitForSubagentFollows() {
     if (this.subagentFollows.size === 0) return Promise.resolve();
     return new Promise((resolve) => {
-      this.followsDrained = resolve;
+      let done = false;
+      const settle = () => {
+        if (done) return;
+        done = true;
+        clearTimeout(timer);
+        resolve();
+      };
+      const timer = setTimeout(() => {
+        // Close the panes too, or they keep the next turn's isBusy() true.
+        this.stopSubagentFollows();
+        settle();
+        // Twice the per-follow stall watchdog: this only ever fires when
+        // that watchdog itself failed to drain the pane.
+      }, stallMs * 2);
+      timer.unref?.();
+      this.followsDrained.push(settle);
     });
+  }
+
+  /** Send the next queued prompt only once nothing else is printing.
+   *  A follow-up flushed the instant ACP returned landed inside the still-
+   *  running spawn (and grok's idle handover), which scrambled the
+   *  transcript and printed the follow-up reply before its own user bubble
+   *  belonged there. */
+  flushQueueWhenIdle() {
+    if (this.queueIdleTimer) {
+      clearTimeout(this.queueIdleTimer);
+      this.queueIdleTimer = undefined;
+    }
+    this.queueIdleTimer = setTimeout(() => {
+      this.queueIdleTimer = undefined;
+      if (this.turn || this.subagentFollows.size > 0) return;
+      this.sendNextQueued();
+    }, queueIdleMs);
   }
 
   stopSubagentFollows() {
@@ -1228,6 +1358,7 @@ class GrokAgentProcess {
           error: revived.error ?? "Grok session is not running",
         };
     }
+    if (this.turn?.idle) this.finishIdleTurn();
     if (this.turn)
       return {
         ok: false,
@@ -1243,7 +1374,7 @@ class GrokAgentProcess {
     const promptBlocks = [
       {
         type: "text",
-        text: kind === "prompt" ? withClarifyPrefix(message) : message,
+        text: kind === "prompt" ? withGrokPrefix(message) : message,
       },
     ];
     for (const image of images ?? []) {
@@ -1301,8 +1432,16 @@ class GrokAgentProcess {
       openKind: undefined,
       openIndex: undefined,
       toolIndex: new Map(),
+      // The replay and idle turns carry this too; without it the
+      // turn_completed usage handler has nothing to write onto.
+      message: assistantMessage,
     };
     this.setStatus("working");
+    // grok journals turn_completed off the ACP stream. Idle turns already
+    // watched that file; a normal prompt that hung after the reply was on
+    // disk left the UI on "Grok is thinking" until a refresh re-read it.
+    this.watchTurnCompletion(this.turn);
+    const turn = this.turn;
 
     try {
       // The exit handler and stop() reject through turn.reject. Without this
@@ -1310,14 +1449,20 @@ class GrokAgentProcess {
       // the awaited prompt forever — the session stayed "running" and every
       // later prompt was queued behind a turn nobody was executing.
       const response = await new Promise((resolve, reject) => {
-        this.turn.reject = reject;
+        turn.reject = reject;
+        turn.resolve = resolve;
         this.connection
           .prompt({ sessionId: this.sessionId, prompt: promptBlocks })
-          .then(resolve, reject)
-          .finally(() => {
-            if (this.turn) this.turn.reject = undefined;
-          });
+          .then(
+            (value) => {
+              if (this.turn === turn) resolve(value);
+            },
+            (error) => {
+              if (this.turn === turn) reject(error);
+            },
+          );
       });
+      clearInterval(turn.fileTimer);
       this.closeOpenBlock(this.turn);
       assistantMessage.stopReason = response.stopReason;
       if (this.subagentFollows.size > 0) await this.waitForSubagentFollows();
@@ -1344,14 +1489,15 @@ class GrokAgentProcess {
       });
       this.messages.push(...turnMessages);
       this.turn = undefined;
-      this.lastChildText = "";
+      if (this.subagentFollows.size === 0) this.lastChildText = "";
       this.setStatus("ready");
       this.emit({ type: "agent_settled", sessionKey: this.sessionKey });
+      this.flushQueueWhenIdle();
       const state = await this.getState();
       this.emit({ type: "state", sessionKey: this.sessionKey, state });
-      this.sendNextQueued();
       return { ok: true, state };
     } catch (error) {
+      clearInterval(turn?.fileTimer);
       this.turn = undefined;
       this.stopSubagentFollows();
       const message = String(error?.message ?? error);
@@ -1365,7 +1511,7 @@ class GrokAgentProcess {
         this.emit({
           type: "notice",
           sessionKey: this.sessionKey,
-          message: `Grok turn failed: ${message}`,
+          message,
           tone: "error",
         });
       }
@@ -1383,6 +1529,7 @@ class GrokAgentProcess {
    *  from this side. Streamed live like any other turn so the handover
    *  narration reaches the main transcript without a page refresh. */
   startIdleTurn() {
+    if (this.opening || !this.sessionId) return;
     const assistantMessage = {
       role: "assistant",
       content: [],
@@ -1417,22 +1564,20 @@ class GrokAgentProcess {
     turn.stallTimer = setTimeout(() => {
       if (this.turn === turn) this.finishIdleTurn();
     }, stallMs);
-    this.watchIdleTurnFile(turn);
+    this.watchTurnCompletion(turn);
     this.setStatus("working");
   }
 
-  /** grok journals turn_completed with a non-ACP method, so the idle turn
-   *  never hears about its own completion through handleSessionUpdate — it
-   *  would sit open until the stall watchdog and every prompt typed in that
-   * window gets queued behind a turn nobody is executing. The session file
-   * is the ground truth: poll the journal for the completion line and close
-   * the turn within one tick. */
-  watchIdleTurnFile(turn) {
+  /** grok journals turn_completed with a non-ACP method, so neither an idle
+   *  reminder turn nor a hung `connection.prompt()` hears completion through
+   *  handleSessionUpdate. The session file is the ground truth: poll the
+   *  journal and close the turn within one tick. */
+  watchTurnCompletion(turn) {
     if (!this.cwd || !this.sessionId) return;
     const path = sessionUpdatesPath(this.cwd, this.sessionId);
     let offset = 0;
     try {
-      offset = readFileSync(path, "utf8").length;
+      offset = statSync(path).size;
     } catch {
       /* file appears once grok journals its first update */
     }
@@ -1441,19 +1586,9 @@ class GrokAgentProcess {
         clearInterval(turn.fileTimer);
         return;
       }
-      let text = "";
-      try {
-        text = readFileSync(path, "utf8");
-      } catch {
-        return;
-      }
-      if (text.length <= offset) return;
-      const chunk = text.slice(offset);
-      const lastNl = chunk.lastIndexOf("\n");
-      if (lastNl < 0) return;
-      offset += lastNl + 1;
-      for (const line of chunk.slice(0, lastNl + 1).split("\n")) {
-        if (!line.trim()) continue;
+      const { lines, offset: next } = readJsonlFromOffset(path, offset);
+      offset = next;
+      for (const line of lines) {
         let event;
         try {
           event = JSON.parse(line);
@@ -1462,7 +1597,10 @@ class GrokAgentProcess {
         }
         if (event.params?.update?.sessionUpdate === "turn_completed") {
           clearInterval(turn.fileTimer);
-          this.finishIdleTurn();
+          if (event.params.update.usage)
+            turn.message.usage = usageFrom(event.params.update.usage);
+          if (turn.idle) this.finishIdleTurn();
+          else turn.resolve?.({ stopReason: "end_turn" });
           return;
         }
       }
@@ -1490,12 +1628,12 @@ class GrokAgentProcess {
     this.messages.push(turn.message);
     this.setStatus("ready");
     this.emit({ type: "agent_settled", sessionKey: this.sessionKey });
+    this.flushQueueWhenIdle();
     void this.getState()
       .then((state) =>
         this.emit({ type: "state", sessionKey: this.sessionKey, state }),
       )
       .catch(() => {});
-    this.sendNextQueued();
   }
 
   steer(message, images) {
@@ -1508,78 +1646,6 @@ class GrokAgentProcess {
   // per-backend branch.
   followUp(message, images) {
     return this.runTurn("follow_up", message, images);
-  }
-
-  queueSnapshot() {
-    return this.queuedMessages.map(({ id, message, at }) => ({
-      id,
-      message,
-      at,
-    }));
-  }
-
-  emitQueue() {
-    this.emit({
-      type: "queue_updated",
-      sessionKey: this.sessionKey,
-      queued: this.queueSnapshot(),
-    });
-  }
-
-  /** Hold the message until the running turn settles; send now if idle. */
-  enqueue(message, images) {
-    const text = String(message ?? "");
-    if (!text.trim())
-      return Promise.resolve({ ok: false, error: "Empty message" });
-    if (this.turn) return this.queueMessage(text, images);
-    return this.prompt(text, images).then((result) =>
-      result.ok ? { ok: true, data: { queued: false } } : result,
-    );
-  }
-
-  queueMessage(text, images) {
-    this.queueSeq += 1;
-    this.queuedMessages.push({
-      id: `q-${Date.now()}-${this.queueSeq}`,
-      message: text,
-      images: Array.isArray(images) ? images : [],
-      at: Date.now(),
-    });
-    this.emitQueue();
-    return Promise.resolve({
-      ok: true,
-      data: { queued: true, position: this.queuedMessages.length },
-    });
-  }
-
-  cancelQueued(id) {
-    const before = this.queuedMessages.length;
-    this.queuedMessages = id
-      ? this.queuedMessages.filter((entry) => entry.id !== id)
-      : [];
-    if (this.queuedMessages.length === before)
-      return { ok: false, error: "That message is no longer queued" };
-    this.emitQueue();
-    return {
-      ok: true,
-      data: { cancelled: before - this.queuedMessages.length },
-    };
-  }
-
-  sendNextQueued() {
-    const next = this.queuedMessages.shift();
-    if (!next) return;
-    this.emitQueue();
-    this.prompt(next.message, next.images.length ? next.images : undefined)
-      .then((result) => {
-        if (result.ok) return;
-        this.queuedMessages.unshift(next);
-        this.emitQueue();
-      })
-      .catch(() => {
-        this.queuedMessages.unshift(next);
-        this.emitQueue();
-      });
   }
 
   // grok's own slash commands (compact, always-approve, context, ...) are
@@ -1613,6 +1679,7 @@ class GrokAgentProcess {
     // Cancel the ACP turn AND the jsonl follows. connection.cancel alone
     // left spawn_subagent `running`, so isHeldMainTool kept hiding later
     // parent tools after the user hit interrupt.
+    this.holdQueue();
     this.stopSubagentFollows();
     if (!this.connection || !this.sessionId) return { ok: true };
     try {
@@ -1671,22 +1738,45 @@ class GrokAgentProcess {
 
   // Branching a conversation (pi's fork/truncate) needs either a documented
   // ACP extension for it or reverse-engineering grok's own rewind_points
-  // format -- grok's ACP init response does advertise a `cancelRewind`
-  // capability, suggesting something exists, but its shape isn't confirmed.
-  // Fail clearly rather than guess at a protocol extension and risk silently
-  // corrupting session state.
+  // format. grok's ACP exposes _x.ai/session/fork (the extension the vscode
+  // integration uses): it copies the whole conversation into a new session
+  // id. targetPromptIndex exists on the wire but truncates chat_history
+  // without truncating updates.jsonl on some builds, so a partial fork would
+  // replay a conversation the model has forgotten — omit it.
+  // ponytail: full-history fork only; pass targetPromptIndex when grok's
+  // store keeps both journals consistent.
   async forkAt() {
-    return {
-      ok: false,
-      error: "Forking a Grok conversation isn't supported yet.",
-    };
+    if (!this.sessionId)
+      return { ok: false, error: "No Grok session is available to fork." };
+    try {
+      const forked = await this.connection.extMethod("x.ai/session/fork", {
+        sourceSessionId: this.sessionId,
+        sourceCwd: this.cwd,
+        newCwd: this.cwd,
+      });
+      const newSessionId = forked?.newSessionId;
+      if (!newSessionId) throw new Error("fork returned no new session id");
+      return {
+        ok: true,
+        restored: true,
+        forkCwd: this.cwd,
+        state: {
+          ...(await this.getState()),
+          sessionId: newSessionId,
+          sessionFile: sessionFilePathFor(this.cwd, newSessionId),
+        },
+        messages: this.messages,
+      };
+    } catch (error) {
+      return { ok: false, error: String(error?.message ?? error) };
+    }
   }
 
   async truncateAt() {
-    return {
-      ok: false,
-      error: "Rewinding a Grok conversation isn't supported yet.",
-    };
+    return unsupported(
+      "truncate",
+      "Rewinding a Grok conversation isn't supported yet.",
+    );
   }
 
   async getState() {
@@ -1719,9 +1809,9 @@ class GrokAgentProcess {
     if (this.modelCatalog) return this.modelCatalog;
     const token = await readGrokToken();
     if (!token) throw new Error("Not logged into grok-cli");
-    const response = await fetch(`${PROXY_BASE}/models`, {
+    const response = await fetch(`${GROK_PROXY_BASE}/models`, {
       headers: {
-        ...PROXY_HEADERS,
+        ...GROK_PROXY_HEADERS,
         Authorization: `Bearer ${token}`,
         Accept: "application/json",
       },
@@ -1839,7 +1929,7 @@ class GrokAgentProcess {
       return this.usageCache.result;
     }
     if (this.usageRequest) return this.usageRequest;
-    this.usageRequest = this.loadUsage()
+    this.usageRequest = loadGrokUsage()
       .then((result) => {
         if (result?.ok) this.usageCache = { at: Date.now(), result };
         return result;
@@ -1848,55 +1938,6 @@ class GrokAgentProcess {
         this.usageRequest = undefined;
       });
     return this.usageRequest;
-  }
-
-  async loadUsage() {
-    try {
-      const token = await readGrokToken();
-      if (!token)
-        return {
-          ok: true,
-          usage: { available: false, provider: "Grok", windows: [] },
-        };
-      const response = await fetch(`${PROXY_BASE}/billing?format=credits`, {
-        headers: {
-          Accept: "application/json",
-          Authorization: `Bearer ${token}`,
-          ...PROXY_HEADERS,
-        },
-        signal: AbortSignal.timeout(10_000),
-      });
-      if (!response.ok)
-        throw new Error(`Grok usage returned ${response.status}`);
-      const payload = await response.json();
-      const config = payload?.config ?? payload;
-      const usedPercent = Number(config?.creditUsagePercent);
-      const resetAt =
-        Date.parse(
-          String(config?.currentPeriod?.end ?? config?.billingPeriodEnd ?? ""),
-        ) / 1000;
-      const resetsAt = formatResetTime(resetAt);
-      const windows = Number.isFinite(usedPercent)
-        ? [
-            {
-              label: "Current week",
-              usedPercent,
-              ...(resetsAt ? { resetsAt } : {}),
-            },
-          ]
-        : [];
-      return {
-        ok: true,
-        usage: {
-          available: windows.length > 0,
-          provider: "Grok",
-          windows,
-          updatedAt: new Date().toISOString(),
-        },
-      };
-    } catch (error) {
-      return { ok: false, error: String(error?.message ?? error) };
-    }
   }
 
   killChild() {
@@ -1924,7 +1965,12 @@ class GrokAgentProcess {
     this.status = "stopped";
     this.turn = undefined;
     this.replayMode = undefined;
+    if (this.queueIdleTimer) {
+      clearTimeout(this.queueIdleTimer);
+      this.queueIdleTimer = undefined;
+    }
     this.queuedMessages = [];
+    this.emitQueue();
     this.stopSubagentFollows();
     this.killChild();
     // Reject after clearing: the exit handler only rejects a turn it can
@@ -1948,27 +1994,8 @@ class GrokAgentProcess {
   }
 }
 
-export class GrokAgentPool {
+export class GrokAgentPool extends AgentPool {
   constructor() {
-    this.agents = new Map();
-  }
-
-  get(sessionKey) {
-    let agent = this.agents.get(sessionKey);
-    if (!agent) {
-      agent = new GrokAgentProcess(sessionKey);
-      this.agents.set(sessionKey, agent);
-    }
-    return agent;
-  }
-
-  stop(sessionKey) {
-    if (sessionKey) {
-      this.agents.get(sessionKey)?.stop();
-      this.agents.delete(sessionKey);
-      return;
-    }
-    for (const agent of this.agents.values()) agent.stop();
-    this.agents.clear();
+    super((sessionKey) => new GrokAgentProcess(sessionKey));
   }
 }

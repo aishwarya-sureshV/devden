@@ -123,3 +123,54 @@ test("replay keeps the restart-resume notice in front of the live turn", () => {
     "the resume banner must survive a reload",
   );
 });
+
+/**
+ * The cache-miss summary is published after the turn settles so it sits at the
+ * bottom of the final output -- which puts it outside every replay window,
+ * since those start after the last agent_end. restoreLiveTurn then re-reads the
+ * session file, and a notice was never in it. It must not vanish on refresh.
+ */
+test("a settled run's trailing notice survives the session-file re-read", () => {
+  const entries = [
+    { id: "s", timestamp: 1, source: "pi", payload: { type: "agent_start" } },
+    { id: "e", timestamp: 2, source: "pi", payload: { type: "agent_end" } },
+    {
+      id: "z",
+      timestamp: 3,
+      source: "pi",
+      payload: { type: "agent_settled" },
+    },
+    {
+      id: "n",
+      timestamp: 4,
+      source: "server",
+      payload: {
+        type: "notice",
+        message: "Cache miss — 21,803 tokens re-billed",
+      },
+    },
+  ] as unknown as Parameters<Timeline["replayLiveTurn"]>[0];
+
+  const state: SessionState = {
+    model: null,
+    thinkingLevel: "off",
+    isStreaming: false,
+    sessionId: "s",
+    sessionFile: "/tmp/fake.jsonl",
+    messageCount: 1,
+    pendingMessageCount: 0,
+  };
+  const timeline = new Timeline("conv-settled");
+  timeline.setState(state);
+  assert.equal(timeline.replayLiveTurn(entries), "settled");
+
+  // What restoreLiveTurn does next: re-read the session file and re-hydrate,
+  // which rebuilds items from scratch.
+  timeline.hydrate([{ role: "user", content: "hello", timestamp: 1 }], state);
+
+  const last = timeline.items.at(-1);
+  assert.ok(
+    last?.kind === "notice" && last.text.includes("Cache miss"),
+    "the cache-miss notice must still be the last item after re-hydrating",
+  );
+});

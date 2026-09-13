@@ -13,6 +13,18 @@ mkdirSync(join(home, ".pi", "agent"), { recursive: true });
 const STATE = join(home, ".pi", "agent", "pi-web-inflight.json");
 const inflight = await import("./inflight.js");
 
+test("runningSessionPaths lists live session files and drops them on settle", () => {
+  inflight.noteTurnStarted({ sessionKey: "live", backend: "grok", cwd: home });
+  inflight.noteTurnContext("live", {
+    sessionPath: join(home, "running.jsonl"),
+  });
+  assert.deepEqual([...inflight.runningSessionPaths()], [
+    join(home, "running.jsonl"),
+  ]);
+  inflight.noteTurnSettled("live");
+  assert.deepEqual([...inflight.runningSessionPaths()], []);
+});
+
 test("a settled turn leaves nothing to resume", () => {
   inflight.noteTurnStarted({ sessionKey: "k1", backend: "pi", cwd: home });
   inflight.noteTurnContext("k1", { sessionPath: join(home, "s.jsonl") });
@@ -107,4 +119,15 @@ test("takeInterruptedTurns keeps only the newest turn per session file", () => {
     inflight.takeInterruptedTurns().map((entry) => entry.sessionKey),
     ["b", "c"],
   );
+});
+
+test("a rekeyed turn settles on the key that adopted it", () => {
+  inflight.noteTurnStarted({ sessionKey: "old", backend: "grok", cwd: home });
+  inflight.noteTurnContext("old", { sessionPath: join(home, "rekey.jsonl") });
+  inflight.rekeySession("old", "new");
+  // The abandoned key is gone, so a settle on it no longer misses.
+  inflight.noteTurnSettled("old");
+  assert.equal(JSON.parse(readFileSync(STATE, "utf8")).length, 1);
+  inflight.noteTurnSettled("new");
+  assert.deepEqual(JSON.parse(readFileSync(STATE, "utf8")), []);
 });

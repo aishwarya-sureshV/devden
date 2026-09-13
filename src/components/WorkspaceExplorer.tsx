@@ -1,11 +1,19 @@
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from 'react'
+import { lazy, Suspense, useEffect, useMemo, useState, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from 'react'
 import { api, type WorkspaceEntry, type WorkspaceFileResponse } from '../lib/api'
 import { highlightCode } from '../lib/highlight'
 import { langFromPath } from '../lib/toolCards'
+import type { EditorNavigation } from './CodeEditor'
+import { EditorPalette, type PaletteMode, type PaletteResult } from './EditorPalette'
 import { CopyButton } from './CopyButton'
 import { IconCode, IconExpand, IconFile, IconFolder, IconPanel, IconRefresh, IconSearch } from './icons'
 
 export type WorkspacePlacement = 'side' | 'full'
+
+// CodeMirror is the heaviest thing this app can load, and most sessions never
+// open a file. Keep it out of the entry chunk.
+const CodeEditor = lazy(() =>
+  import('./CodeEditor').then((module) => ({ default: module.CodeEditor })),
+)
 
 const HEAVY_DIRS = new Set([
   'node_modules', '.git', 'dist', 'build', '.next', 'coverage', 'DerivedData',
@@ -89,7 +97,8 @@ export function WorkspaceExplorer({
   const [renaming, setRenaming] = useState<string | null>(null)
   const [apps, setApps] = useState<{ id: string; label: string }[]>([{ id: 'default', label: 'Default App' }])
   const [notice, setNotice] = useState<string | null>(null)
-  const editorRef = useRef<HTMLTextAreaElement | null>(null)
+  const [palette, setPalette] = useState<{ mode: PaletteMode; results?: PaletteResult[]; title?: string } | null>(null)
+  const [navigation, setNavigation] = useState<EditorNavigation | null>(null)
   const [panelWidth, setPanelWidth] = useState(() => {
     const stored = Number(localStorage.getItem('pi-web.workspace-width'))
     return Number.isFinite(stored) ? Math.min(860, Math.max(360, stored)) : 560
@@ -136,15 +145,31 @@ export function WorkspaceExplorer({
   useEffect(() => { void api.workspaceApps().then((result) => { if (result.ok) setApps(result.apps) }) }, [])
 
   useEffect(() => {
+    // The panel keeps its hooks running while hidden (it renders null), so the
+    // shortcuts have to be gated explicitly or ⌘P would swallow Print app-wide.
+    if (!visible) return
     const onKey = (event: KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'p' && !event.altKey) {
+        event.preventDefault()
+        setPalette({ mode: 'files' })
+        return
+      }
+      if ((event.metaKey || event.ctrlKey) && event.shiftKey && event.key.toLowerCase() === 'f') {
+        event.preventDefault()
+        setPalette({ mode: 'grep' })
+        return
+      }
       if (event.key !== 'Escape') return
+      // Unwind one layer at a time; Escape only closes the explorer once
+      // nothing is stacked on top of it.
+      if (palette) { setPalette(null); return }
       if (menu) { setMenu(null); return }
       if (renaming) { setRenaming(null); return }
       onClose()
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [menu, onClose, renaming])
+  }, [menu, onClose, palette, renaming, visible])
 
   const toggleDirectory = (path: string) => {
     setExpanded((current) => {
@@ -158,7 +183,7 @@ export function WorkspaceExplorer({
     })
   }
 
-  const openFile = async (path: string) => {
+  const openFile = async (path: string, jumpTo?: { line: number; column?: number }) => {
     if (dirty && !window.confirm('Discard unsaved changes?')) return
     setSelected(path)
     setMenu(null)
@@ -168,6 +193,33 @@ export function WorkspaceExplorer({
     setFileLoading(false)
     setFile(result)
     setDraft(result.content ?? '')
+    // The token is what makes a second jump to the same line register.
+    setNavigation(jumpTo ? { ...jumpTo, token: Date.now() } : null)
+  }
+
+  const pickResult = (result: PaletteResult) => {
+    setPalette(null)
+    const jumpTo = result.line === undefined ? undefined : { line: result.line, column: result.column }
+    if (result.path === selected && jumpTo) setNavigation({ ...jumpTo, token: Date.now() })
+    else void openFile(result.path, jumpTo)
+  }
+
+  /**
+   * Cmd-click / F12 on a symbol. One hit jumps straight there; several open the
+   * palette to choose from, because a grep cannot tell same-named symbols apart.
+   */
+  const jumpToDefinition = async (symbol: string) => {
+    const result = await api.workspaceDefinition(root, symbol)
+    const matches = result.ok ? (result.matches ?? []) : []
+    if (!matches.length) {
+      showNotice(result.error ?? `No definition found for ${symbol}.`)
+      return
+    }
+    if (matches.length === 1) {
+      pickResult(matches[0])
+      return
+    }
+    setPalette({ mode: 'results', results: matches, title: `${matches.length} definitions of ${symbol}` })
   }
 
   const saveFile = async () => {
@@ -413,6 +465,7 @@ export function WorkspaceExplorer({
               <IconCode size={22} />
               <strong>Browse the project</strong>
               <p>Open a file to edit it, or double-click for Finder-style actions.</p>
+              <p>⌘P go to file · ⇧⌘F find in project · ⌘-click a symbol for its definition</p>
             </div>
           )}
           {selected && fileLoading && !file && <div className="workspace-explorer__status">Opening file…</div>}
@@ -437,6 +490,7 @@ export function WorkspaceExplorer({
                     {dirty ? ' · unsaved' : ''}
                   </span>
                 </div>
+                {canEdit && <span className="workspace-explorer__hint">⌘-click to jump</span>}
                 {canEdit && (
                   <button
                     type="button"
@@ -452,23 +506,16 @@ export function WorkspaceExplorer({
               {file.truncated && <div className="workspace-explorer__notice">Showing the first 1 MB of this file. Editing is disabled.</div>}
               {saveError && <div className="workspace-explorer__error" role="alert">{saveError}</div>}
               {canEdit ? (
-                <div className="workspace-code-editor">
-                  <pre className="workspace-code-editor__highlight" aria-hidden="true"><code>{highlightCode(`${draft}\n`, language)}</code></pre>
-                  <textarea
-                    ref={editorRef}
+                <Suspense fallback={<div className="workspace-explorer__status">Loading editor…</div>}>
+                  <CodeEditor
+                    path={file.path ?? selected}
                     value={draft}
-                    spellCheck={false}
-                    wrap="off"
-                    aria-label={`Edit ${file.name}`}
-                    onChange={(event) => setDraft(event.target.value)}
-                    onKeyDown={(event) => {
-                      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 's') {
-                        event.preventDefault()
-                        void saveFile()
-                      }
-                    }}
+                    navigation={navigation}
+                    onChange={setDraft}
+                    onSave={() => void saveFile()}
+                    onDefinition={(symbol) => void jumpToDefinition(symbol)}
                   />
-                </div>
+                </Suspense>
               ) : (
                 <div className="workspace-explorer__code">
                   <pre><code>{highlightCode(file.content, language)}</code></pre>
@@ -480,6 +527,17 @@ export function WorkspaceExplorer({
       </div>
 
       {notice && <div className="workspace-explorer__toast" role="status">{notice}</div>}
+
+      {palette && (
+        <EditorPalette
+          root={root}
+          mode={palette.mode}
+          results={palette.results}
+          title={palette.title}
+          onPick={pickResult}
+          onClose={() => setPalette(null)}
+        />
+      )}
 
       {menu && (
         <FileMenu

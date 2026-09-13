@@ -20,17 +20,6 @@ function usageWindowLabel(seconds) {
     : `${hours} hour limit`;
 }
 
-function formatResetTime(epochSeconds) {
-  if (!Number.isFinite(epochSeconds)) return undefined;
-  return new Intl.DateTimeFormat("en-US", {
-    month: "short",
-    day: "numeric",
-    hour: "numeric",
-    minute: "2-digit",
-    timeZoneName: "short",
-  }).format(new Date(epochSeconds * 1000));
-}
-
 /**
  * The usage panel's shape, from Codex's rate limits. `modelId` only picks
  * which limit bucket applies -- Spark models bill against their own.
@@ -57,8 +46,8 @@ export async function loadCodexUsage(modelId) {
       .map((window) => ({
         label: usageWindowLabel(Number(window.windowDurationMins ?? 0) * 60),
         usedPercent: Number(window.usedPercent ?? 0),
-        ...(formatResetTime(Number(window.resetsAt))
-          ? { resetsAt: formatResetTime(Number(window.resetsAt)) }
+        ...(Number.isFinite(Number(window.resetsAt))
+          ? { resetsAt: Number(window.resetsAt) * 1000 }
           : {}),
       }));
     return {

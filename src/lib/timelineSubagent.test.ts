@@ -56,6 +56,34 @@ test("subagent text is tagged so it can leave the main transcript", () => {
   assert.equal(runs[0].status, "running");
 });
 
+test("a later start fills args on a stream-minted tool", () => {
+  const timeline = new Timeline("conv-args");
+  timeline.handle(
+    event({
+      type: "tool_execution_start",
+      toolCallId: "bash-1",
+      toolName: "Bash",
+      args: {},
+      parentToolUseId: "task-1",
+    }),
+  );
+  timeline.handle(
+    event({
+      type: "tool_execution_start",
+      toolCallId: "bash-1",
+      toolName: "Bash",
+      args: { command: "ls" },
+      parentToolUseId: "task-1",
+    }),
+  );
+  const nested = timeline.items.find(
+    (item) => item.kind === "tool" && item.id === "bash-1",
+  );
+  assert.ok(nested && nested.kind === "tool");
+  assert.equal(nested.args.command, "ls");
+  assert.equal(nested.parentToolUseId, "task-1");
+});
+
 test("a later nested start adopts parentToolUseId on an existing tool", () => {
   const timeline = new Timeline("conv-adopt");
   timeline.handle(
@@ -117,6 +145,92 @@ test("hydrate keeps parentToolUseId on nested history", () => {
   const text = timeline.items.find((item) => item.kind === "assistant");
   assert.ok(text);
   assert.equal(text.parentToolUseId, "task-1");
+});
+
+test("a live user message_start appears only when it is new", () => {
+  const timeline = new Timeline("conv-queue");
+  timeline.appendUser("already shown");
+  timeline.handle(
+    event({
+      type: "message_start",
+      message: {
+        role: "user",
+        content: [{ type: "text", text: "already shown" }],
+      },
+    }),
+  );
+  assert.equal(
+    timeline.items.filter((item) => item.kind === "user").length,
+    1,
+  );
+  timeline.handle(
+    event({
+      type: "message_start",
+      message: {
+        role: "user",
+        content: [{ type: "text", text: "fgdfgds" }],
+      },
+    }),
+  );
+  const users = timeline.items.filter((item) => item.kind === "user");
+  assert.equal(users.length, 2);
+  assert.equal(users[1]?.kind === "user" ? users[1].text : "", "fgdfgds");
+});
+
+test("attachment display and outbound user texts stay one bubble", () => {
+  const timeline = new Timeline("conv-attach");
+  const display =
+    "claude keeps giving me this error.\n\nAttachments: Screenshot.png";
+  const outbound =
+    "claude keeps giving me this error.\n\nAttached files:\n- Screenshot.png (already attached inline — open this path only to edit the file, never to view it): /tmp/Screenshot.png";
+  timeline.appendUser(display);
+  timeline.handle(
+    event({
+      type: "message_start",
+      message: {
+        role: "user",
+        content: [{ type: "text", text: outbound }],
+      },
+    }),
+  );
+  const users = timeline.items.filter((item) => item.kind === "user");
+  assert.equal(users.length, 1);
+  assert.equal(users[0]?.kind === "user" ? users[0].text : "", display);
+});
+
+test("a queued follow-up still appears after an attachment turn", () => {
+  const timeline = new Timeline("conv-q-attach");
+  timeline.appendUser("first\n\nAttachments: a.png");
+  timeline.handle(
+    event({
+      type: "message_update",
+      assistantMessageEvent: {
+        type: "text_delta",
+        contentIndex: 0,
+        delta: "ok",
+      },
+    }),
+  );
+  timeline.handle(
+    event({
+      type: "message_start",
+      message: {
+        role: "user",
+        content: [
+          {
+            type: "text",
+            text: "second\n\nAttached files:\n- b.png: /tmp/b.png",
+          },
+        ],
+      },
+    }),
+  );
+  const users = timeline.items.filter((item) => item.kind === "user");
+  assert.equal(users.length, 2);
+  assert.equal(
+    users[1]?.kind === "user" ? users[1].text : "",
+    "second\n\nAttached files:\n- b.png: /tmp/b.png",
+  );
 });
 
 test("a parentToolUseId arriving on a later delta still tags the block", () => {

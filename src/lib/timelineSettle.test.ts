@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { Timeline } from "./timeline.ts";
+import { persistedTurnLooksSettled, Timeline } from "./timeline.ts";
 import type { AgentEvent, SessionState } from "./api.ts";
 
 const state = (over: Partial<SessionState> = {}): SessionState => ({
@@ -112,6 +112,28 @@ test("a backend that stops mid-turn ends the run instead of spinning", () => {
       (item) => item.kind === "notice" && item.tone === "error",
     ),
     "the user must be told the backend stopped before answering",
+  );
+});
+
+test("a journal that still ends on tools is not a settled turn", () => {
+  assert.equal(
+    persistedTurnLooksSettled([
+      { role: "user", content: "fix the dot" },
+      { role: "assistant", content: [{ type: "text", text: "" }] },
+      { role: "toolResult", content: "ok" },
+    ]),
+    false,
+  );
+  assert.equal(
+    persistedTurnLooksSettled([
+      { role: "user", content: "fix the dot" },
+      { role: "assistant", content: "done" },
+    ]),
+    true,
+  );
+  assert.equal(
+    persistedTurnLooksSettled([{ role: "user", content: "fix the dot" }]),
+    false,
   );
 });
 

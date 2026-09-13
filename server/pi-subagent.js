@@ -20,9 +20,17 @@
  * still running — so tailing it streams the child's tools and narration live,
  * the same way grok-agent.js follows a child session's updates.jsonl.
  */
-import { existsSync, readFileSync, readdirSync } from "node:fs";
+import {
+  closeSync,
+  existsSync,
+  openSync,
+  readFileSync,
+  readSync,
+  readdirSync,
+  statSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 /** The pi-subagents spawn tool. */
 export function isPiSubagentTool(name) {
@@ -115,6 +123,75 @@ export function receiptTextOf(result) {
 const LIVE_STATES = new Set(["queued", "running", "paused"]);
 const OK_STATES = new Set(["complete", "partial"]);
 
+/**
+ * The run that does the real work behind a blocking workflow wrapper.
+ *
+ * A spawn lays down *two* run directories: the wrapper (`mode: "workflow"`),
+ * which reports `complete` about a second after it starts, and the child
+ * (`mode: "single"`, `parentWorkflowRunId` pointing back at the wrapper),
+ * which is the one that actually runs for minutes. Both name the same
+ * session file, so a follow bound to the wrapper still streams the work —
+ * but it read the wrapper's `complete` as the run being over and announced
+ * the handover while the child was barely started.
+ *
+ * The child is written as a sibling of the wrapper, so its own directory is
+ * where to look.
+ */
+export function childRunDir(status, dir) {
+  const runId = String(status?.runId ?? "");
+  if (!runId || String(status?.mode ?? "") !== "workflow") return "";
+  let names = [];
+  try {
+    names = readdirSync(dirname(dir));
+  } catch {
+    return "";
+  }
+  for (const name of names) {
+    if (name.startsWith(".")) continue;
+    const candidate = join(dirname(dir), name);
+    if (candidate === dir) continue;
+    try {
+      const child = JSON.parse(
+        readFileSync(join(candidate, "status.json"), "utf8"),
+      );
+      if (String(child?.parentWorkflowRunId ?? "") === runId) return candidate;
+    } catch {
+      // Not a run directory, or its status has not landed yet.
+    }
+  }
+  return "";
+}
+
+/**
+ * The run's control channel: why a child has gone quiet.
+ *
+ * `events.jsonl` carries `subagent.control` rows whose inner event says what
+ * the runner noticed — `needs_attention` when the child is blocked on a
+ * supervisor reply and cannot proceed on its own, `active_long_running` when
+ * it is merely slow. Only the blocked one is worth interrupting for: without
+ * it the run looks like it is thinking, when really nothing will happen
+ * until the parent answers.
+ */
+export function controlNotices(chunk) {
+  const notices = [];
+  for (const line of String(chunk ?? "").split("\n")) {
+    if (!line.trim()) continue;
+    let row;
+    try {
+      row = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (row?.type !== "subagent.control") continue;
+    const event = row.event ?? {};
+    if (event.type !== "needs_attention") continue;
+    const agent = String(event.agent ?? "subagent");
+    const message = String(event.message ?? "needs attention");
+    notices.push(message.startsWith(agent) ? message : `${agent}: ${message}`);
+  }
+  return notices;
+}
+
 /** undefined while the run is still going. */
 export function statusTerminal(status) {
   const state = String(status?.state ?? "");
@@ -134,18 +211,38 @@ export function statusTerminal(status) {
  */
 export function childSessionEvents(contents, messagesBefore, streamKey, parentToolUseId, textIndex = 0) {
   const messages = [];
+  let forkedAt = "";
   for (const line of String(contents ?? "").split("\n")) {
     if (!line.trim()) continue;
     try {
       const entry = JSON.parse(line);
+      // A run started from the parent's session inherits the parent's whole
+      // history. The child's file opens with a `session` header naming the
+      // session it forked from, and every inherited message predates that
+      // header — replaying them put the *parent's* own narration ("I'll
+      // spawn a worker subagent…") in the subagent panel, as if the child
+      // had said it.
+      if (entry?.type === "session" && !forkedAt && entry.parentSession) {
+        forkedAt = String(entry.timestamp ?? "");
+      }
       if (entry?.type === "message" && entry.message) messages.push(entry.message);
     } catch {
       // A torn trailing line; the next tick re-reads the file whole.
     }
   }
+  // The header's timestamp is ISO-8601; a message's own is epoch millis. A
+  // message without a readable one is kept: dropping it is worse than
+  // showing it.
+  const forkedAtMs = forkedAt ? Date.parse(forkedAt) : NaN;
+  const own = Number.isFinite(forkedAtMs)
+    ? messages.filter((message) => {
+        const at = Number(message?.timestamp);
+        return !Number.isFinite(at) || at >= forkedAtMs;
+      })
+    : messages;
   const events = [];
   let index = textIndex;
-  for (const message of messages.slice(messagesBefore)) {
+  for (const message of own.slice(messagesBefore)) {
     const role = String(message?.role ?? "");
     if (role === "assistant") {
       for (const part of message.content ?? []) {
@@ -179,7 +276,7 @@ export function childSessionEvents(contents, messagesBefore, streamKey, parentTo
       });
     }
   }
-  return { events, messagesSeen: messages.length, textIndex: index };
+  return { events, messagesSeen: own.length, textIndex: index };
 }
 
 /** The child's findings: the last thing it said. Falls back to the caller's
@@ -236,6 +333,12 @@ export class PiSubagentFollows {
 
   get size() {
     return this.follows.size + this.pending.length;
+  }
+
+  /** True while a run for this spawn is being followed — its terminal
+   *  tool_execution_end is not out yet, whichever path armed the follow. */
+  isFollowing(parentToolUseId) {
+    return this.follows.has(parentToolUseId);
   }
 
   /**
@@ -313,6 +416,8 @@ export class PiSubagentFollows {
       receiptText: String(receiptText ?? ""),
       files: new Map(),
       textIndex: 0,
+      eventsOffset: 0,
+      notices: new Set(),
       terminalAt: undefined,
       emittedAny: false,
       lastFindings: "",
@@ -354,6 +459,19 @@ export class PiSubagentFollows {
       this.checkStall(follow);
       return;
     }
+    // The wrapper is terminal within a second of starting; the run that
+    // matters is the child it launched. Hand the follow over to it as soon
+    // as it exists, so terminal means *the work* is done.
+    const child = childRunDir(status, follow.asyncDir);
+    if (child && child !== follow.asyncDir) {
+      this.claimed.add(child);
+      follow.asyncDir = child;
+      follow.terminalAt = undefined;
+      follow.eventsOffset = 0; // a different run's log, read from its start
+      this.pump(follow);
+      return;
+    }
+    this.pumpControl(follow);
     for (const [index, step] of (status.steps ?? []).entries()) {
       this.pumpStep(follow, index, step);
     }
@@ -381,6 +499,46 @@ export class PiSubagentFollows {
   }
 
 
+
+  /** Publish anything new on the run's control channel. `events.jsonl` runs
+   *  to megabytes, so only the bytes added since last time are read, cut at
+   *  the last newline so a half-written row is left for the next tick. */
+  pumpControl(follow) {
+    const path = join(follow.asyncDir, "events.jsonl");
+    let size = 0;
+    try {
+      size = statSync(path).size;
+    } catch {
+      return; // the runner has not opened its log yet
+    }
+    if (size <= follow.eventsOffset) return;
+    let chunk = "";
+    let fd;
+    try {
+      fd = openSync(path, "r");
+      const length = size - follow.eventsOffset;
+      const buffer = Buffer.allocUnsafe(length);
+      const read = readSync(fd, buffer, 0, length, follow.eventsOffset);
+      const end = buffer.lastIndexOf(0x0a, read - 1);
+      if (end < 0) return; // no complete row yet
+      chunk = buffer.subarray(0, end + 1).toString("utf8");
+      follow.eventsOffset += end + 1;
+    } catch {
+      return;
+    } finally {
+      if (fd !== undefined) closeSync(fd);
+    }
+    for (const text of controlNotices(chunk)) {
+      if (follow.notices.has(text)) continue;
+      follow.notices.add(text);
+      this.emit({
+        type: "notice",
+        message: text,
+        tone: "warning",
+        parentToolUseId: follow.parentToolUseId,
+      });
+    }
+  }
 
   pumpStep(follow, index, step) {
     const sessionFile = step?.sessionFile;

@@ -6,7 +6,7 @@
  */
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -16,6 +16,7 @@ import {
   childSessionEvents,
   isPiSubagentTool,
   isSpawnArgs,
+  controlNotices,
   receiptTextOf,
   resolveAsyncDir,
   runIdOf,
@@ -115,6 +116,83 @@ describe("childSessionEvents", () => {
   it("reads the findings as the child's last word", () => {
     assert.match(childFindings(CHILD_SESSION), /Directory listing complete/);
     assert.equal(childFindings(""), "");
+  });
+
+  it("drops the parent history a forked run inherited", () => {
+    // A run started from the parent's session opens with a `session` header
+    // naming the session it forked from; the inherited messages predate it
+    // and are the *parent* talking, not the child.
+    const forked =
+      [
+        {
+          type: "session",
+          version: 3,
+          timestamp: "2026-09-10T16:15:30.666Z",
+          parentSession: "/sessions/parent.jsonl",
+        },
+        {
+          type: "message",
+          message: {
+            role: "assistant",
+            timestamp: Date.parse("2026-09-10T16:12:00.000Z"),
+            content: [{ type: "text", text: "I'll spawn a worker subagent." }],
+          },
+        },
+        {
+          type: "message",
+          message: {
+            role: "assistant",
+            timestamp: Date.parse("2026-09-10T16:15:35.758Z"),
+            content: [
+              { type: "text", text: "I'll start by exploring the project." },
+              { type: "toolCall", id: "call_ls", name: "ls", arguments: {} },
+            ],
+          },
+        },
+      ]
+        .map((entry) => JSON.stringify(entry))
+        .join("\n") + "\n";
+
+    const { events, messagesSeen } = childSessionEvents(forked, 0, "k", "spawn-1");
+    assert.equal(messagesSeen, 1);
+    const texts = events
+      .filter((event) => event.type === "message_update")
+      .map((event) => event.assistantMessageEvent.content);
+    assert.deepEqual(texts, ["I'll start by exploring the project."]);
+  });
+});
+
+describe("controlNotices", () => {
+  const row = (event) => JSON.stringify({ type: "subagent.control", event });
+
+  it("reports a child blocked on a supervisor reply", () => {
+    const chunk = [
+      row({
+        type: "needs_attention",
+        agent: "worker",
+        message: "worker is waiting for a supervisor reply",
+        reason: "supervisor_request",
+      }),
+      // Merely slow is not worth interrupting for.
+      row({
+        type: "active_long_running",
+        agent: "worker",
+        message: "worker is still active but long-running",
+      }),
+      JSON.stringify({ type: "subagent.workflow.started" }),
+      "{ torn line",
+    ].join("\n");
+    assert.deepEqual(controlNotices(chunk), [
+      "worker is waiting for a supervisor reply",
+    ]);
+  });
+
+  it("names the agent when the message does not", () => {
+    assert.deepEqual(
+      controlNotices(row({ type: "needs_attention", agent: "scout", message: "blocked" })),
+      ["scout: blocked"],
+    );
+    assert.deepEqual(controlNotices(""), []);
   });
 });
 
@@ -223,6 +301,118 @@ describe("PiSubagentFollows", () => {
       // The receipt is replaced by what the child actually found.
       assert.match(end.result.content[0].text, /Directory listing complete/);
     });
+  });
+
+  it("waits for the child a workflow wrapper launched, not the wrapper", async () => {
+    // The real topology: a spawn lays down two sibling run dirs. The wrapper
+    // says `complete` a second in; the child is still working.
+    const root = mkdtempSync(join(tmpdir(), "pi-web-subruns-"));
+    try {
+      const wrapper = join(root, "wrapper-run");
+      const child = join(root, "child-run");
+      mkdirSync(wrapper);
+      mkdirSync(child);
+      const sessionFile = join(root, "session.jsonl");
+      writeFileSync(sessionFile, CHILD_SESSION);
+      const steps = [{ workflowKey: "main", sessionFile }];
+      writeFileSync(
+        join(wrapper, "status.json"),
+        JSON.stringify({ state: "complete", mode: "workflow", runId: "w-1", steps }),
+      );
+      writeFileSync(
+        join(child, "status.json"),
+        JSON.stringify({
+          state: "running",
+          mode: "single",
+          runId: "c-1",
+          parentWorkflowRunId: "w-1",
+          steps,
+        }),
+      );
+
+      const emitted = [];
+      const follows = new PiSubagentFollows((event) => emitted.push(event));
+      setStallMsForTesting(5 * 60_000, 0, 0);
+      follows.start("spawn-1", wrapper, "receipt");
+      await new Promise((resolve) => setTimeout(resolve, 250));
+
+      // The wrapper is terminal, but nothing has been handed over: the child
+      // it launched is still running.
+      assert.ok(
+        !emitted.some(
+          (event) =>
+            event.type === "tool_execution_end" && event.toolCallId === "spawn-1",
+        ),
+        "the spawn must not be closed out while the child is still working",
+      );
+      assert.ok(
+        emitted.some((event) => event.parentToolUseId === "spawn-1"),
+        "the child's work still streams into the panel meanwhile",
+      );
+
+      // Now the child finishes.
+      writeFileSync(
+        join(child, "status.json"),
+        JSON.stringify({
+          state: "complete",
+          mode: "single",
+          runId: "c-1",
+          parentWorkflowRunId: "w-1",
+          steps,
+        }),
+      );
+      await follows.drained();
+      const end = emitted.at(-1);
+      assert.equal(end.type, "tool_execution_end");
+      assert.equal(end.toolCallId, "spawn-1");
+      assert.match(end.result.content[0].text, /Directory listing complete/);
+    } finally {
+      setStallMsForTesting(5 * 60_000, 20_000, 3_000);
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("surfaces a child blocked on a supervisor reply, tagged to its run", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-web-attention-"));
+    try {
+      const sessionFile = join(dir, "session.jsonl");
+      writeFileSync(sessionFile, CHILD_SESSION);
+      writeFileSync(
+        join(dir, "status.json"),
+        JSON.stringify({
+          state: "running",
+          steps: [{ workflowKey: "main", sessionFile }],
+        }),
+      );
+      writeFileSync(
+        join(dir, "events.jsonl"),
+        JSON.stringify({
+          type: "subagent.control",
+          event: {
+            type: "needs_attention",
+            agent: "worker",
+            message: "worker is waiting for a supervisor reply",
+          },
+        }) + "\n",
+      );
+
+      const emitted = [];
+      const follows = new PiSubagentFollows((event) => emitted.push(event));
+      follows.start("spawn-1", dir, "receipt");
+      await new Promise((resolve) => setTimeout(resolve, 250));
+
+      const notice = emitted.find((event) => event.type === "notice");
+      assert.ok(notice, "the block is reported rather than looking like work");
+      assert.equal(notice.tone, "warning");
+      assert.equal(notice.parentToolUseId, "spawn-1");
+      assert.match(notice.message, /waiting for a supervisor reply/);
+      // Re-read on every tick must not repeat it.
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      assert.equal(emitted.filter((e) => e.type === "notice").length, 1);
+      follows.stopAll();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("marks a failed run as an error", async () => {

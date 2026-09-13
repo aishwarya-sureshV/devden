@@ -110,15 +110,40 @@ const OP_LABEL: Record<GitOp, string> = {
  * without pushing, branch create/switch, and the stash list — lives behind the
  * one "Git" menu so the card stays a card. Renders nothing outside a git repo.
  */
+/** The folder a workspace path ends in, for the identity card. */
+function folderName(path: string): string {
+  return path.split("/").filter(Boolean).at(-1) ?? path;
+}
+
+/**
+ * `/Users/you/dev/pi-web` -> `~/dev`. Assumes the usual macOS/Linux home
+ * layout, the same assumption the sidebar's workspaceLabel already makes.
+ * ponytail: heuristic; pass the server's homedir if odd layouts matter.
+ */
+function homeRelative(path: string): string {
+  const parent = path.split("/").filter(Boolean).slice(0, -1).join("/");
+  const home = parent.match(/^(?:Users|home)\/[^/]+(?:\/(.*))?$/);
+  return home ? (home[1] ? `~/${home[1]}` : "~") : parent;
+}
+
 export function ChangesPanel({
   sessionKey,
   cwd,
   streaming,
+  compact = false,
+  onWorkspaceClick,
+  usageReset,
   onAskAgent,
 }: {
   sessionKey: string;
   cwd?: string;
   streaming: boolean;
+  /** Narrow split panes: +/− pill, no folder identity. */
+  compact?: boolean;
+  /** Opens the workspace folder browser; the identity card's only action. */
+  onWorkspaceClick?: () => void;
+  /** Quota reset time, shown at the right of the commit row when known. */
+  usageReset?: string | null;
   /** Drops a prompt in the composer; the user still presses send. */
   onAskAgent?: (prompt: string) => void;
 }) {
@@ -694,6 +719,9 @@ export function ChangesPanel({
   // Nothing to commit: collapse to a one-line repo bar so the Git menu (pull,
   // branches, stashes) stays reachable without a card's worth of chrome. The
   // post-push receipt keeps its ✓ heading until the next turn clears it.
+  // Dense panes already show the folder in the header, so a clean tree stays quiet.
+  if (changes.length === 0 && compact && !pushed && !inProgress)
+    return <>{failure}</>;
   if (changes.length === 0) {
     return (
       <section
@@ -753,7 +781,7 @@ export function ChangesPanel({
     <section
       className={`changes${inProgress ? " changes--conflict" : ""}${
         collapsed ? " changes--collapsed" : ""
-      }`}
+      }${compact ? " changes--dense" : ""}`}
       aria-label="Code changes"
     >
       <header className="changes__head" onClick={headerClick}>
@@ -764,13 +792,15 @@ export function ChangesPanel({
           onClick={toggleCollapsed}
         >
           <strong>Changes</strong>
-          <span className="changes__meta">
-            {data.branch}
-            {ahead > 0 && ` ↑${ahead}`}
-            {behind > 0 && ` ↓${behind}`} · {changes.length} file
-            {changes.length === 1 ? "" : "s"}
-            {stashes.length > 0 && ` · ${stashes.length} stashed`}
-          </span>
+          {!compact && (
+            <span className="changes__meta">
+              {data.branch}
+              {ahead > 0 && ` ↑${ahead}`}
+              {behind > 0 && ` ↓${behind}`} · {changes.length} file
+              {changes.length === 1 ? "" : "s"}
+              {stashes.length > 0 && ` · ${stashes.length} stashed`}
+            </span>
+          )}
           <span className="changes__diffstat">
             <b>+{totalAdd.toLocaleString()}</b>
             <i>−{totalDel.toLocaleString()}</i>
@@ -779,7 +809,13 @@ export function ChangesPanel({
             className={`changes__pill-chevron${collapsed ? " is-closed" : ""}`}
             aria-hidden
           >
-            <IconChevronDown size={14} />
+            {compact ? (
+              <span className="changes__files-count">
+                {changes.length}f ›
+              </span>
+            ) : (
+              <IconChevronDown size={14} />
+            )}
           </span>
         </button>
         {/* Git actions only matter on the expanded card. */}
@@ -854,6 +890,15 @@ export function ChangesPanel({
                               type="button"
                               disabled={revertingHunk !== null}
                               onClick={async () => {
+                                // The only action in this panel with nothing
+                                // behind it: uncommitted work, so no reflog
+                                // and no stash to recover from.
+                                if (
+                                  !window.confirm(
+                                    `Revert this hunk of ${change.path}? Those changes are gone for good.`,
+                                  )
+                                )
+                                  return;
                                 setRevertingHunk(id);
                                 try {
                                   const result = await api.revertHunk(
@@ -901,6 +946,27 @@ export function ChangesPanel({
       {conflictBar}
       {!inProgress && (
         <footer className="changes__foot">
+          {onWorkspaceClick && !compact && (
+            <button
+              type="button"
+              className="changes__workspace"
+              title={`${cwd ?? ""} — change workspace`}
+              onClick={onWorkspaceClick}
+            >
+              <span className="changes__workspace-dot" aria-hidden />
+              <span className="changes__workspace-stack">
+                <strong>{folderName(cwd ?? "")}</strong>
+                <em>
+                  {[cwd ? homeRelative(cwd) : "", data?.branch]
+                    .filter(Boolean)
+                    .join(" · ")}
+                </em>
+              </span>
+              <span className="changes__workspace-chev" aria-hidden>
+                <IconChevronDown size={12} />
+              </span>
+            </button>
+          )}
           <input
             type="text"
             className="changes__commit-input"
@@ -923,6 +989,7 @@ export function ChangesPanel({
           >
             {pushBusy ? "Pushing…" : `Push to GitHub (${included.length})`}
           </button>
+          {usageReset && <span className="changes__reset">{usageReset}</span>}
         </footer>
       )}
       {failure}

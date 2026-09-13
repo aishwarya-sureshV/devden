@@ -10,10 +10,13 @@ import {
   type DragEvent,
   type FormEvent,
   type KeyboardEvent,
+  type ReactNode,
 } from "react";
 import {
+  AGENT_BACKENDS,
   api,
   backendLabel,
+  backendMark,
   subscribeEvents,
   type ModelInfo,
   type ContextUsageReport,
@@ -22,15 +25,21 @@ import {
   type RewindFilesResult,
   type ProviderUsage,
   type SlashCommand,
+  type AgentBackend,
 } from "../lib/api";
-import { useStore, useTimeline, type ConversationTab } from "../lib/store";
+import {
+  useStore,
+  useTimeline,
+  BACKEND_DEFAULT_EFFORT,
+  type ConversationTab,
+} from "../lib/store";
+import { LIVE_TEXT_STALL_MS, shouldShowThinkingRow } from "../lib/thinkingRow";
 import { DeployButton } from "./DeployButton";
 import {
   contextualSessionTitle,
   isLocalCommandText,
 } from "../lib/sessionTitle";
 import {
-  CLAUDE_DEFAULT_EFFORT,
   CLAUDE_DEFAULT_MODEL,
   CLAUDE_EFFORT_LEVELS,
   CLAUDE_MODELS,
@@ -40,22 +49,34 @@ import {
   isModelIdentityQuestion,
   runtimeModelAnswer,
 } from "../lib/modelIdentity";
+import { capabilitiesFor } from "../lib/agentCapabilities";
 import {
   estimateContext,
   compactTokens,
   type ContextUsage,
 } from "../lib/sessionMetrics";
-import { exportFilename, timelineToMarkdown } from "../lib/exportSession";
+import {
+  exportFilename,
+  handoffPrompt,
+  timelineToMarkdown,
+  transcriptFilename,
+} from "../lib/exportSession";
 import type { TimelineItem } from "../lib/timeline";
 import {
   collectSubagentRuns,
   isHeldMainNarration,
   isHeldMainTool,
+  isSettledSpawnTool,
+  isSubagentChatter,
+  isSubagentCheckIn,
   isSubagentEcho,
+  isSubagentTool,
   isSubagentToolEcho,
+  type SubagentRun,
 } from "../lib/subagents";
 import { isAskMessage } from "../lib/askBlock";
 import { ToolCard } from "./ToolCard";
+import { SubagentCard, runningSubagentSummary } from "./SubagentCard";
 import { SubagentPanel } from "./SubagentPanel";
 import { RichText } from "./RichText";
 import {
@@ -75,30 +96,36 @@ import {
 import { CopyButton } from "./CopyButton";
 import { TodoTracker, TodoTranscript, extractTodos } from "./TodoTracker";
 import { ChangesPanel } from "./ChangesPanel";
-import { UsageSummary } from "./UsageDisplay";
+import { UsageSummary, usageResetLabel } from "./UsageDisplay";
 import {
   ActiveRunIndicator,
   ToolActivitySummary,
   ToolDetailsRail,
   type ToolGroup,
 } from "./ToolActivity";
+import type { PaneDensity } from "../lib/sessionLayout";
 import {
   IconArrowUp,
+  IconBranch,
+  IconChat,
   IconChevronDown,
   IconCode,
   IconCommand,
   IconCube,
+  IconDots,
   IconDownload,
   IconFile,
   IconFork,
   IconInfo,
   IconHistory,
+  IconList,
   IconPencil,
   IconPlus,
+  IconRefresh,
   IconStop,
-  IconTerminal,
   IconUpload,
   FishLogo,
+  BackendLogo,
 } from "./icons";
 
 type ModelOption = { provider: string; id: string; label: string };
@@ -128,7 +155,7 @@ const LOCAL_COMMANDS: SlashCommand[] = [
   },
   {
     name: "compact",
-    description: "Compress older history before a new phase of work",
+    description: "Summarize older history for the model; keep this transcript",
     source: "local",
   },
   {
@@ -190,26 +217,34 @@ function fileAsBase64(file: File): Promise<string> {
   });
 }
 
+function useLiveTextStalled(active: boolean, text: string): boolean {
+  const [stalled, setStalled] = useState(false);
+  useEffect(() => {
+    if (!active) {
+      setStalled(false);
+      return;
+    }
+    setStalled(false);
+    const timer = window.setTimeout(() => setStalled(true), LIVE_TEXT_STALL_MS);
+    return () => window.clearTimeout(timer);
+  }, [active, text]);
+  return active && stalled;
+}
+
 export function Conversation({
   tab,
   showThinking = false,
   split = false,
-  paneIndex: _paneIndex = 0,
-  paneCount: _paneCount = 1,
+  density = "full",
   onClose,
   onSessionSplit,
-  terminalOpen = false,
-  onTerminalToggle,
 }: {
   tab: ConversationTab;
   showThinking?: boolean;
   split?: boolean;
-  paneIndex?: number;
-  paneCount?: number;
+  density?: PaneDensity;
   onClose?: () => void;
   onSessionSplit?: (key: string) => void;
-  terminalOpen?: boolean;
-  onTerminalToggle?: () => void;
 }) {
   const timeline = useTimeline(tab.timeline)!;
   const {
@@ -220,6 +255,7 @@ export function Conversation({
     setConversationLabel,
     workspaceReveal,
     openForkedConversation,
+    openConversation,
   } = useStore();
   const [draft, setDraft] = useState("");
   // The draft survives page reloads: keyed by conversation identity (the
@@ -264,6 +300,7 @@ export function Conversation({
     tab.backend === "claude" ? CLAUDE_EFFORT_LEVELS : [],
   );
   const [commandMenuOpen, setCommandMenuOpen] = useState(false);
+  const [modeMenuOpen, setModeMenuOpen] = useState(false);
   // Compaction is a long, silent backend job: pi/claude re-summarize the whole
   // history before answering. Without a visible in-progress state the UI looked
   // idle, so /compact got sent again and again.
@@ -283,33 +320,23 @@ export function Conversation({
   // Prompts lined up behind the running turn. Server-owned, so a refresh or a
   // second tab sees the same queue.
   const [queued, setQueued] = useState<QueuedMessage[]>([]);
-  /**
-   * What Enter does while a turn is running. Queueing waits for the turn to
-   * finish; steering pushes the message into the turn that is already going,
-   * which is the only way to redirect work mid-flight. Cmd/Ctrl+Enter always
-   * steers regardless, so the fast path never needs the menu.
-   */
-  const [midTurnMode, setMidTurnMode] = useState<"queue" | "steer">(() =>
-    localStorage.getItem("pi-web.mid-turn") === "steer" ? "steer" : "queue",
-  );
-  const chooseMidTurnMode = (mode: "queue" | "steer") => {
-    setMidTurnMode(mode);
-    try {
-      localStorage.setItem("pi-web.mid-turn", mode);
-    } catch {
-      /* private mode; the choice lasts this session only */
-    }
-  };
+  // Live queue_updated events win over a stale getState() snapshot that
+  // still listed a message after sendNextQueued had already drained it.
+  const queueFromEventRef = useRef(false);
   // Set for one send by Cmd/Ctrl+Enter, then cleared.
   const steerOnceRef = useRef(false);
-  // ACP's prompt() runs a turn to completion, so Grok has no way to accept a
-  // mid-turn interjection: its steer() rejects outright. Offering the choice
-  // there only produced a failed send, so mid-turn messages queue instead.
-  const canSteer = tab.backend !== "grok";
+  const sendLockRef = useRef(false);
+  const lastSendRef = useRef({ text: "", at: 0 });
+  const caps = capabilitiesFor(tab.backend);
+  // Offering steer on a backend that cannot take a mid-turn message only
+  // produced a failed send, so those sessions queue instead.
+  const canSteer = caps.steer;
   const [conversationView, setConversationView] = useState<
     "chat" | "trajectory" | "backend"
   >("chat");
   const [sessionDetailsOpen, setSessionDetailsOpen] = useState(false);
+  const [overflowOpen, setOverflowOpen] = useState(false);
+  const overflowRef = useRef<HTMLDivElement | null>(null);
   const [workspaceOpen, setWorkspaceOpen] = useState(false);
   const [workspaceMounted, setWorkspaceMounted] = useState(false);
   const [workspacePlacement, setWorkspacePlacement] =
@@ -322,6 +349,7 @@ export function Conversation({
   const [providerUsage, setProviderUsage] = useState<ProviderUsage | null>(
     null,
   );
+  const [usageRefreshing, setUsageRefreshing] = useState(false);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const stickToBottom = useRef(true);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
@@ -335,10 +363,34 @@ export function Conversation({
   const commandsLoadedRef = useRef(false);
   const modelMetadataLoadedRef = useRef(tab.backend === "claude");
 
+  useEffect(() => {
+    if (!overflowOpen) return;
+    const onPointerDown = (event: PointerEvent) => {
+      if (!overflowRef.current?.contains(event.target as Node))
+        setOverflowOpen(false);
+    };
+    const onKeyDown = (event: globalThis.KeyboardEvent) => {
+      if (event.key === "Escape") setOverflowOpen(false);
+    };
+    window.addEventListener("pointerdown", onPointerDown);
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      window.removeEventListener("pointerdown", onPointerDown);
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, [overflowOpen]);
+
   const state = timeline.state;
 
   const status = timeline.status;
-  const streaming = status === "working" || state?.isStreaming === true;
+  // A subagent run keeps going after pi's own turn settles (its children work
+  // detached, so pi's status flips back to "ready" the moment it hands the
+  // job off) — count it as busy too, so the UI waits for the subagent the
+  // way Claude Code's CLI blocks on a Task call instead of going idle.
+  const subagentRuns = collectSubagentRuns(timeline.items);
+  const subagentRunning = subagentRuns.some((run) => run.status === "running");
+  const streaming =
+    status === "working" || state?.isStreaming === true || subagentRunning;
   const firstUserItem = timeline.items.find(
     (item) =>
       item.kind === "user" &&
@@ -351,6 +403,70 @@ export function Conversation({
     tab.label,
   );
   const todos = extractTodos(timeline.items, { turnComplete: !streaming });
+
+  // Auto-saved transcript. Written after every settled turn rather than when a
+  // limit is about to be hit: exhaustion can land mid-turn with no warning, and
+  // a turn killed that way produced nothing worth keeping anyway. Entirely
+  // mechanical -- no model is asked to summarise, so this costs no tokens.
+  const [transcriptPath, setTranscriptPath] = useState<string | null>(null);
+  useEffect(() => {
+    if (streaming || timeline.items.length === 0 || !tab.cwd) return;
+    const handle = window.setTimeout(() => {
+      const markdown = timelineToMarkdown(
+        timeline.items,
+        {
+          title: displayTitle,
+          backend: backendLabel(tab.backend),
+          model: state?.model?.name ?? state?.model?.id,
+          cwd: tab.cwd,
+          todos: todos
+            .filter(
+              (task) =>
+                task.status === "pending" || task.status === "in_progress",
+            )
+            .map((task) => task.subject),
+        },
+        { full: true },
+      );
+      void api
+        .writeTranscript(
+          transcriptFilename(tab.sessionPath ?? tab.key, displayTitle),
+          markdown,
+        )
+        .then((result) => {
+          if (result.ok && result.path) setTranscriptPath(result.path);
+        });
+    }, 2000);
+    return () => window.clearTimeout(handle);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [streaming, timeline.items, displayTitle, tab.key, tab.cwd, tab.backend]);
+
+  /** Hand this session to another agent: same folder, transcript as the brief. */
+  const continueIn = (backend: AgentBackend) => {
+    if (!transcriptPath || !tab.cwd) return;
+    const text = handoffPrompt(transcriptPath, backendLabel(tab.backend));
+    // A tab not yet mounted picks the draft up from storage on mount; the event
+    // covers a fresh tab that is already open and so will not re-read storage.
+    try {
+      localStorage.setItem(`pi-web.draft:new:${backend}:${tab.cwd}`, text);
+    } catch {
+      /* storage unavailable; the event path still seeds it */
+    }
+    const key = openConversation(tab.cwd, undefined, backend);
+    window.dispatchEvent(
+      new CustomEvent("pi-web:seed-draft", { detail: { key, text } }),
+    );
+  };
+
+  useEffect(() => {
+    const onSeed = (event: Event) => {
+      const detail = (event as CustomEvent<{ key: string; text: string }>)
+        .detail;
+      if (detail?.key === tab.key) setDraft(detail.text);
+    };
+    window.addEventListener("pi-web:seed-draft", onSeed);
+    return () => window.removeEventListener("pi-web:seed-draft", onSeed);
+  }, [tab.key]);
   // Claude Code can count the context for real; every other backend gets the
   // character-based estimate. Refreshed between turns, since that is when the
   // number actually moves and when the CLI is free to answer.
@@ -371,6 +487,11 @@ export function Conversation({
       }
     : estimated;
   const hasItems = timeline.items.length > 0;
+  // The handoff field shows a single backend — the first one this session is
+  // not already running on — so the closed select stays as narrow as its mark
+  // instead of listing every other agent at once.
+  const handoffTarget =
+    AGENT_BACKENDS.find((backend) => backend !== tab.backend) ?? "claude";
   // Reasoning summaries are intentionally not rendered in the chat view. The
   // data still flows through the timeline (Trajectory tab, context estimates),
   // but the transcript stays clean; thinking activity surfaces as the
@@ -387,7 +508,6 @@ export function Conversation({
     siblings.push(item);
     subagentChildren.set(item.parentToolUseId, siblings);
   }
-  const subagentRuns = collectSubagentRuns(timeline.items);
   // grok mirrors a child's tools and narration back onto the parent ACP
   // stream without a parent id, so those copies have to be filtered out by
   // shape. Claude (and pi, when it grows subagents) tags every nested event,
@@ -407,6 +527,14 @@ export function Conversation({
         ) &&
         !isHeldMainTool(item, subagentBusy, timeline.items) &&
         !isHeldMainNarration(item, subagentBusy) &&
+        !isSettledSpawnTool(item, subagentRuns) &&
+        // The positional check below can only hide a check-in once the call
+        // it introduces has arrived, so on its own it let the text flash in
+        // and back out again. This holds that narration while it streams —
+        // and only that narration, so the main agent's own work still
+        // arrives token by token during a run.
+        !isSubagentChatter(item, subagentRuns) &&
+        !isSubagentCheckIn(item, timeline.items) &&
         !(mirrorsChildWork && isSubagentEcho(item, timeline.items)) &&
         !(mirrorsChildWork && isSubagentToolEcho(item, timeline.items)) &&
         !(item.kind === "user" && isLocalCommandText(item.text)),
@@ -423,6 +551,12 @@ export function Conversation({
   const liveNarration = visibleItems.at(-1);
   const showingLiveText = Boolean(
     liveNarration && liveNarration.kind === "assistant" && liveNarration.live,
+  );
+  const liveTextStalled = useLiveTextStalled(
+    showingLiveText,
+    showingLiveText && liveNarration?.kind === "assistant"
+      ? liveNarration.text
+      : "",
   );
   const chatRows = buildChatRows(visibleItems, streaming);
   // TimelineRow is memoized; passing fresh inline closures here would bust the
@@ -442,6 +576,7 @@ export function Conversation({
     ): void => {},
     onAnswer: (_text: string): void => {},
     onOpenSubagent: (_id: string): void => {},
+    onBackgroundSubagent: (_id: string): void => {},
   });
   rowHandlersRef.current = {
     onFork: (item) => void forkOutput(item),
@@ -484,6 +619,14 @@ export function Conversation({
       }
       setFocusedSubagent(id);
     },
+    onBackgroundSubagent: (id) => {
+      setHiddenSubagents((current) =>
+        current.includes(id) ? current : [...current, id],
+      );
+      setPinnedSubagents((current) =>
+        current.filter((openId) => openId !== id),
+      );
+    },
   };
   const stableRowHandlers = useMemo(
     () => ({
@@ -505,6 +648,8 @@ export function Conversation({
       onAnswer: (text: string): void => rowHandlersRef.current.onAnswer(text),
       onOpenSubagent: (id: string): void =>
         rowHandlersRef.current.onOpenSubagent(id),
+      onBackgroundSubagent: (id: string): void =>
+        rowHandlersRef.current.onBackgroundSubagent(id),
     }),
     [],
   );
@@ -572,6 +717,14 @@ export function Conversation({
             item.status === "running",
         )
     : undefined;
+  const showThinkingIndicator = shouldShowThinkingRow({
+    streaming,
+    runningShell: Boolean(runningShell),
+    subagentRunning,
+    compacting,
+    showingLiveText,
+    liveTextStalled,
+  });
 
   const loadModelMetadata = useCallback(() => {
     if (
@@ -624,7 +777,7 @@ export function Conversation({
     )
       return;
     const request = api
-      .commands(tab.key, tab.backend)
+      .commands(tab.key, tab.backend, tab.cwd)
       .then((result) => {
         if (result.ok && Array.isArray(result.commands)) {
           setCommands(result.commands);
@@ -635,7 +788,7 @@ export function Conversation({
         commandRequestRef.current = null;
       });
     commandRequestRef.current = request;
-  }, [status, tab.backend, tab.key]);
+  }, [status, tab.backend, tab.cwd, tab.key]);
 
   const openWorkspace = useCallback(() => {
     setWorkspaceMounted(true);
@@ -706,6 +859,18 @@ export function Conversation({
     [tab.backend, tab.key, tab.sessionPath, timeline],
   );
 
+  // The reset instants are pure arithmetic, but the percentages only move when
+  // something asks: page load, a finished turn, or the poll timer. This is the
+  // "ask now" button.
+  const refreshUsageNow = useCallback(async () => {
+    setUsageRefreshing(true);
+    try {
+      await refreshUsage(true);
+    } finally {
+      setUsageRefreshing(false);
+    }
+  }, [refreshUsage]);
+
   useEffect(() => {
     // Refresh once when the session loads. While the agent is working, poll every
     // 30s with a forced provider check so the composer usage stays current.
@@ -761,6 +926,12 @@ export function Conversation({
   ]);
 
   useEffect(() => {
+    queueFromEventRef.current = false;
+    setQueued(state?.queuedMessages ?? []);
+  }, [tab.key]);
+
+  useEffect(() => {
+    if (queueFromEventRef.current) return;
     setQueued(state?.queuedMessages ?? []);
   }, [state?.queuedMessages]);
 
@@ -769,14 +940,15 @@ export function Conversation({
       subscribeEvents((event) => {
         if (event.sessionKey !== tab.key || event.type !== "queue_updated")
           return;
+        queueFromEventRef.current = true;
         setQueued((event.queued as QueuedMessage[]) ?? []);
       }),
     [tab.key],
   );
 
   useEffect(() => {
-    if (tab.backend !== "claude" || streaming) {
-      if (tab.backend !== "claude") setExactContext(null);
+    if (!caps.contextUsage || streaming) {
+      if (!caps.contextUsage) setExactContext(null);
       return;
     }
     let cancelled = false;
@@ -797,7 +969,13 @@ export function Conversation({
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [tab.key, tab.backend, streaming, timeline.items.length]);
+  }, [
+    caps.contextUsage,
+    tab.key,
+    tab.backend,
+    streaming,
+    timeline.items.length,
+  ]);
 
   useEffect(
     () =>
@@ -1152,314 +1330,388 @@ export function Conversation({
   const send = async (raw: string) => {
     const message = raw.trim();
     if (!message && attachments.length === 0) return;
-    // Edited-message resend: the composer is attached to an existing user
-    // message; resend it over the rewound context instead of appending a turn.
-    if (editingMessageId !== null) {
-      if (attachments.length > 0) {
-        timeline.appendNotice(
-          "Remove attachments to resend an edited message.",
-          "warning",
-        );
-        return;
-      }
-      const itemId = editingMessageId;
-      setDraft("");
-      setEditingMessageId(null);
-      if (!message) return;
-      await resendEdited(itemId, message);
-      return;
-    }
+    // Enter in the textarea and the form submit can fire in the same tick,
+    // and a key-repeat Enter re-sends the same draft. Either path used to
+    // POST /prompt then immediately /queue the same text, so the first
+    // prompt appeared queued with no second message from the user.
+    const now = Date.now();
     if (
-      attachments.length === 0 &&
-      (message === "/new" || message === "/clear")
-    ) {
-      const result = await api.newSession(tab.key);
-      if (result.ok && result.state && Array.isArray(result.messages)) {
-        timeline.hydrate(result.messages, result.state);
-        setConversationSessionPath(tab.key, undefined);
-      } else if (!result.ok) {
-        timeline.appendNotice(
-          result.error ??
-            `Could not create a new ${backendLabel(tab.backend)} session`,
-          "error",
-        );
-      }
-      refreshSessions();
-      setDraft("");
+      sendLockRef.current ||
+      (message &&
+        message === lastSendRef.current.text &&
+        now - lastSendRef.current.at < 400)
+    )
       return;
-    }
-    if (attachments.length === 0 && message === "/compact") {
-      setDraft("");
-      if (compacting) return;
-      setCompacting(true);
-      // No transcript notice here: the compacting strip above the composer is
-      // the single live status, and a second message in the transcript read
-      // as a duplicate with the Changes panel sandwiched between them.
-      const result = await api.compact(tab.key);
-      setCompacting(false);
-      if (result.ok) {
-        // pi answers a compaction with the rewritten history; showing it is
-        // the only way the transcript reflects what compaction actually did.
-        if (result.state && Array.isArray(result.messages))
-          timeline.hydrate(result.messages, result.state);
-        timeline.appendNotice(
-          "Conversation compacted — older history is now summarized.",
-          "info",
-        );
-      } else
-        timeline.appendNotice(
-          result.error ?? "Could not compact the conversation",
-          "error",
-        );
-      return;
-    }
-    if (attachments.length === 0 && isUsageShortcut(message)) {
-      setDraft("");
-      if (!(await refreshUsage(true)))
-        timeline.appendNotice("Could not retrieve usage", "error");
-      return;
-    }
-    if (
-      attachments.length === 0 &&
-      (message === "/usage" || message === "/cost")
-    ) {
-      setDraft("");
-      const retrieved = await refreshUsage(true);
-      timeline.appendNotice(
-        retrieved
-          ? "Usage refreshed — current windows are shown in the composer status bar."
-          : "Could not retrieve usage",
-        retrieved ? "info" : "error",
-      );
-      return;
-    }
-    if (message === "/export") {
-      setDraft("");
-      const markdown = timelineToMarkdown(timeline.items, {
-        title: displayTitle,
-        backend: backendLabel(tab.backend),
-        model: state?.model?.name ?? state?.model?.id,
-        cwd: tab.cwd,
-      });
-      const name = exportFilename(displayTitle);
-      const url = URL.createObjectURL(
-        new Blob([markdown], { type: "text/markdown;charset=utf-8" }),
-      );
-      const link = document.createElement("a");
-      link.href = url;
-      link.download = name;
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
-      // Revoked on the next tick so the download has taken the handle.
-      window.setTimeout(() => URL.revokeObjectURL(url), 0);
-      timeline.appendNotice(`Exported this conversation to ${name}.`, "info");
-      return;
-    }
-    if (message === "/context") {
-      setDraft("");
-      const userTurns = timeline.items.filter(
-        (item) => item.kind === "user",
-      ).length;
-      const toolCalls = timeline.items.filter(
-        (item) => item.kind === "tool",
-      ).length;
-      // Prefer the backend's own accounting; fall back to the estimate.
-      const usage = context.exact
-        ? context
-        : estimateContext(timeline.items, state ?? null);
-      const qualifier = usage.exact ? "" : "~";
-      const breakdown = (usage.categories ?? [])
-        .slice(0, 5)
-        .map((entry) => `${entry.name} ${compactTokens(entry.tokens)}`)
-        .join(", ");
-      timeline.appendNotice(
-        `Context use: ${qualifier}${compactTokens(usage.estimatedTokens)} of ${compactTokens(usage.contextWindow)} tokens (${usage.percent}%) — ${userTurns} user turns, ${toolCalls} tool calls${breakdown ? `. Largest: ${breakdown}` : ", plus the system prompt and tool definitions"}.${usage.autoCompactAt ? ` Auto-compacts at ${compactTokens(usage.autoCompactAt)}.` : ""} /compact squeezes older history before a new phase; /clear starts fresh.`,
-        "info",
-      );
-      return;
-    }
-    if (message === "/diff") {
-      setDraft("");
-      const changes = timeline.items.filter(
-        (item): item is Extract<TimelineItem, { kind: "tool" }> =>
-          item.kind === "tool" &&
-          ["edit", "write"].includes(item.name.toLowerCase()),
-      );
-      const lines: DiffLine[] = [];
-      const files = new Set<string>();
-      for (const item of changes) {
-        const diff = getToolDiff(item);
-        if (!diff) continue;
-        const path = String(
-          item.args.path ?? item.args.file_path ?? "(unknown)",
-        );
-        if (!files.has(path)) {
-          files.add(path);
-          lines.push({
-            kind: "meta",
-            text: `── ${path}${item.name.toLowerCase() === "write" ? "  (new file)" : ""}`,
-          });
+    sendLockRef.current = true;
+    if (message) lastSendRef.current = { text: message, at: now };
+    try {
+      // Edited-message resend: the composer is attached to an existing user
+      // message; resend it over the rewound context instead of appending a turn.
+      if (editingMessageId !== null) {
+        if (attachments.length > 0) {
+          timeline.appendNotice(
+            "Remove attachments to resend an edited message.",
+            "warning",
+          );
+          return;
         }
-        lines.push(...diff.lines);
-      }
-      if (lines.length === 0) {
-        timeline.appendNotice("No file changes in this session yet.", "info");
+        const itemId = editingMessageId;
+        setDraft("");
+        setEditingMessageId(null);
+        if (!message) return;
+        await resendEdited(itemId, message);
         return;
       }
-      setViewer({
-        title: `Session diff · ${files.size} file${files.size === 1 ? "" : "s"} · ${changes.length} change${changes.length === 1 ? "" : "s"}`,
-        diff: {
-          added: lines.filter((line) => line.kind === "add").length,
-          removed: lines.filter((line) => line.kind === "remove").length,
-          lines,
-        },
-      });
-      return;
-    }
-    if (message === "/fork" || /^\/fork\s+\d+$/.test(message)) {
-      setDraft("");
-      const arg = Number(message.slice(5).trim() || "1");
-      const position = Number.isFinite(arg) && arg >= 1 ? Math.floor(arg) : 1;
-      const assistants = timeline.items.filter(
-        (item): item is Extract<TimelineItem, { kind: "assistant" }> =>
-          item.kind === "assistant" && !item.live,
-      );
-      const target = assistants.at(-Math.min(position, assistants.length));
-      if (!target) {
+      if (
+        attachments.length === 0 &&
+        (message === "/new" || message === "/clear")
+      ) {
+        const result = await api.newSession(tab.key);
+        if (result.ok && result.state && Array.isArray(result.messages)) {
+          timeline.hydrate(result.messages, result.state);
+          setConversationSessionPath(tab.key, undefined);
+        } else if (!result.ok) {
+          timeline.appendNotice(
+            result.error ??
+              `Could not create a new ${backendLabel(tab.backend)} session`,
+            "error",
+          );
+        }
+        refreshSessions();
+        setDraft("");
+        return;
+      }
+      if (attachments.length === 0 && message === "/compact") {
+        setDraft("");
+        if (!caps.compact) {
+          timeline.appendNotice(
+            "This agent cannot compact a conversation.",
+            "info",
+          );
+          return;
+        }
+        if (compacting) return;
+        setCompacting(true);
+        // No transcript notice here: the compacting strip above the composer is
+        // the single live status, and a second message in the transcript read
+        // as a duplicate with the Changes panel sandwiched between them.
+        const result = await api.compact(tab.key);
+        setCompacting(false);
+        if (result.ok) {
+          // Compact rewrites the backend log the model will see. Hydrating
+          // with that rewritten history is what made the original turns
+          // disappear from the transcript.
+          if (result.state) timeline.setState(result.state);
+          timeline.appendNotice(
+            "Conversation compacted. The model will use a summary.",
+            "info",
+          );
+        } else
+          timeline.appendNotice(
+            result.error ?? "Could not compact the conversation",
+            "unsupported" in result && result.unsupported ? "info" : "error",
+          );
+        return;
+      }
+      if (attachments.length === 0 && isUsageShortcut(message)) {
+        setDraft("");
+        if (!(await refreshUsage(true)))
+          timeline.appendNotice("Could not retrieve usage", "error");
+        return;
+      }
+      if (
+        attachments.length === 0 &&
+        (message === "/usage" || message === "/cost")
+      ) {
+        setDraft("");
+        const retrieved = await refreshUsage(true);
         timeline.appendNotice(
-          "Nothing to fork yet — send a message first.",
-          "warning",
+          retrieved
+            ? "Usage refreshed — current windows are shown in the composer status bar."
+            : "Could not retrieve usage",
+          retrieved ? "info" : "error",
         );
         return;
       }
-      await forkOutput(target);
-      return;
-    }
-    if (message.startsWith("/goal")) {
-      const arg = message.slice(5).trim();
-      setDraft("");
-      if (!arg) {
+      if (message === "/export") {
+        setDraft("");
+        const markdown = timelineToMarkdown(timeline.items, {
+          title: displayTitle,
+          backend: backendLabel(tab.backend),
+          model: state?.model?.name ?? state?.model?.id,
+          cwd: tab.cwd,
+        });
+        const name = exportFilename(displayTitle);
+        const url = URL.createObjectURL(
+          new Blob([markdown], { type: "text/markdown;charset=utf-8" }),
+        );
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = name;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        // Revoked on the next tick so the download has taken the handle.
+        window.setTimeout(() => URL.revokeObjectURL(url), 0);
+        timeline.appendNotice(`Exported this conversation to ${name}.`, "info");
+        return;
+      }
+      if (message === "/context") {
+        setDraft("");
+        const userTurns = timeline.items.filter(
+          (item) => item.kind === "user",
+        ).length;
+        const toolCalls = timeline.items.filter(
+          (item) => item.kind === "tool",
+        ).length;
+        // Prefer the backend's own accounting; fall back to the estimate.
+        const usage = context.exact
+          ? context
+          : estimateContext(timeline.items, state ?? null);
+        const qualifier = usage.exact ? "" : "~";
+        const breakdown = (usage.categories ?? [])
+          .slice(0, 5)
+          .map((entry) => `${entry.name} ${compactTokens(entry.tokens)}`)
+          .join(", ");
         timeline.appendNotice(
-          "Usage: /goal <one concrete outcome> — the agent checks in automatically (after 30m, then 1h → 2h). /goal off clears it.",
+          `Context use: ${qualifier}${compactTokens(usage.estimatedTokens)} of ${compactTokens(usage.contextWindow)} tokens (${usage.percent}%) — ${userTurns} user turns, ${toolCalls} tool calls${breakdown ? `. Largest: ${breakdown}` : ", plus the system prompt and tool definitions"}.${usage.autoCompactAt ? ` Auto-compacts at ${compactTokens(usage.autoCompactAt)}.` : ""} /compact summarizes older history for the model without clearing this transcript; /clear starts fresh.`,
           "info",
         );
         return;
       }
-      const result = await api.goal(tab.key, arg);
-      if (!result.ok) {
+      if (message === "/diff") {
+        setDraft("");
+        const changes = timeline.items.filter(
+          (item): item is Extract<TimelineItem, { kind: "tool" }> =>
+            item.kind === "tool" &&
+            ["edit", "write"].includes(item.name.toLowerCase()),
+        );
+        const lines: DiffLine[] = [];
+        const files = new Set<string>();
+        for (const item of changes) {
+          const diff = getToolDiff(item);
+          if (!diff) continue;
+          const path = String(
+            item.args.path ?? item.args.file_path ?? "(unknown)",
+          );
+          if (!files.has(path)) {
+            files.add(path);
+            lines.push({
+              kind: "meta",
+              text: `── ${path}${item.name.toLowerCase() === "write" ? "  (new file)" : ""}`,
+            });
+          }
+          lines.push(...diff.lines);
+        }
+        if (lines.length === 0) {
+          timeline.appendNotice("No file changes in this session yet.", "info");
+          return;
+        }
+        setViewer({
+          title: `Session diff · ${files.size} file${files.size === 1 ? "" : "s"} · ${changes.length} change${changes.length === 1 ? "" : "s"}`,
+          diff: {
+            added: lines.filter((line) => line.kind === "add").length,
+            removed: lines.filter((line) => line.kind === "remove").length,
+            lines,
+          },
+        });
+        return;
+      }
+      if (message === "/fork" || /^\/fork\s+\d+$/.test(message)) {
+        if (!caps.fork) {
+          timeline.appendNotice(
+            "This agent cannot fork a conversation.",
+            "info",
+          );
+          return;
+        }
+        setDraft("");
+        const arg = Number(message.slice(5).trim() || "1");
+        const position = Number.isFinite(arg) && arg >= 1 ? Math.floor(arg) : 1;
+        const assistants = timeline.items.filter(
+          (item): item is Extract<TimelineItem, { kind: "assistant" }> =>
+            item.kind === "assistant" && !item.live,
+        );
+        const target = assistants.at(-Math.min(position, assistants.length));
+        if (!target) {
+          timeline.appendNotice(
+            "Nothing to fork yet — send a message first.",
+            "warning",
+          );
+          return;
+        }
+        await forkOutput(target);
+        return;
+      }
+      if (message.startsWith("/goal")) {
+        const arg = message.slice(5).trim();
+        setDraft("");
+        if (!arg) {
+          timeline.appendNotice(
+            "Usage: /goal <one concrete outcome> — the agent checks in automatically (after 30m, then 1h → 2h). /goal off clears it.",
+            "info",
+          );
+          return;
+        }
+        const result = await api.goal(tab.key, arg);
+        if (!result.ok) {
+          timeline.appendNotice(
+            result.error ?? "Could not set the goal",
+            "error",
+          );
+          return;
+        }
         timeline.appendNotice(
-          result.error ?? "Could not set the goal",
-          "error",
+          result.cleared
+            ? "Standing goal cleared."
+            : `Goal parked — the agent checks in on its own (after 30m, then every 1h → 2h): ${arg}`,
+          "info",
         );
         return;
       }
-      timeline.appendNotice(
-        result.cleared
-          ? "Standing goal cleared."
-          : `Goal parked — the agent checks in on its own (after 30m, then every 1h → 2h): ${arg}`,
-        "info",
+      if (message === "/push" || message === "/pull") {
+        const op = message.slice(1) as "push" | "pull";
+        setDraft("");
+        timeline.appendNotice(`Running git ${op} in ${tab.cwd}…`, "info");
+        const result = await api.gitRun(tab.key, tab.cwd, op);
+        if (result.ok) {
+          const output = (result.output ?? "").trim();
+          timeline.appendNotice(
+            output ? `git ${op}:\n${output}` : `git ${op} finished.`,
+            "info",
+          );
+        } else {
+          timeline.appendNotice(result.error ?? `git ${op} failed`, "error");
+        }
+        return;
+      }
+      const pickedAttachments = attachments;
+      // An image attachment is already inline in the `images` payload below.
+      // Listing its path under "inspect the attached file(s)" made agents Read
+      // it a second time, so the same picture entered context twice and was
+      // re-billed on every later cache miss. The path stays -- it is the only
+      // way to act on the file itself -- but it says it has already been seen.
+      const attachmentLines = pickedAttachments.map((attachment) =>
+        attachment.imageData
+          ? `- ${attachment.name} (already attached inline — open this path only to edit the file, never to view it): ${attachment.path}`
+          : `- ${attachment.name}: ${attachment.path}`,
       );
-      return;
-    }
-    if (message === "/push" || message === "/pull") {
-      const op = message.slice(1) as "push" | "pull";
+      const outboundMessage = [
+        message || "Please inspect the attached file(s).",
+        attachmentLines.length
+          ? `Attached files:\n${attachmentLines.join("\n")}`
+          : "",
+      ]
+        .filter(Boolean)
+        .join("\n\n");
+      const displayMessage = [
+        message || "Attached file(s)",
+        pickedAttachments.length
+          ? `Attachments: ${pickedAttachments.map((attachment) => attachment.name).join(", ")}`
+          : "",
+      ]
+        .filter(Boolean)
+        .join("\n\n");
+      const images = pickedAttachments
+        .filter((attachment) => attachment.imageData)
+        .map((attachment) => ({
+          type: "image" as const,
+          data: attachment.imageData!,
+          mimeType: attachment.mimeType,
+        }));
       setDraft("");
-      timeline.appendNotice(`Running git ${op} in ${tab.cwd}…`, "info");
-      const result = await api.gitRun(tab.key, tab.cwd, op);
+      setAttachments([]);
+      stickToBottom.current = true;
+      // Mid-turn, Enter always queues. Cmd/Ctrl+Enter (and Steer now on the
+      // queue chip) splice into the running turn on agents that support it.
+      const willSteer = Boolean(streaming) && canSteer && steerOnceRef.current;
+      steerOnceRef.current = false;
+      const willQueue = Boolean(streaming) && !willSteer;
+      // A queued follow-up must not land in the transcript yet: it used to
+      // sit in the middle of the still-printing turn, then its reply arrived
+      // after the handover. The queue chip is the affordance until the
+      // previous turn settles; message_start then appends the bubble.
+      if (!willQueue) timeline.appendUser(displayMessage);
+      // Optimistic pending-run state: the RPC prompt response only arrives when
+      // the whole turn completes, and agent_start can lag (a stalled model call
+      // once left the UI silent for 225s). Show "working" immediately so the
+      // user always knows the request was sent — and has a stop affordance.
+      // A queued follow-up is not a run yet, so it must not flip the composer.
+      if (!willQueue) timeline.markPendingRun();
+
+      // A model's natural-language self-identification is not authoritative:
+      // aliases and provider prompts can make Luna claim to be Kimi. For this
+      // narrow question, answer from the session state that Pi reports instead.
+      if (
+        pickedAttachments.length === 0 &&
+        state?.model &&
+        isModelIdentityQuestion(message)
+      ) {
+        timeline.clearPendingRun();
+        timeline.appendAssistant(runtimeModelAnswer(state.model));
+        return;
+      }
+
+      const promptOptions = {
+        images,
+        cwd: tab.cwd,
+        backend: tab.backend,
+        sessionPath: tab.sessionPath ?? state?.sessionFile ?? undefined,
+        model: state?.model ?? undefined,
+        thinkingLevel: state?.thinkingLevel ?? undefined,
+      };
+      // Drop the same-tick lock before awaiting the turn so a follow-up can
+      // queue; the 400ms same-text debounce still rejects the duplicate Enter.
+      sendLockRef.current = false;
+      // prompt() is the only one of the three that can hand back a session path.
+      let result: {
+        ok: boolean;
+        error?: string;
+        sessionPath?: string;
+        data?: { queued?: boolean };
+      } = streaming
+        ? willSteer
+          ? await api.steer(tab.key, outboundMessage, images)
+          : await api.enqueue(tab.key, outboundMessage, images)
+        : await api.prompt(tab.key, outboundMessage, promptOptions);
+      // Laptop sleep / lease sweep can kill grok stdio while the tab still
+      // thinks a turn is in flight and therefore enqueues. Restart on the
+      // prompt path with the session file instead of failing closed.
+      if (
+        !result.ok &&
+        /session is not running/i.test(String(result.error ?? ""))
+      ) {
+        result = await api.prompt(tab.key, outboundMessage, promptOptions);
+      }
       if (result.ok) {
-        const output = (result.output ?? "").trim();
-        timeline.appendNotice(
-          output ? `git ${op}:\n${output}` : `git ${op} finished.`,
-          "info",
-        );
+        if (willQueue && !result.data?.queued) {
+          // enqueue sends immediately when the agent went idle between click
+          // and the POST; show the bubble the queue path skipped.
+          timeline.appendUser(displayMessage);
+          timeline.markPendingRun();
+        } else if (!willQueue && result.data?.queued) {
+          // The tab thought the agent was idle and the server disagreed (a
+          // desynced `streaming` flag), so /prompt queued instead of starting.
+          // Drop the optimistic run or the composer spins on a turn that is
+          // still sitting in the queue — the exact "it queued my first message
+          // by itself" shape, seen from the other side.
+          timeline.clearPendingRun();
+        }
+        if (result.sessionPath && !(tab.sessionPath ?? state?.sessionFile)) {
+          // A lazily-started session (pi and grok both start on the first message)
+          // only reveals its file through the agent's own state, and no event
+          // carries it -- so this reply is where the tab finally learns it. Until
+          // it does, the sidebar cannot match this session's saved row to the tab
+          // and shows no open marker against it.
+          setConversationSessionPath(tab.key, result.sessionPath);
+        }
       } else {
-        timeline.appendNotice(result.error ?? `git ${op} failed`, "error");
+        setAttachments(pickedAttachments);
+        if (!willQueue) timeline.clearPendingRun();
+        timeline.appendNotice(result.error ?? "prompt failed", "error");
       }
-      return;
-    }
-    const pickedAttachments = attachments;
-    const attachmentLines = pickedAttachments.map(
-      (attachment) => `- ${attachment.name}: ${attachment.path}`,
-    );
-    const outboundMessage = [
-      message || "Please inspect the attached file(s).",
-      attachmentLines.length
-        ? `Attached files:\n${attachmentLines.join("\n")}`
-        : "",
-    ]
-      .filter(Boolean)
-      .join("\n\n");
-    const displayMessage = [
-      message || "Attached file(s)",
-      pickedAttachments.length
-        ? `Attachments: ${pickedAttachments.map((attachment) => attachment.name).join(", ")}`
-        : "",
-    ]
-      .filter(Boolean)
-      .join("\n\n");
-    const images = pickedAttachments
-      .filter((attachment) => attachment.imageData)
-      .map((attachment) => ({
-        type: "image" as const,
-        data: attachment.imageData!,
-        mimeType: attachment.mimeType,
-      }));
-    timeline.appendUser(displayMessage);
-    setDraft("");
-    setAttachments([]);
-    stickToBottom.current = true;
-    // Optimistic pending-run state: the RPC prompt response only arrives when
-    // the whole turn completes, and agent_start can lag (a stalled model call
-    // once left the UI silent for 225s). Show "working" immediately so the
-    // user always knows the request was sent — and has a stop affordance.
-    timeline.markPendingRun();
-
-    // A model's natural-language self-identification is not authoritative:
-    // aliases and provider prompts can make Luna claim to be Kimi. For this
-    // narrow question, answer from the session state that Pi reports instead.
-    if (
-      pickedAttachments.length === 0 &&
-      state?.model &&
-      isModelIdentityQuestion(message)
-    ) {
-      timeline.clearPendingRun();
-      timeline.appendAssistant(runtimeModelAnswer(state.model));
-      return;
-    }
-
-    const promptOptions = {
-      images,
-      cwd: tab.cwd,
-      backend: tab.backend,
-      sessionPath: tab.sessionPath ?? state?.sessionFile ?? undefined,
-      model: state?.model ?? undefined,
-      thinkingLevel: state?.thinkingLevel ?? undefined,
-    };
-    // Mid-turn, a new prompt waits its turn instead of being spliced into the
-    // running one — and stays cancellable while it waits. Cmd/Ctrl+Enter
-    // still steers; Grok rejects steer while a turn is in flight.
-    const steerNow =
-      canSteer && (steerOnceRef.current || midTurnMode === "steer");
-    steerOnceRef.current = false;
-    let result = streaming
-      ? steerNow
-        ? await api.steer(tab.key, outboundMessage, images)
-        : await api.enqueue(tab.key, outboundMessage, images)
-      : await api.prompt(tab.key, outboundMessage, promptOptions);
-    // Laptop sleep / lease sweep can kill grok stdio while the tab still
-    // thinks a turn is in flight and therefore enqueues. Restart on the
-    // prompt path with the session file instead of failing closed.
-    if (
-      !result.ok &&
-      /session is not running/i.test(String(result.error ?? ""))
-    ) {
-      result = await api.prompt(tab.key, outboundMessage, promptOptions);
-    }
-    if (!result.ok) {
-      setAttachments(pickedAttachments);
-      timeline.clearPendingRun();
-      timeline.appendNotice(result.error ?? "prompt failed", "error");
+    } finally {
+      sendLockRef.current = false;
     }
   };
 
@@ -1491,11 +1743,16 @@ export function Conversation({
   }, [commandMenuOpen]);
 
   // slash filtering for the command menu opened by typing "/"
+  const localCommands = LOCAL_COMMANDS.filter((command) => {
+    if (command.name === "fork") return caps.fork;
+    if (command.name === "compact") return caps.compact;
+    return true;
+  });
   const localByName = new Map(
-    LOCAL_COMMANDS.map((command) => [command.name, command]),
+    localCommands.map((command) => [command.name, command]),
   );
   const mergedCommands = [
-    ...LOCAL_COMMANDS,
+    ...localCommands,
     ...commands.filter((command) => !localByName.has(command.name)),
   ];
   // The "@" token under the caret, if any: an @ that starts a word, followed
@@ -1630,13 +1887,10 @@ export function Conversation({
           slashMatches[Math.min(slashIndex, slashMatches.length - 1)];
         setCommandMenuOpen(false);
         if (!picked) return;
+        // Enter and Tab both insert the command into the draft, same as
+        // clicking it: the trailing space closes the menu and keeps the
+        // composer open so arguments can follow. The next Enter sends.
         setDraft(`/${picked.name} `);
-        if (event.key === "Enter") {
-          // Selecting a command and pressing enter fires it right away. The
-          // trailing space in the draft closes the menu and lets arguments
-          // follow on the next keystrokes.
-          void send(`/${picked.name}`);
-        }
         return;
       }
       if (event.key === "Escape") {
@@ -1691,7 +1945,7 @@ export function Conversation({
     "model…";
   const effort =
     state?.thinkingLevel ??
-    (tab.backend === "claude" && tab.isFresh ? CLAUDE_DEFAULT_EFFORT : "off");
+    (tab.isFresh ? BACKEND_DEFAULT_EFFORT[tab.backend] : "off");
 
   const setModel = (value: string) => {
     const option = modelOptions.find(
@@ -1756,7 +2010,7 @@ export function Conversation({
     if (!result.ok || !result.state || !Array.isArray(result.messages)) {
       timeline.appendNotice(
         result.error ?? "Could not fork this response",
-        "error",
+        "unsupported" in result && result.unsupported ? "info" : "error",
       );
       return;
     }
@@ -1773,6 +2027,7 @@ export function Conversation({
         state: result.state,
         label: `${tab.label} · fork`,
         backend: tab.backend,
+        forkResume: result.forkResume === true,
       });
       refreshSessions();
       onSessionSplit?.(forkKey);
@@ -1783,6 +2038,8 @@ export function Conversation({
     setConversationSessionPath(tab.key, result.state.sessionFile);
     refreshSessions();
   };
+
+  const tight = split && density !== "full";
 
   const setupChips = (
     <div className="composer__setup">
@@ -1795,16 +2052,18 @@ export function Conversation({
           onPick={(path) => configureSession(accessMode, agentMode, path)}
           onViewWorkspace={openWorkspace}
         />
-        <button
-          type="button"
-          className={`workspace-picker__trigger${workspaceOpen ? " is-active" : ""}`}
-          aria-pressed={workspaceOpen}
-          title={tab.cwd}
-          onClick={toggleWorkspace}
-        >
-          <IconCode size={15} />
-          <span>View workspace</span>
-        </button>
+        {!split && (
+          <button
+            type="button"
+            className={`workspace-picker__trigger${workspaceOpen ? " is-active" : ""}`}
+            aria-pressed={workspaceOpen}
+            title={tab.cwd}
+            onClick={toggleWorkspace}
+          >
+            <IconCode size={15} />
+            <span>View workspace</span>
+          </button>
+        )}
         <div className="native-select native-select--chip native-select--mode">
           <span className="native-select__icon">
             <IconCube size={15} />
@@ -1844,17 +2103,38 @@ export function Conversation({
   ) : null;
 
   const composer = (
-    <div className="composer" data-backend={tab.backend}>
+    <div
+      className={`composer${tight ? " composer--tight" : ""}`}
+      data-backend={tab.backend}
+    >
       {!streaming && hasItems && tab.cwd && (
         <ChangesPanel
           sessionKey={tab.key}
           cwd={tab.cwd}
           streaming={streaming}
+          compact={tight}
+          onWorkspaceClick={() => workspacePickerRef.current?.openBrowser()}
+          usageReset={providerUsage ? usageResetLabel(providerUsage) : null}
           onAskAgent={(prompt) =>
             setDraft((current) =>
               current.trim() ? `${current}\n\n${prompt}` : prompt,
             )
           }
+        />
+      )}
+      {/* The changes card clips its overflow, so the workspace picker's modal
+          has to be hosted outside it. Kept mounted (and hidden) so the folder
+          card in the changes footer has something to open. Split panes host
+          the picker as the header folder chip instead. */}
+      {hasItems && tab.cwd && !split && (
+        <WorkspacePicker
+          ref={workspacePickerRef}
+          cwd={tab.cwd}
+          backend={tab.backend}
+          disabled={configuring}
+          hideTrigger
+          onPick={(path) => configureSession(accessMode, agentMode, path)}
+          onViewWorkspace={openWorkspace}
         />
       )}
       {!hasItems && setupChips}
@@ -1915,7 +2195,8 @@ export function Conversation({
       {compacting && (
         <div className="compacting-strip" role="status" aria-live="polite">
           <p className="compacting-strip__hint">
-            Compacting the conversation — summarizing older history…
+            Compacting the conversation — summarizing older history for the
+            model…
           </p>
           <div className="compacting-strip__bar" aria-hidden="true">
             <span className="compacting-strip__fill" />
@@ -1925,9 +2206,62 @@ export function Conversation({
       {queued.length > 0 && (
         <div className="queue-strip" aria-label="Queued messages">
           <p className="queue-strip__hint">
-            {canSteer
-              ? "Waiting for this turn to finish — ⌘/Ctrl+Enter sends into the running turn instead."
-              : "Waiting for this turn to finish — this agent cannot take a message mid-turn."}
+            <span>
+              {/* After an interrupt the queue outlives the turn it was
+                  waiting on: nothing is running, and these are held until
+                  the user sends them. Saying "waiting for this turn to
+                  finish" there reads as a hang. */}
+              {streaming
+                ? canSteer
+                  ? "Waiting for this turn to finish."
+                  : "Waiting for this turn to finish — this agent cannot take a message mid-turn."
+                : "Queued — nothing is running. These are not sent yet."}
+            </span>
+            {/* Mid-turn this is steering, which not every agent can do.
+                Idle it is just "send it now", which all of them can — and
+                without it an interrupted grok queue has no way out. */}
+            {(canSteer || !streaming) && (
+              <button
+                type="button"
+                className="queue-strip__steer"
+                title={
+                  streaming
+                    ? "Send this into the turn that is already running"
+                    : "Send this now"
+                }
+                onClick={() => {
+                  const item = queued[0];
+                  if (!item) return;
+                  void api.steerQueued(tab.key, item.id).then((result) => {
+                    if (!result.ok)
+                      timeline.appendNotice(
+                        result.error ?? "Could not steer",
+                        "error",
+                      );
+                  });
+                }}
+              >
+                {streaming ? "Steer now" : "Send now"}
+              </button>
+            )}
+            {queued.length > 1 && (
+              <button
+                type="button"
+                className="queue-strip__clear"
+                title="Drop every queued message"
+                onClick={() => {
+                  void api.cancelQueued(tab.key).then((result) => {
+                    if (!result.ok)
+                      timeline.appendNotice(
+                        result.error ?? "Could not clear the queue",
+                        "error",
+                      );
+                  });
+                }}
+              >
+                Clear all
+              </button>
+            )}
           </p>
           {queued.map((item, index) => (
             <div key={item.id} className="queue-chip">
@@ -1937,7 +2271,15 @@ export function Conversation({
                 type="button"
                 aria-label="Remove from queue"
                 title="Remove from queue"
-                onClick={() => void api.cancelQueued(tab.key, item.id)}
+                onClick={() => {
+                  void api.cancelQueued(tab.key, item.id).then((result) => {
+                    if (!result.ok)
+                      timeline.appendNotice(
+                        result.error ?? "Could not remove that message",
+                        "error",
+                      );
+                  });
+                }}
               >
                 ×
               </button>
@@ -2025,7 +2367,11 @@ export function Conversation({
             rows={2}
             placeholder={
               editingMessageId === null
-                ? "Describe what you want to build"
+                ? hasItems
+                  ? tight
+                    ? "Reply…"
+                    : "Reply, or queue the next step…"
+                  : "Describe what you want to build"
                 : "Edit your message…"
             }
             value={draft}
@@ -2044,14 +2390,6 @@ export function Conversation({
         </div>
         <div className="composer__row">
           <div className="composer__tools">
-            {/* Always-visible agent badge: pi/claude/grok sessions must be
-                tellable apart at a glance, not just in the sidebar. */}
-            <span
-              className="composer__backend-badge"
-              title={`This session runs on ${backendLabel(tab.backend)}`}
-            >
-              {backendLabel(tab.backend)}
-            </span>
             <details ref={addDetailsRef} className="add-disclosure">
               <summary className="composer__add" aria-label="Add">
                 <IconPlus />
@@ -2092,43 +2430,63 @@ export function Conversation({
                 </button>
               </div>
             </details>
-            {streaming && canSteer && (
-              <div className="native-select native-select--chip native-select--mode">
-                <select
-                  aria-label="What Enter does while the agent is working"
-                  title="Queue waits for this turn to finish. Steer pushes the message into the turn that is already running (⌘/Ctrl+Enter always steers)."
-                  value={midTurnMode}
-                  onChange={(event) =>
-                    chooseMidTurnMode(event.target.value as "queue" | "steer")
-                  }
-                >
-                  <option value="queue">Queue next</option>
-                  <option value="steer">Steer now</option>
-                </select>
-                <span className="native-select__chev">
-                  <IconChevronDown size={13} />
-                </span>
-              </div>
-            )}
             {hasItems && (
-              <div className="native-select native-select--chip native-select--mode">
-                <span className="native-select__icon">
-                  <IconCube size={15} />
-                </span>
-                <select
-                  aria-label="Agent mode"
-                  value={agentMode}
+              <div className="composer__mode">
+                <button
+                  type="button"
+                  className="composer__mode-trigger"
+                  aria-haspopup="menu"
+                  aria-expanded={modeMenuOpen}
                   disabled={configuring || streaming}
-                  onChange={(event) =>
-                    void switchAgentMode(event.target.value as AgentMode)
-                  }
+                  onClick={() => setModeMenuOpen((open) => !open)}
                 >
-                  <option value="standard">Auto mode</option>
-                  <option value="plan">Plan mode</option>
-                </select>
-                <span className="native-select__chev">
-                  <IconChevronDown size={13} />
-                </span>
+                  {accessMode === "read-only"
+                    ? "Read-only"
+                    : agentMode === "plan"
+                      ? "Plan"
+                      : "Auto"}
+                  {tight ? "" : " mode"}
+                  <IconChevronDown size={11} />
+                </button>
+                {modeMenuOpen && (
+                  <div className="composer__mode-menu" role="menu">
+                    {(
+                      [
+                        ["standard", "Auto"],
+                        ["plan", "Plan"],
+                      ] as const
+                    ).map(([id, label]) => {
+                      const selected =
+                        accessMode !== "read-only" && agentMode === id;
+                      return (
+                        <button
+                          type="button"
+                          role="menuitem"
+                          key={id}
+                          className={selected ? "is-active" : undefined}
+                          onClick={() => {
+                            setModeMenuOpen(false);
+                            // Read-only is no longer offered here, but a session
+                            // already sitting in it must still be able to leave.
+                            if (accessMode === "read-only") {
+                              void configureSession(
+                                "workspace-write",
+                                id as AgentMode,
+                              );
+                              return;
+                            }
+                            void switchAgentMode(id as AgentMode);
+                          }}
+                        >
+                          <span>
+                            <strong>{label} mode</strong>
+                          </span>
+                          {selected ? <span>✓</span> : null}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
             )}
           </div>
@@ -2144,12 +2502,12 @@ export function Conversation({
               onPointerDown={loadModelMetadata}
               onFocus={loadModelMetadata}
             >
-              <IconCube size={15} />
               <span
                 className="native-model-controls__field native-model-controls__field--model"
-                title={currentModelLabel}
+                title={`${backendLabel(tab.backend)} · ${currentModelLabel}`}
               >
                 <span className="native-model-controls__value">
+                  {backendLabel(tab.backend).toLowerCase()} ·{" "}
                   {currentModelLabel}
                 </span>
                 <span className="native-select__chev">
@@ -2241,6 +2599,69 @@ export function Conversation({
           </div>
         </div>
       </form>
+      {hasItems && (
+        <div className="composer__handoff">
+          {transcriptPath ? (
+            <span
+              className="composer__handoff-status"
+              title={`Saved automatically after every reply to ${transcriptPath}`}
+            >
+              Transcript saved
+            </span>
+          ) : (
+            <span className="composer__handoff-status">Transcript idle</span>
+          )}
+          <span className="composer__handoff-rule" aria-hidden="true" />
+          <span className="composer__handoff-continue">Continue in…</span>
+          <div className="native-select composer__handoff-select">
+            <span
+              className="composer__handoff-mark"
+              style={{ color: backendMark(handoffTarget).color }}
+              aria-hidden
+            >
+              <BackendLogo backend={handoffTarget} size={12} />
+            </span>
+            <select
+              aria-label="Continue this conversation in another agent"
+              title="Opens a new session in the same folder, seeded with this transcript"
+              value=""
+              disabled={!transcriptPath}
+              onChange={(event) => {
+                const next = event.target.value as AgentBackend;
+                event.target.value = "";
+                if (next) continueIn(next);
+              }}
+            >
+              <option value="">{backendLabel(handoffTarget)}</option>
+              {AGENT_BACKENDS.filter((backend) => backend !== tab.backend).map(
+                (backend) => (
+                  <option key={backend} value={backend}>
+                    {backendLabel(backend)}
+                  </option>
+                ),
+              )}
+            </select>
+            <span className="native-select__chev">
+              <IconChevronDown size={12} />
+            </span>
+          </div>
+          {providerUsage?.available && usageResetLabel(providerUsage) && (
+            <span className="composer__handoff-reset">
+              <button
+                type="button"
+                className={`usage-refresh${usageRefreshing ? " is-spinning" : ""}`}
+                aria-label="Refresh usage and reset time"
+                title="Refresh usage and reset time"
+                disabled={usageRefreshing}
+                onClick={() => void refreshUsageNow()}
+              >
+                <IconRefresh size={12} />
+              </button>
+              {usageResetLabel(providerUsage)}
+            </span>
+          )}
+        </div>
+      )}
     </div>
   );
 
@@ -2288,22 +2709,143 @@ export function Conversation({
     />
   ) : null;
 
+  const folderChip =
+    split && tab.cwd ? (
+      <WorkspacePicker
+        ref={workspacePickerRef}
+        cwd={tab.cwd}
+        backend={tab.backend}
+        disabled={configuring}
+        variant="chip"
+        onPick={(path) => configureSession(accessMode, agentMode, path)}
+        onViewWorkspace={openWorkspace}
+      />
+    ) : null;
+
+  const overflowMenu = tight ? (
+    <div className="conversation-header__overflow" ref={overflowRef}>
+      <button
+        type="button"
+        className="conversation-header__more"
+        aria-haspopup="menu"
+        aria-expanded={overflowOpen}
+        aria-label="Session actions"
+        onClick={() => setOverflowOpen((open) => !open)}
+      >
+        <IconDots size={14} />
+      </button>
+      {overflowOpen && (
+        <div className="conversation-header__overflow-menu" role="menu">
+          <button
+            type="button"
+            role="menuitem"
+            onClick={() => {
+              setOverflowOpen(false);
+              setSessionDetailsOpen(true);
+            }}
+          >
+            Session details
+          </button>
+          <button
+            type="button"
+            role="menuitem"
+            onClick={() => {
+              setOverflowOpen(false);
+              toggleWorkspace();
+            }}
+          >
+            View project source
+          </button>
+          {onClose && (
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => {
+                setOverflowOpen(false);
+                onClose();
+              }}
+            >
+              Close session
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  ) : null;
+
+  const viewTab = (
+    id: "chat" | "trajectory" | "backend",
+    label: string,
+    icon: ReactNode | null,
+    count?: number,
+  ) => {
+    const active = conversationView === id;
+    const showLabel =
+      density === "full" ||
+      (density === "compact" && id === "chat") ||
+      (density === "dense" && active);
+    const showIcon =
+      density === "dense" || (density === "compact" && id !== "chat");
+    return (
+      <button
+        key={id}
+        type="button"
+        role="tab"
+        aria-selected={active}
+        aria-label={label}
+        title={label}
+        className={active ? "is-active" : ""}
+        onClick={() => setConversationView(id)}
+      >
+        {showIcon && icon}
+        {showLabel && <span>{label}</span>}
+        {count != null && count > 0 && density !== "full" && (
+          <span className="conversation-header__count">{count}</span>
+        )}
+      </button>
+    );
+  };
+
+  const trajCount = timeline.items.length;
+  const viewSwitcher =
+    density === "dense" ? (
+      <div
+        className="conversation-header__segment"
+        role="tablist"
+        aria-label="Conversation view"
+      >
+        {viewTab("chat", "Chat", <IconChat size={12} />)}
+        {viewTab(
+          "trajectory",
+          "Trajectory",
+          <IconBranch size={12} />,
+          trajCount,
+        )}
+        {viewTab("backend", "Backend log", <IconList size={12} />)}
+      </div>
+    ) : (
+      <div
+        className={`conversation-header__track${density === "compact" ? " conversation-header__track--compact" : ""}`}
+        role="tablist"
+        aria-label="Conversation view"
+      >
+        {viewTab("chat", "Chat", <IconChat size={12} />)}
+        {viewTab(
+          "trajectory",
+          "Trajectory",
+          <IconBranch size={12} />,
+          density === "compact" ? trajCount : undefined,
+        )}
+        {viewTab("backend", "Backend log", <IconList size={12} />)}
+      </div>
+    );
+
   if (!hasItems) {
     return (
       <>
         {split && (
           <div className="conversation-header conversation-header--empty">
             <div className="conversation-header__actions">
-              <button
-                type="button"
-                className={`conversation-header__download conversation-header__icon-btn${workspaceOpen ? " is-active" : ""}`}
-                aria-pressed={workspaceOpen}
-                aria-label="View project source"
-                title="View project source"
-                onClick={toggleWorkspace}
-              >
-                <IconCode size={14} />
-              </button>
               {onClose && (
                 <button
                   type="button"
@@ -2346,62 +2888,66 @@ export function Conversation({
     );
   }
 
+  const statusDot = (
+    <span
+      className={`conversation-header__dot${streaming ? " is-live" : ""}`}
+      style={{
+        background:
+          status === "error"
+            ? "var(--pw-red)"
+            : streaming
+              ? "var(--pw-accent)"
+              : backendMark(tab.backend).color,
+      }}
+      aria-hidden
+    />
+  );
+
   return (
     <>
-      <div className="conversation-header">
-        {/* Muted folder name at the top of active sessions; clicking it opens
-            the recent-workspaces menu, like the new-session chip. */}
-        <div className="conversation-header__workspace">
-          <WorkspacePicker
-            ref={workspacePickerRef}
-            cwd={tab.cwd}
-            backend={tab.backend}
-            disabled={configuring}
-            fullPath
-            onPick={(path) => configureSession(accessMode, agentMode, path)}
-            onViewWorkspace={openWorkspace}
-          />
-        </div>
-        <div
-          className="conversation-header__tabs"
-          role="tablist"
-          aria-label="Conversation view"
-        >
-          {agentMode === "plan" && (
-            <div className="conversation-header__mode">
-              <IconCube size={13} /> Plan mode
+      <div className={`conversation-header${split ? ` is-${density}` : ""}`}>
+        {tight && (
+          <div className="conversation-header__identity">
+            {statusDot}
+            <span className="conversation-header__agent">
+              {backendLabel(tab.backend)}
+            </span>
+            {density === "dense" && folderChip}
+            {overflowMenu}
+          </div>
+        )}
+        <div className="conversation-header__row">
+          <div className="conversation-header__tabs">
+            {agentMode === "plan" && !tight && (
+              <div className="conversation-header__mode">
+                <IconCube size={13} /> Plan mode
+              </div>
+            )}
+            {viewSwitcher}
+          </div>
+          {!split && (
+            <div className="conversation-header__workspace">
+              <span
+                className="conversation-header__session-title"
+                title={displayTitle}
+              >
+                {displayTitle}
+              </span>
             </div>
           )}
-          <button
-            type="button"
-            role="tab"
-            aria-selected={conversationView === "chat"}
-            className={conversationView === "chat" ? "is-active" : ""}
-            onClick={() => setConversationView("chat")}
-          >
-            Chat
-          </button>
-          <button
-            type="button"
-            role="tab"
-            aria-selected={conversationView === "trajectory"}
-            className={conversationView === "trajectory" ? "is-active" : ""}
-            onClick={() => setConversationView("trajectory")}
-          >
-            Trajectory
-          </button>
-          <button
-            type="button"
-            role="tab"
-            aria-selected={conversationView === "backend"}
-            className={conversationView === "backend" ? "is-active" : ""}
-            onClick={() => setConversationView("backend")}
-          >
-            Backend log
-          </button>
           <div className="conversation-header__tabs-actions">
-            <DeployButton cwd={tab.cwd} />
-            {onClose && (
+            {!tight && runningSubagentSummary(subagentRuns) && (
+              <span className="conversation-header__subagents">
+                <span
+                  className="conversation-header__subagents-dot"
+                  aria-hidden
+                />
+                {runningSubagentSummary(subagentRuns)}
+              </span>
+            )}
+            {density !== "dense" && folderChip}
+            <DeployButton cwd={tab.cwd} compact={tight} />
+            {!tight && onClose && (
               <button
                 type="button"
                 className="conversation-header__close"
@@ -2412,37 +2958,29 @@ export function Conversation({
                 ×
               </button>
             )}
-            {onTerminalToggle && (
+            {!split && (
               <button
                 type="button"
-                className={`conversation-header__download conversation-header__icon-btn${terminalOpen ? " is-active" : ""}`}
-                aria-pressed={terminalOpen}
-                aria-label="Terminal"
-                title="Terminal"
-                onClick={onTerminalToggle}
+                className={`conversation-header__download conversation-header__icon-btn${workspaceOpen ? " is-active" : ""}`}
+                aria-pressed={workspaceOpen}
+                aria-label="View project source"
+                title="View project source"
+                onClick={toggleWorkspace}
               >
-                <IconTerminal size={14} />
+                <IconCode size={14} />
               </button>
             )}
-            <button
-              type="button"
-              className={`conversation-header__download conversation-header__icon-btn${workspaceOpen ? " is-active" : ""}`}
-              aria-pressed={workspaceOpen}
-              aria-label="View project source"
-              title="View project source"
-              onClick={toggleWorkspace}
-            >
-              <IconCode size={14} />
-            </button>
-            <button
-              type="button"
-              className="conversation-header__download conversation-header__icon-btn"
-              aria-label="Session details"
-              title="Session details"
-              onClick={() => setSessionDetailsOpen(true)}
-            >
-              <IconInfo size={14} />
-            </button>
+            {!tight && (
+              <button
+                type="button"
+                className="conversation-header__download conversation-header__icon-btn"
+                aria-label="Session details"
+                title="Session details"
+                onClick={() => setSessionDetailsOpen(true)}
+              >
+                <IconInfo size={14} />
+              </button>
+            )}
           </div>
         </div>
         <ContextFill context={context} />
@@ -2476,7 +3014,12 @@ export function Conversation({
                       onRewindFiles={stableRowHandlers.onRewindFiles}
                       subagentChildren={subagentChildren}
                       onOpenSubagent={stableRowHandlers.onOpenSubagent}
+                      onBackgroundSubagent={
+                        stableRowHandlers.onBackgroundSubagent
+                      }
                       forking={forkingId === row.item.id}
+                      canFork={caps.fork}
+                      canTruncate={caps.truncate}
                       showActions={responseActionIds.has(row.item.id)}
                       showModelTag={row.item.id === lastAssistantId}
                       onAnswer={
@@ -2493,12 +3036,17 @@ export function Conversation({
                   ),
                 )}
                 {!streaming && <TodoTranscript tasks={todos} />}
+                {subagentRuns.some(
+                  (run) => run.status === "running" && run.attention,
+                ) ? (
+                  <SubagentWaitRow runs={subagentRuns} />
+                ) : null}
                 {streaming && runningShell ? (
                   <ActiveRunIndicator
                     item={runningShell}
                     onInterrupt={interrupt}
                   />
-                ) : streaming && !compacting && !showingLiveText ? (
+                ) : showThinkingIndicator ? (
                   <ThinkingRow
                     backend={tab.backend}
                     resume={visibleItems.some(
@@ -2637,6 +3185,31 @@ function ThinkingRow({
   );
 }
 
+/** What the transcript shows in place of the model's babysitting churn: one
+ *  steady row for as long as the run is in flight. `attention` replaces it
+ *  when the runner reports the child is blocked on a reply — otherwise a
+ *  stalled run is indistinguishable from a slow one. */
+function SubagentWaitRow({ runs }: { runs: SubagentRun[] }) {
+  const running = runs.filter((run) => run.status === "running");
+  if (running.length === 0) return null;
+  const blocked = running.find((run) => run.attention);
+  const label = blocked?.attention
+    ? `Subagent needs attention — ${blocked.attention}`
+    : running.length > 1
+      ? `${running.length} background subagents are running — waiting for them to complete`
+      : "Background subagent is running — waiting for it to complete";
+  return (
+    <div
+      className={`thinking${blocked ? " thinking--attention" : ""}`}
+      aria-label={label}
+    >
+      <span className="thinking__spinner" />
+      <span>{label}</span>
+      {blocked ? null : <span className="thinking__dots" aria-hidden="true" />}
+    </div>
+  );
+}
+
 function ContextFill({ context }: { context: ContextUsage }) {
   const percent = context.percent ?? 0;
   const nearLimit = percent >= 80;
@@ -2676,9 +3249,10 @@ function ContextFill({ context }: { context: ContextUsage }) {
  * skip re-rendering entirely.
  */
 /**
- * "Undo the edits made since this message." Claude Code checkpoints every file
- * before it writes to it; this restores from those backups. It asks for the
- * preview first so the click is never blind — a rewind is not itself undoable.
+ * "Undo the edits made since this message." Claude Code restores from the
+ * per-file backups it takes before writing; every other backend restores from
+ * the git snapshot the server takes before each turn. It asks for the preview
+ * first so the click is never blind — a rewind is not itself undoable.
  */
 function RewindFilesButton({
   timestamp,
@@ -2770,6 +3344,8 @@ const TimelineRow = memo(function TimelineRow({
   onOpenFile,
   onFork,
   forking,
+  canFork = true,
+  canTruncate = false,
   showActions,
   showModelTag,
   editingId,
@@ -2781,11 +3357,14 @@ const TimelineRow = memo(function TimelineRow({
   onAnswer,
   subagentChildren,
   onOpenSubagent,
+  onBackgroundSubagent,
 }: {
   item: TimelineItem;
   onOpenFile: (view: ToolFileView) => void;
   onFork: (item: Extract<TimelineItem, { kind: "assistant" }>) => void;
   forking: boolean;
+  canFork?: boolean;
+  canTruncate?: boolean;
   showActions: boolean;
   showModelTag: boolean;
   editingId?: string | null;
@@ -2804,7 +3383,18 @@ const TimelineRow = memo(function TimelineRow({
   onAnswer?: (text: string) => void;
   subagentChildren?: Map<string, Extract<TimelineItem, { kind: "tool" }>[]>;
   onOpenSubagent?: (id: string) => void;
+  onBackgroundSubagent?: (id: string) => void;
 }) {
+  if (item.kind === "tool" && isSubagentTool(item.name))
+    return (
+      <SubagentCard
+        item={item}
+        children={subagentChildren?.get(item.id) ?? []}
+        onOpenFile={onOpenFile}
+        onOpenSubagent={onOpenSubagent}
+        onBackground={onBackgroundSubagent}
+      />
+    );
   if (item.kind === "tool")
     return (
       <ToolCard
@@ -2834,29 +3424,31 @@ const TimelineRow = memo(function TimelineRow({
               label="Copy message"
               className="user-msg__action"
             />
-            <button
-              type="button"
-              className="user-msg__action"
-              aria-label="Edit and resend"
-              title="Edit and resend"
-              disabled={streaming}
-              onClick={() => {
-                if (editingId === item.id) {
-                  onCancelEdit?.();
-                  return;
-                }
-                onEditMessage?.(item);
-              }}
-            >
-              <IconPencil size={13} />
-            </button>
+            {canTruncate ? (
+              <button
+                type="button"
+                className="user-msg__action"
+                aria-label="Edit and resend"
+                title="Edit and resend"
+                disabled={streaming}
+                onClick={() => {
+                  if (editingId === item.id) {
+                    onCancelEdit?.();
+                    return;
+                  }
+                  onEditMessage?.(item);
+                }}
+              >
+                <IconPencil size={13} />
+              </button>
+            ) : null}
             <RewindFilesButton
               timestamp={item.timestamp}
               disabled={streaming}
               onRewindFiles={onRewindFiles}
             />
           </div>
-          {versions && versions.length > 1 && (
+          {canTruncate && versions && versions.length > 1 && (
             <div
               className="user-msg__versions"
               role="group"
@@ -2925,16 +3517,18 @@ const TimelineRow = memo(function TimelineRow({
             label="Copy response"
             iconOnly
           />
-          <button
-            type="button"
-            className={forking ? "is-busy" : undefined}
-            aria-label="Fork response"
-            title={forking ? "Forking response" : "Fork response"}
-            disabled={forking}
-            onClick={() => onFork(item)}
-          >
-            <IconFork />
-          </button>
+          {canFork ? (
+            <button
+              type="button"
+              className={forking ? "is-busy" : undefined}
+              aria-label="Fork response"
+              title={forking ? "Forking response" : "Fork response"}
+              disabled={forking}
+              onClick={() => onFork(item)}
+            >
+              <IconFork />
+            </button>
+          ) : null}
         </div>
       )}
     </article>
@@ -2959,6 +3553,9 @@ type ChatRow =
 
 function isExpandableActivity(item: TimelineItem): item is ToolItem {
   if (item.kind !== "tool") return false;
+  // Spawn stays a SubagentCard while the run is live. Folding it into the
+  // "N tool calls" chip is what made the inline card vanish and remount.
+  if (isSubagentTool(item.name)) return false;
   return !isFileEditTool(item.name);
 }
 

@@ -1,6 +1,10 @@
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
-import { timelineToMarkdown, exportFilename } from "./exportSession.ts";
+import {
+  timelineToMarkdown,
+  exportFilename,
+  transcriptFilename,
+} from "./exportSession.ts";
 import type { TimelineItem } from "./timeline.ts";
 
 const at = new Date("2026-09-05T12:00:00.000Z");
@@ -42,4 +46,25 @@ test("long output is truncated with a count, not silently cut", () => {
 test("filenames are slugged and dated", () => {
   assert.equal(exportFilename("Fix the Gauge!", at), "fix-the-gauge-2026-09-05.md");
   assert.equal(exportFilename("", at), "session-2026-09-05.md");
+});
+
+test("full mode keeps a long turn intact for the auto-saved copy", () => {
+  const long = "x".repeat(9000);
+  const items: TimelineItem[] = [
+    { id: "1", kind: "user", text: long, timestamp: 1 },
+  ];
+  assert.match(timelineToMarkdown(items, meta), /more characters/);
+  assert.ok(timelineToMarkdown(items, meta, { full: true }).includes(long));
+});
+
+test("unfinished tasks are listed so a handoff knows what is next", () => {
+  const md = timelineToMarkdown([], { ...meta, todos: ["Wire the sensor"] });
+  assert.match(md, /## Still to do/);
+  assert.match(md, /- \[ \] Wire the sensor/);
+});
+
+test("transcript name is stable for one session, distinct across sessions", () => {
+  const a = transcriptFilename("/x/y/abc123def456.jsonl", "Fix the gauge");
+  assert.equal(a, transcriptFilename("/x/y/abc123def456.jsonl", "Fix the gauge"));
+  assert.notEqual(a, transcriptFilename("/x/y/zzz999888777.jsonl", "Fix the gauge"));
 });

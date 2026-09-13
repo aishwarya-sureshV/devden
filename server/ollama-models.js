@@ -65,11 +65,13 @@ export async function listOllamaModels() {
           Number.isFinite(contextWindow) && contextWindow > 0
             ? contextWindow
             : undefined,
-        // Cloud models proxy through Ollama's openai-completions endpoint,
-        // which doesn't split their reasoning into its own field -- it
-        // leaks into content as literal <think> tags regardless of what
-        // "capabilities" claims. Never request reasoning_effort for one.
-        reasoning: !id.includes("cloud") && capabilities.includes("thinking"),
+        // Cloud models used to leak reasoning into content as literal
+        // <think> tags, so they were excluded here. Ollama's
+        // openai-completions endpoint now returns a separate `reasoning`
+        // field on both the blocking and streaming paths (verified against
+        // the daemon: 58 `delta.reasoning` chunks, clean content), so the
+        // capability flag is trusted for cloud models too.
+        reasoning: capabilities.includes("thinking"),
         vision: capabilities.includes("vision"),
       },
     ];
@@ -143,6 +145,10 @@ export async function syncOllamaModelsJson(models) {
     // written when "high" was believed to be Ollama's ceiling is repaired so
     // xhigh/max/minimal reach the daemon instead of being downgraded.
     if (reasoning) {
+      if (entry.reasoning !== true) {
+        entry.reasoning = true;
+        changed = true;
+      }
       if (entry.compat?.supportsReasoningEffort !== true) {
         entry.compat = {
           ...(entry.compat ?? {}),

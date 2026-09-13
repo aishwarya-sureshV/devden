@@ -1,5 +1,5 @@
 import {
-  Fragment,
+  useCallback,
   useEffect,
   useState,
   useSyncExternalStore,
@@ -8,15 +8,18 @@ import {
   type ReactNode,
   type FormEvent,
 } from "react";
-import { StoreProvider, useStore } from "./lib/store";
+import { StoreProvider, useStore, type ConversationTab } from "./lib/store";
 import { AuthError, api, setAuthToken } from "./lib/api";
 import { Sidebar } from "./components/Sidebar";
 import { Conversation } from "./components/Conversation";
 import { WorkbenchPage } from "./components/WorkbenchPage";
+import { NotesPage } from "./components/NotesPage";
 import { FleetPage } from "./components/FleetPage";
 import { TerminalPage } from "./components/TerminalPage";
 import { FishLogo } from "./components/icons";
 import type { WorkbenchView } from "./lib/navigation";
+import { sessionPaneLayout } from "./lib/sessionLayout";
+import { TerminalRunsProvider } from "./lib/terminalRuns";
 import "./styles/app.css";
 import "./styles/conversation.css";
 
@@ -67,7 +70,6 @@ function Frame() {
   // drawer. Without this the ≤760px layout hid the sidebar outright and left
   // no way to reach sessions, skills, the terminal or settings from a phone.
   const [navOpen, setNavOpen] = useState(false);
-  const [paneWidths, setPaneWidths] = useState<Record<string, number>>({});
   const [theme, setTheme] = useState<"light" | "dark">(() =>
     localStorage.getItem("pi-web.theme.v2") === "dark" ? "dark" : "light",
   );
@@ -108,12 +110,12 @@ function Frame() {
       return !collapsed;
     });
 
-  const openTerminalPane = () => {
+  const openTerminalPane = useCallback(() => {
     localStorage.setItem("pi-web.terminal-pane", "open");
     setTerminalExpanded(false);
     setTerminalPane(true);
-    if (view !== "sessions") setView("sessions");
-  };
+    setView("sessions");
+  }, []);
 
   const closeTerminalPane = () => {
     localStorage.setItem("pi-web.terminal-pane", "closed");
@@ -194,6 +196,17 @@ function Frame() {
       ? [active]
       : [];
 
+  // Closing a tab leaves its key in splitSessionKeys, and a key with no tab
+  // behind it filters visibleTabs down to nothing: every pane renders hidden
+  // and the sidebar's "Open" card disappears while a session is still open.
+  // Drop keys whose tab is gone.
+  useEffect(() => {
+    setSplitSessionKeys((keys) => {
+      const live = keys.filter((key) => tabs.some((tab) => tab.key === key));
+      return live.length === keys.length ? keys : live;
+    });
+  }, [tabs]);
+
   const persistSidebarWidth = (width: number) => {
     const next = Math.min(480, Math.max(200, width));
     setSidebarWidth(next);
@@ -230,230 +243,198 @@ function Frame() {
     persistSidebarWidth(sidebarWidth + (event.key === "ArrowRight" ? 24 : -24));
   };
 
-  const startPaneResize = (
-    event: ReactPointerEvent<HTMLButtonElement>,
-    key: string,
-  ) => {
-    const pane = event.currentTarget
-      .previousElementSibling as HTMLElement | null;
-    if (!pane) return;
-    event.preventDefault();
-    event.currentTarget.setPointerCapture(event.pointerId);
-    const startX = event.clientX;
-    const startWidth = pane.getBoundingClientRect().width;
-    const onMove = (moveEvent: PointerEvent) => {
-      setPaneWidths((current) => ({
-        ...current,
-        [key]: Math.max(420, startWidth + moveEvent.clientX - startX),
-      }));
-    };
-    const finish = () => {
-      window.removeEventListener("pointermove", onMove);
-      window.removeEventListener("pointerup", finish);
-      window.removeEventListener("pointercancel", finish);
-      document.body.classList.remove("is-resizing-sessions");
-    };
-    document.body.classList.add("is-resizing-sessions");
-    window.addEventListener("pointermove", onMove);
-    window.addEventListener("pointerup", finish, { once: true });
-    window.addEventListener("pointercancel", finish, { once: true });
-  };
-
-  const resizePaneWithKeyboard = (
-    event: ReactKeyboardEvent<HTMLButtonElement>,
-    key: string,
-  ) => {
-    if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
-    const pane = event.currentTarget
-      .previousElementSibling as HTMLElement | null;
-    if (!pane) return;
-    event.preventDefault();
-    const delta = event.key === "ArrowRight" ? 48 : -48;
-    setPaneWidths((current) => ({
-      ...current,
-      [key]: Math.max(
-        420,
-        (current[key] ?? pane.getBoundingClientRect().width) + delta,
-      ),
-    }));
-  };
-
   return (
-    <div
-      className={`app-frame${navOpen ? " is-nav-open" : ""}`}
-      style={{
-        gridTemplateColumns: `${sidebarCollapsed ? 56 : sidebarWidth}px minmax(0, 1fr)`,
-        ["--pw-sidebar-width" as string]: `${sidebarCollapsed ? 56 : sidebarWidth}px`,
-      }}
-      onClickCapture={(event) => {
-        // Any click inside the drawer that isn't the resizer means the user
-        // picked something; get the drawer out of the way.
-        if (!navOpen) return;
-        const target = event.target as HTMLElement;
-        if (target.closest(".sidebar") && !target.closest(".sidebar-resizer"))
-          setNavOpen(false);
-      }}
-    >
-      <OfflineBanner />
-      <button
-        type="button"
-        className="nav-toggle"
-        aria-label={navOpen ? "Close navigation" : "Open navigation"}
-        aria-expanded={navOpen}
-        onClick={() => setNavOpen((open) => !open)}
+    <TerminalRunsProvider onNeedOpen={openTerminalPane}>
+      <div
+        className={`app-frame${navOpen ? " is-nav-open" : ""}`}
+        style={{
+          gridTemplateColumns: `${sidebarCollapsed ? 56 : sidebarWidth}px minmax(0, 1fr)`,
+          ["--pw-sidebar-width" as string]: `${sidebarCollapsed ? 56 : sidebarWidth}px`,
+        }}
+        onClickCapture={(event) => {
+          // Any click inside the drawer that isn't the resizer means the user
+          // picked something; get the drawer out of the way.
+          if (!navOpen) return;
+          const target = event.target as HTMLElement;
+          if (target.closest(".sidebar") && !target.closest(".sidebar-resizer"))
+            setNavOpen(false);
+        }}
       >
-        {navOpen ? "✕" : "☰"}
-      </button>
-      {navOpen && (
-        <div
-          className="nav-scrim"
-          role="presentation"
-          onClick={() => setNavOpen(false)}
-        />
-      )}
-      <Sidebar
-        collapsed={sidebarCollapsed}
-        onToggle={toggleSidebar}
-        theme={theme}
-        onThemeToggle={() =>
-          setTheme((current) => (current === "dark" ? "light" : "dark"))
-        }
-        view={view}
-        onViewChange={changeView}
-        splitSessions={splitSessions}
-        onSplitSessionsToggle={toggleSplitSessions}
-        onSessionFocus={focusSession}
-        onSessionSplit={splitWithSession}
-        openTabKeys={visibleTabs.map((tab) => tab.key)}
-        onResizePointerDown={startSidebarResize}
-        onResizeKeyDown={resizeSidebarWithKeyboard}
-      />
-      <main className="center">
-        <div
-          className={`center__body${terminalPane && terminalExpanded ? " is-hidden" : ""}`}
+        <OfflineBanner />
+        <button
+          type="button"
+          className="nav-toggle"
+          aria-label={navOpen ? "Close navigation" : "Open navigation"}
+          aria-expanded={navOpen}
+          onClick={() => setNavOpen((open) => !open)}
         >
-          {view === "sessions" ? (
-            <>
-              {tabs.length > 0 ? (
-                <div
-                  className={`session-grid${visibleTabs.length > 1 ? " is-split" : ""}`}
-                >
-                  {tabs.map((tab) => {
-                    const visibleIndex = visibleTabs.findIndex(
-                      (visible) => visible.key === tab.key,
-                    );
-                    const visible = visibleIndex >= 0;
-                    return (
-                      <Fragment key={tab.key}>
-                        <div
-                          className={`session-pane-slot${visible ? "" : " is-background"}`}
-                          hidden={!visible}
-                          aria-hidden={!visible}
-                        >
-                          <section
-                            className={`session-pane${tab.key === activeKey ? " is-active" : ""}`}
-                            aria-label={`Session ${tab.label}`}
-                            style={
-                              visible && paneWidths[tab.key]
-                                ? {
-                                    flexBasis: `${paneWidths[tab.key]}px`,
-                                    width: `${paneWidths[tab.key]}px`,
-                                  }
-                                : undefined
-                            }
-                            onPointerDownCapture={() => setActiveKey(tab.key)}
-                          >
-                            <Conversation
-                              tab={tab}
-                              showThinking={showThinking}
-                              split={visibleTabs.length > 1}
-                              paneIndex={Math.max(0, visibleIndex)}
-                              paneCount={Math.max(1, visibleTabs.length)}
-                              terminalOpen={terminalPane}
-                              onTerminalToggle={toggleTerminalPane}
-                              onClose={
-                                visible && visibleTabs.length > 1
-                                  ? () => closeConversation(tab.key)
-                                  : undefined
-                              }
-                            />
-                          </section>
-                        </div>
-                        {visible && visibleIndex < visibleTabs.length - 1 && (
-                          <button
-                            type="button"
-                            className="session-resizer"
-                            role="separator"
-                            aria-orientation="vertical"
-                            aria-label={`Resize ${tab.label}`}
-                            title="Drag to resize session"
-                            onPointerDown={(event) =>
-                              startPaneResize(event, tab.key)
-                            }
-                            onKeyDown={(event) =>
-                              resizePaneWithKeyboard(event, tab.key)
-                            }
-                          />
-                        )}
-                      </Fragment>
-                    );
-                  })}
-                </div>
-              ) : (
-                <EmptyCenter />
-              )}
-            </>
-          ) : view === "fleet" ? (
-            <FleetPage
-              onFocusSession={(key) => {
-                // Focusing alone left Fleet on screen, so the card click looked
-                // dead — the session it selected was behind this view.
-                focusSession(key);
-                setView("sessions");
-              }}
-            />
-          ) : (
-            <WorkbenchPage
-              view={view}
-              theme={theme}
-              onThemeChange={setTheme}
-              showThinking={showThinking}
-              onShowThinkingChange={setShowThinking}
-              sessionKey={activeKey}
-            />
-          )}
-        </div>
-        {terminalPane && view === "sessions" && !terminalExpanded && (
-          <button
-            type="button"
-            className="terminal-pane-resizer"
-            role="separator"
-            aria-orientation="vertical"
-            aria-label="Resize terminal pane"
-            title="Drag to resize terminal"
-            onPointerDown={startTerminalResize}
+          {navOpen ? "✕" : "☰"}
+        </button>
+        {navOpen && (
+          <div
+            className="nav-scrim"
+            role="presentation"
+            onClick={() => setNavOpen(false)}
           />
         )}
-        {terminalPane && view === "sessions" && (
-          <aside
-            className={`terminal-pane${terminalExpanded ? " is-expanded" : ""}`}
-            aria-label="Terminal pane"
+        <Sidebar
+          collapsed={sidebarCollapsed}
+          onToggle={toggleSidebar}
+          theme={theme}
+          onThemeToggle={() =>
+            setTheme((current) => (current === "dark" ? "light" : "dark"))
+          }
+          view={view}
+          onViewChange={changeView}
+          splitSessions={splitSessions}
+          onSplitSessionsToggle={toggleSplitSessions}
+          onSessionFocus={focusSession}
+          onSessionSplit={splitWithSession}
+          openTabKeys={visibleTabs.map((tab) => tab.key)}
+          terminalOpen={terminalPane && view === "sessions"}
+          onTerminalToggle={toggleTerminalPane}
+          onResizePointerDown={startSidebarResize}
+          onResizeKeyDown={resizeSidebarWithKeyboard}
+        />
+        <main className="center">
+          <div
+            className={`center__body${terminalPane && terminalExpanded ? " is-hidden" : ""}`}
+          >
+            {view === "sessions" ? (
+              <>
+                {tabs.length > 0 ? (
+                  <SessionGrid
+                    tabs={tabs}
+                    visibleTabs={visibleTabs}
+                    activeKey={activeKey}
+                    showThinking={showThinking}
+                    onActivate={setActiveKey}
+                    onClose={closeConversation}
+                  />
+                ) : (
+                  <EmptyCenter />
+                )}
+              </>
+            ) : view === "fleet" ? (
+              <FleetPage
+                onFocusSession={(key) => {
+                  // Focusing alone left Fleet on screen, so the card click looked
+                  // dead — the session it selected was behind this view.
+                  focusSession(key);
+                  setView("sessions");
+                }}
+              />
+            ) : view === "notes" ? (
+              <NotesPage />
+            ) : (
+              <WorkbenchPage
+                view={view}
+                theme={theme}
+                onThemeChange={setTheme}
+                showThinking={showThinking}
+                onShowThinkingChange={setShowThinking}
+                sessionKey={activeKey}
+              />
+            )}
+          </div>
+          {terminalPane && view === "sessions" && !terminalExpanded && (
+            <button
+              type="button"
+              className="terminal-pane-resizer"
+              role="separator"
+              aria-orientation="vertical"
+              aria-label="Resize terminal pane"
+              title="Drag to resize terminal"
+              onPointerDown={startTerminalResize}
+            />
+          )}
+          {terminalPane && view === "sessions" && (
+            <aside
+              className={`terminal-pane${terminalExpanded ? " is-expanded" : ""}`}
+              aria-label="Terminal pane"
+              style={
+                terminalExpanded ? undefined : { width: `${terminalWidth}px` }
+              }
+            >
+              <TerminalPage
+                cwd={active?.cwd}
+                theme={theme}
+                pane
+                expanded={terminalExpanded}
+                onExpand={() => setTerminalExpanded(true)}
+                onCollapse={() => setTerminalExpanded(false)}
+                onClose={closeTerminalPane}
+              />
+            </aside>
+          )}
+        </main>
+      </div>
+    </TerminalRunsProvider>
+  );
+}
+
+function SessionGrid({
+  tabs,
+  visibleTabs,
+  activeKey,
+  showThinking,
+  onActivate,
+  onClose,
+}: {
+  tabs: ConversationTab[];
+  visibleTabs: ConversationTab[];
+  activeKey: string;
+  showThinking: boolean;
+  onActivate: (key: string) => void;
+  onClose: (key: string) => void;
+}) {
+  const split = visibleTabs.length > 1;
+  const layout = sessionPaneLayout(visibleTabs.length);
+  return (
+    <div
+      className={`session-grid${split ? " is-split" : ""}`}
+      data-density={split ? layout.density : "full"}
+      style={
+        split
+          ? {
+              gridTemplateColumns: `repeat(${layout.track}, minmax(0, 1fr))`,
+            }
+          : undefined
+      }
+    >
+      {tabs.map((tab) => {
+        const visibleIndex = visibleTabs.findIndex(
+          (visible) => visible.key === tab.key,
+        );
+        const visible = visibleIndex >= 0;
+        return (
+          <div
+            key={tab.key}
+            className={`session-pane-slot${visible ? "" : " is-background"}`}
+            hidden={!visible}
+            aria-hidden={!visible}
             style={
-              terminalExpanded ? undefined : { width: `${terminalWidth}px` }
+              visible && split
+                ? { gridColumn: `span ${layout.spans[visibleIndex]}` }
+                : undefined
             }
           >
-            <TerminalPage
-              cwd={active?.cwd}
-              theme={theme}
-              pane
-              expanded={terminalExpanded}
-              onExpand={() => setTerminalExpanded(true)}
-              onCollapse={() => setTerminalExpanded(false)}
-              onClose={closeTerminalPane}
-            />
-          </aside>
-        )}
-      </main>
+            <section
+              className={`session-pane${tab.key === activeKey ? " is-active" : ""}`}
+              aria-label={`Session ${tab.label}`}
+              onPointerDownCapture={() => onActivate(tab.key)}
+            >
+              <Conversation
+                tab={tab}
+                showThinking={showThinking}
+                split={split}
+                density={split ? layout.density : "full"}
+                onClose={visible && split ? () => onClose(tab.key) : undefined}
+              />
+            </section>
+          </div>
+        );
+      })}
     </div>
   );
 }
