@@ -7,6 +7,7 @@
  */
 import { spawn } from "node:child_process";
 import { homedir } from "node:os";
+import { withHostGuardEnv } from "./host-guard.js";
 
 const CLIENT_INFO = { name: "pi_web", title: "pi-web", version: "0.1.0" };
 const REQUEST_TIMEOUT_MS = 60_000;
@@ -63,7 +64,11 @@ export class CodexAppServer {
     const child = spawn(
       resolveCodexExecutable(),
       ["app-server", "--listen", "stdio://"],
-      { cwd: homedir(), env: process.env, stdio: ["pipe", "pipe", "pipe"] },
+      {
+        cwd: homedir(),
+        env: withHostGuardEnv(process.env),
+        stdio: ["pipe", "pipe", "pipe"],
+      },
     );
     this.child = child;
     child.stdout.setEncoding("utf8");

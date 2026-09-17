@@ -81,7 +81,7 @@ An honest second pass is cheaper than drifting into a file-by-file crawl.
 
 - **It used to work and now it doesn't** → `/bisect`. Delta debugging returns a
   commit, not 45k of context.
-- **"How does X work?" / architecture questions** → query the graph
-  (`graphify query "..."`), which already knows the file relationships.
+- **"How does X work?" / architecture questions** → start from the repo map
+  in CLAUDE.md, then grep the files it names.
 
 `/localize` is for a defect whose location is unknown and whose history is not.

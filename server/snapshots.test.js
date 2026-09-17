@@ -4,7 +4,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "no
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { listSnapshots, restoreSnapshot, takeSnapshot } from "./snapshots.js";
+import { diffSinceSnapshot, listSnapshots, restoreSnapshot, takeSnapshot } from "./snapshots.js";
 
 function repo() {
   const dir = mkdtempSync(join(tmpdir(), "pi-web-snap-"));
@@ -82,6 +82,22 @@ test("picks the snapshot before the message, and prunes nothing under the cap", 
   await restoreSnapshot(dir);
   assert.equal(readFileSync(join(dir, "kept.txt"), "utf8"), "after turn one\n");
   assert.ok(first.at <= second.at);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("diffSinceSnapshot is this turn only, not leftover dirty files", async () => {
+  const { dir } = repo();
+  writeFileSync(join(dir, "kept.txt"), "leftover from yesterday\n");
+  const snap = await takeSnapshot(dir, "this turn");
+  writeFileSync(join(dir, "kept.txt"), "this turn rewrite\n");
+  writeFileSync(join(dir, "turn-only.txt"), "new in this turn\n");
+  const isolated = await diffSinceSnapshot(dir, snap.at + 50);
+  assert.equal(isolated.ok, true);
+  assert.match(isolated.diff, /turn-only\.txt/);
+  assert.match(isolated.diff, /\+this turn rewrite/);
+  // Baseline is the snapshot, so yesterday's leftover is the minus line —
+  // the original committed text must not appear as this turn's change.
+  assert.doesNotMatch(isolated.diff, /^-original/m);
   rmSync(dir, { recursive: true, force: true });
 });
 

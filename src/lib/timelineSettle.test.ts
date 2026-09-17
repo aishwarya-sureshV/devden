@@ -137,6 +137,42 @@ test("a journal that still ends on tools is not a settled turn", () => {
   );
 });
 
+test("an assistant reply ending on a dangling tool call is not settled", () => {
+  // The exact shape of the tailscale-serve hang: the reply text landed on
+  // disk, but the message ends on a toolCall whose result never arrived.
+  // The text made the old predicate say "settled", so the reconcile poll
+  // forced the timeline idle while the tool was still running.
+  assert.equal(
+    persistedTurnLooksSettled([
+      { role: "user", content: "i have set it up." },
+      {
+        role: "assistant",
+        content: [
+          { type: "text", text: "Fully online — now let me expose pi-web" },
+          { type: "toolCall", id: "c1", name: "bash", arguments: {} },
+        ],
+      },
+    ]),
+    false,
+  );
+  // Same turn once the tool result landed and the model finished: settled.
+  assert.equal(
+    persistedTurnLooksSettled([
+      { role: "user", content: "i have set it up." },
+      {
+        role: "assistant",
+        content: [
+          { type: "text", text: "exposing" },
+          { type: "toolCall", id: "c1", name: "bash", arguments: {} },
+        ],
+      },
+      { role: "toolResult", content: "done" },
+      { role: "assistant", content: "you are live" },
+    ]),
+    true,
+  );
+});
+
 test("stopping outside a turn stays quiet", () => {
   const timeline = new Timeline("conv-1");
   timeline.setState(state());

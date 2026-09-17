@@ -16,10 +16,44 @@ const settled = (agent) =>
 test("settles a turn whose completion event never arrived", async () => {
   const agent = new PiAgentProcess("test-key");
   agent.status = "working";
+  // pi says the turn is over; only agent_settled went missing.
+  agent.getState = async () => ({ isStreaming: false });
   const done = settled(agent);
   agent.settleAfterResponse(5);
   await done;
   assert.equal(agent.status, "ready");
+});
+
+test("keeps asking until pi reports the turn over", async () => {
+  const agent = new PiAgentProcess("test-key");
+  agent.status = "working";
+  let calls = 0;
+  // First poll finds the turn live (ack-style responses arm the backstop
+  // 5s into every healthy turn); the second finds it over. The old one-shot
+  // gave up after the first and the agent stayed "working" forever.
+  agent.getState = async () => ({ isStreaming: ++calls < 2 });
+  const done = settled(agent);
+  agent.settleAfterResponse(5);
+  await done;
+  assert.equal(agent.status, "ready");
+  // Two polls (live, then over) plus settleTurn's own state read.
+  assert.ok(calls >= 2, "the first poll must re-arm, not give up");
+});
+
+test("does not settle a turn pi still reports as streaming", async () => {
+  const agent = new PiAgentProcess("test-key");
+  agent.status = "working";
+  agent.getState = async () => ({ isStreaming: true });
+  let settles = 0;
+  agent.onEvent((event) => {
+    if (event.type === "agent_settled") settles += 1;
+  });
+  // prompt responses are acks on current pi, so this timer fires 5s into
+  // every live turn -- it must leave a genuinely running turn alone.
+  agent.settleAfterResponse(5);
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  assert.equal(settles, 0, "live turn must not be settled");
+  assert.equal(agent.status, "working");
 });
 
 test("leaves the real completion event to do the settling", async () => {

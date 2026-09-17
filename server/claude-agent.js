@@ -13,6 +13,7 @@ import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { AgentPool } from "./agent-pool.js";
+import { ApprovalGate } from "./approval-gate.js";
 import { attachQueue } from "./agent-queue.js";
 import {
   attachSubagentFollows,
@@ -22,9 +23,10 @@ import {
 } from "./agent-subagent.js";
 import {
   CO_PARTNER_PROMPT,
+  CO_PARTNER_PROMPT_MANUAL,
   CLARIFY_PROMPT,
-  HOST_PROMPT,
 } from "./co-partner-prompt.js";
+import { withHostGuardEnv } from "./host-guard.js";
 
 function formatClaudeModelName(value) {
   const stripped = String(value || "")
@@ -97,7 +99,6 @@ function claudeModelInfo(modelId) {
       stripped.startsWith(`${model.id}-`),
   );
   if (known) return { ...known };
-  const label = stripped.replace(/^claude-/, "").replace(/-/g, " ");
   return {
     provider: "anthropic",
     id: alias || raw,
@@ -589,7 +590,7 @@ export function subscriptionEnvironment() {
   // use (`claude setup-token` or CLAUDE_CODE_OAUTH_REFRESH_TOKEN).
   if (!env.CLAUDE_CODE_OAUTH_TOKEN && !env.CLAUDE_CODE_OAUTH_REFRESH_TOKEN)
     delete env.CLAUDE_CODE_OAUTH_SCOPES;
-  return env;
+  return withHostGuardEnv(env);
 }
 
 function sessionIdFromPath(path) {
@@ -866,6 +867,7 @@ export class ClaudeAgentProcess {
     this.status = "stopped";
     this.cwd = homedir();
     this.options = {};
+    this.approvalGate = new ApprovalGate(this);
     this.sessionId = "";
     this.sessionFile = undefined;
     this.model = claudeModelInfo(DEFAULT_CLAUDE_MODEL_ID);
@@ -1046,12 +1048,17 @@ export class ClaudeAgentProcess {
       "--include-hook-events",
       "--verbose",
       "--append-system-prompt",
-      `${CO_PARTNER_PROMPT}\n\n${CLARIFY_PROMPT}\n\n${HOST_PROMPT}`,
+      // Manual mode drops the pre-tool narration: the approval card shows
+      // what is about to run.
+      `${this.options.agentMode === "manual" ? CO_PARTNER_PROMPT_MANUAL : CO_PARTNER_PROMPT}\n\n${CLARIFY_PROMPT}`,
     ];
     if (this.options.agentMode === "plan") {
       args.push("--permission-mode", "plan");
     } else if (this.options.accessMode === "read-only") {
       args.push("--disallowedTools", "Bash Write Edit");
+    } else if (this.options.agentMode === "manual") {
+      // No bypass flag: the CLI then asks permission per tool via a
+      // can_use_tool control request, which the gate routes to the UI.
     } else {
       // Verified in Claude Code 2.1.239 help as the explicit bypass-all-
       // permission-checks mode; avoids an unanswerable prompt in headless mode.
@@ -1183,6 +1190,9 @@ export class ClaudeAgentProcess {
    */
   async abort() {
     if (!this.process) return { ok: true };
+    // A tool waiting on manual approval would otherwise keep its promise
+    // parked (and the card visible) until the 10-minute timeout fired.
+    this.approvalGate.denyAll();
     const turn = this.pendingTurns[0];
     // Before the request, not after: the CLI can emit the interrupted turn's
     // `result` — and with it the settle that flushes the queue — before the
@@ -1208,6 +1218,11 @@ export class ClaudeAgentProcess {
       return { ok: true };
     }
     return this.restartAfterAbort();
+  }
+
+  /** Manual-mode answer from POST /api/<key>/approve. */
+  resolveApproval(requestId, optionId) {
+    return this.approvalGate.resolve(requestId, optionId);
   }
 
   /**
@@ -1782,14 +1797,59 @@ export class ClaudeAgentProcess {
     }
 
     if (event.type === "control_request") {
-      // This host implements no inbound control requests. Refuse explicitly:
-      // a silent non-answer would leave the CLI waiting forever.
+      const request = event.request ?? {};
+      if (request.subtype === "can_use_tool") {
+        // Manual mode: the CLI asks before running a tool. Forward the ask
+        // to the UI and answer with the user's pick; "always allow" is
+        // remembered per tool name inside the gate.
+        void this.approvalGate
+          .request({
+            toolName: String(request.tool_name ?? "tool"),
+            title: String(request.tool_name ?? "tool"),
+            detail: request.input,
+          })
+          .then(({ allow, choice }) => {
+            this.writeControl({
+              type: "control_response",
+              response: {
+                subtype: "success",
+                request_id: event.request_id,
+                response: allow
+                  ? {
+                      behavior: "allow",
+                      updatedInput: request.input ?? {},
+                    }
+                  : {
+                      behavior: "deny",
+                      message: `Denied by user (${choice ?? "deny"}).`,
+                    },
+              },
+            });
+          })
+          .catch(() => {
+            // The gate itself failing must not wedge the CLI: deny.
+            this.writeControl({
+              type: "control_response",
+              response: {
+                subtype: "success",
+                request_id: event.request_id,
+                response: {
+                  behavior: "deny",
+                  message: "Approval flow failed.",
+                },
+              },
+            });
+          });
+        return;
+      }
+      // This host implements no other inbound control requests. Refuse
+      // explicitly: a silent non-answer would leave the CLI waiting forever.
       this.writeControl({
         type: "control_response",
         response: {
           subtype: "error",
           request_id: event.request_id,
-          error: `pi-web does not implement control request "${event.request?.subtype}"`,
+          error: `pi-web does not implement control request "${request.subtype}"`,
         },
       });
       return;

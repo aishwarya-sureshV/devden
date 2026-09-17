@@ -4,45 +4,65 @@
  * callers; this helper is intentionally only for prompt-derived labels.
  */
 export function isLocalCommandText(value: string | undefined): boolean {
-  return /<local-command-caveat>|<command-name>|<command-message>|<command-args>|<task-notification>/.test(value || '')
+  return /<local-command-caveat>|<command-name>|<command-message>|<command-args>|<task-notification>/.test(
+    value || "",
+  );
 }
 
-export function contextualSessionTitle(value: string | undefined, fallback: string): string {
+export function contextualSessionTitle(
+  value: string | undefined,
+  fallback: string,
+): string {
   const source = (value || fallback)
-    .replace(/<local-command-caveat>[\s\S]*?<\/local-command-caveat>/gi, ' ')
-    .replace(/<[^>]+>/g, ' ')
-    .replace(/```[\s\S]*?```/g, ' ')
-    .replace(/[`*_#]/g, '')
-    .replace(/\s+/g, ' ')
+    .replace(/<local-command-caveat>[\s\S]*?<\/local-command-caveat>/gi, " ")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/```[\s\S]*?```/g, " ")
+    .replace(/[`*_#]/g, "")
+    .replace(/\s+/g, " ")
     .trim()
+    // A first prompt that opens a numbered list ("6. the tunnel binary is
+    // missing") is not one sentence -- the split below reduced it
+    // to a bare "6" in the sessions panel.
+    .replace(/^\s*(?:\d{1,3}[.)]|[-*•])\s+/i, "");
 
-  const normalized = source.toLowerCase().replace(/\bpoiting\b/g, 'pointing')
-  if (normalized.includes('codex') && normalized.includes('ollama')) {
-    if (/revert|restore|switch|back to codex/.test(normalized)) return 'Restore Codex models from Ollama'
-    return 'Codex and Ollama model configuration'
+  const normalized = source.toLowerCase().replace(/\bpoiting\b/g, "pointing");
+  if (normalized.includes("codex") && normalized.includes("ollama")) {
+    if (/revert|restore|switch|back to codex/.test(normalized))
+      return "Restore Codex models from Ollama";
+    return "Codex and Ollama model configuration";
   }
-  if (normalized.includes('grok') && normalized.includes('pi') && /different|compare|versus|vs\.?\b/.test(normalized)) {
-    return 'Compare Grok models inside Pi'
+  if (
+    normalized.includes("grok") &&
+    normalized.includes("pi") &&
+    /different|compare|versus|vs\.?\b/.test(normalized)
+  ) {
+    return "Compare Grok models inside Pi";
   }
 
-  let title = source.replace(/\bpoiting\b/gi, 'pointing')
-  title = title.split(/(?:[.!?](?:\s|$)|\n)/, 1)[0]?.trim() || fallback
+  let title = source.replace(/\bpoiting\b/gi, "pointing");
+  title = title.split(/(?:[.!?](?:\s|$)|\n)/, 1)[0]?.trim() || fallback;
   title = title
-    .replace(/^(?:please\s+|can you\s+|could you\s+|would you\s+|i (?:want|need) (?:you )?to\s+|my\s+)/i, '')
-    .replace(/\bis currently\b/i, 'currently')
-    .replace(/\bjust (?:tell|show|explain)(?: me)?\b.*$/i, '')
-    .trim()
+    .replace(
+      /^(?:please\s+|can you\s+|could you\s+|would you\s+|i (?:want|need) (?:you )?to\s+|my\s+)/i,
+      "",
+    )
+    .replace(/\bis currently\b/i, "currently")
+    .replace(/\bjust (?:tell|show|explain)(?: me)?\b.*$/i, "")
+    .trim();
   title = title
-    .replace(/\bcodex\b/gi, 'Codex')
-    .replace(/\bollama\b/gi, 'Ollama')
-    .replace(/\bclaude\b/gi, 'Claude')
-    .replace(/\bgrok\b/gi, 'Grok')
-    .replace(/\bpi\b/gi, 'Pi')
-  if (!title) title = fallback
-  title = title.charAt(0).toUpperCase() + title.slice(1)
-  if (title.length <= 68) return title
-  const shortened = title.slice(0, 68).replace(/\s+\S*$/, '').trim()
-  return `${shortened || title.slice(0, 68).trim()}…`
+    .replace(/\bcodex\b/gi, "Codex")
+    .replace(/\bollama\b/gi, "Ollama")
+    .replace(/\bclaude\b/gi, "Claude")
+    .replace(/\bgrok\b/gi, "Grok")
+    .replace(/\bpi\b/gi, "Pi");
+  if (!title) title = fallback;
+  title = title.charAt(0).toUpperCase() + title.slice(1);
+  if (title.length <= 68) return title;
+  const shortened = title
+    .slice(0, 68)
+    .replace(/\s+\S*$/, "")
+    .trim();
+  return `${shortened || title.slice(0, 68).trim()}…`;
 }
 
 /**
@@ -50,10 +70,14 @@ export function contextualSessionTitle(value: string | undefined, fallback: stri
  * stored name equal to that prompt is Pi's default, so it should be rendered
  * as a concise prompt-derived title; explicit /name titles stay untouched.
  */
-export function savedSessionTitle(name: string, firstPrompt: string | undefined): string {
+export function savedSessionTitle(
+  name: string,
+  firstPrompt: string | undefined,
+): string {
   if (isLocalCommandText(name) || isLocalCommandText(firstPrompt)) {
-    return contextualSessionTitle(firstPrompt, 'Untitled session')
+    return contextualSessionTitle(firstPrompt, "Untitled session");
   }
-  if (firstPrompt && name.trim() === firstPrompt.trim()) return contextualSessionTitle(firstPrompt, name)
-  return name || firstPrompt || 'Untitled session'
+  if (firstPrompt && name.trim() === firstPrompt.trim())
+    return contextualSessionTitle(firstPrompt, name);
+  return name || firstPrompt || "Untitled session";
 }

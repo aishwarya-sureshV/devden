@@ -1,8 +1,9 @@
 # pi-web workbench
 
-A DeepSeek-harness-style **web UI for local coding agents**. Typing `pi` in a
-terminal opens the pi-backed workbench, while `claude-web` opens the same
-workbench backed by Claude Code. The classic pi terminal TUI is one flag away.
+A DeepSeek-harness-style **web UI for local coding agents**. Typing `pi-web`
+in a terminal opens the pi-backed workbench, while `claude-web` opens the
+same workbench backed by Claude Code. The real `pi` command is never touched
+— `pi` in a terminal stays the classic TUI.
 
 - **Backend** (`server/`) spawns one agent process per conversation: `pi --mode
   rpc`, Claude Code's long-lived stream-json mode, or grok's ACP `agent stdio`.
@@ -21,13 +22,30 @@ workbench backed by Claude Code. The classic pi terminal TUI is one flag away.
   events, tool activity, status changes, stderr, and raw expandable JSON
   payloads.
 
+## Install
+
+```bash
+npm install -g pi-web   # once published; from a checkout: npm install -g .
+npx pi-web              # run it once without installing anything
+```
+
+`pi-web` is its own command. It does not replace, wrap, or intercept the real
+`pi` binary; the server resolves the backend from `PATH` at spawn time.
+
 ## Use
 
 ```bash
-pi            # open the web workbench (starts the local server if needed)
+pi-web        # open the web workbench (starts the local server if needed)
 claude-web    # open the web workbench, backed by Claude Code
-pi --tui      # classic terminal TUI
-pi --help/-p/--mode/...   # anything CLI-shaped passes straight through
+pi-web --stop # stop the workbench server
+pi            # untouched — the real terminal TUI, as always
+```
+
+If you followed the old install ritual and symlinked `/opt/homebrew/bin/pi` at
+this repo, restore the stock binary once:
+
+```bash
+ln -sfn ../lib/node_modules/@earendil-works/pi-coding-agent/dist/cli.js /opt/homebrew/bin/pi
 ```
 
 Environment:
@@ -60,7 +78,33 @@ auto-discovered from the local daemon and synced to `~/.pi/agent/models.json`.
 The `api` query parameter overrides the API origin, but only local origins
 (`localhost`/`127.0.0.1`/`[::1]`) are accepted.
 
+### `/remote` — the workbench on your phone
+
+Type `/remote` in any conversation (or pick it from the `/` command menu):
+the server downloads `cloudflared` on first use (~35 MB, cached in
+`~/.pi-web/bin`), opens an outbound-only Cloudflare quick tunnel to this
+machine, and shows a QR code. Scan it with a phone camera — the link carries
+a one-time token that the server swaps for a 7-day HttpOnly cookie, so the
+phone is logged in with nothing to type. Add to Home Screen for the
+full-screen app experience. `/remote off` closes the tunnel and revokes the
+token. No account, no port forwarding, no app on the phone; works over
+cellular. The machine running the server must stay awake, and the tunnel
+serves the built UI — `/remote` runs `npm run build` itself if `dist/` is
+missing.
+
 ## Security model
+
+- `/remote` tunnels are token-gated: the public `trycloudflare.com` URL is
+  worthless without the QR's token, which is minted per tunnel, accepted once
+  in the query (then swapped for a cookie and redirected to a clean URL), and
+  revoked when the tunnel stops. While a tunnel is up, non-loopback requests
+  require that token even when `PI_WEB_TOKEN` is unset; genuinely local
+  requests (including same-machine proxies like `tailscale serve`) stay open.
+  Traffic proxied by cloudflared arrives from 127.0.0.1, so it is identified
+  by Cloudflare's edge headers (`cf-connecting-ip`/`x-forwarded-for`) rather
+  than its socket address. Quick tunnels do not support SSE (a documented
+  Cloudflare limitation), so pages loaded through a tunnel receive the event
+  stream over the `/api/events-ws` WebSocket instead.
 
 - The server binds `127.0.0.1` and validates the `Origin` header on every
   request **and** the terminal WebSocket upgrade against an exact-host
@@ -84,18 +128,13 @@ npm test           # node:test — server confinement + frontend helpers
 npm run check:grok # verify the grok ACP adapter against the installed CLI
 ```
 
-The server also serves `dist/` in production, so after `npm run build` the `pi`
-launcher needs no dev server.
+The server also serves `dist/` in production, so after `npm run build` the
+`pi-web` launcher needs no dev server.
 
-## How it was wired
+## How it's wired
 
-`/opt/homebrew/bin/pi` is a symlink to `pi-web/bin/pi` (a thin wrapper). To
-restore the stock terminal-only behavior:
-
-```bash
-ln -sfn ../lib/node_modules/@earendil-works/pi-coding-agent/dist/cli.js /opt/homebrew/bin/pi
-```
-
-`~/.local/bin/claude-web` is a separate symlink to `pi-web/bin/claude-web`; it
-does not replace or modify the real `claude` executable. Both launchers share
+`pi-web` and `claude-web` are npm-installed commands (`"bin"` in
+`package.json`). Neither touches the real `pi` or `claude` executable — the
+server spawns each backend by name, resolved from `PATH` (overridable via
+`PI_WEB_PI_BIN` / `PI_WEB_CLAUDE_BIN`). Both launchers share
 `bin/lib/pi-web-launcher.sh`.

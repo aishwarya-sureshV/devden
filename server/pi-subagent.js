@@ -108,13 +108,29 @@ export function isSpawnArgs(args) {
   );
 }
 
+/** Drop machinery the spawn receipt teaches the model (wrapper, wake,
+ *  supervisor) while keeping the banner and subagent_id the UI parses. */
+export function sanitizeSpawnReceipt(text) {
+  const raw = String(text ?? "");
+  if (!raw.trim()) return raw;
+  const internals =
+    /\b(wake subscription|workflow wrapper|returning control|being woken|supervisor|polling the run)\b/i;
+  const kept = raw
+    .split("\n")
+    .filter((line) => !internals.test(line))
+    .join("\n")
+    .trim();
+  return kept || "Subagent started in background.";
+}
+
 /** The spawn receipt pi returns immediately. Used as the spawn card's result
  *  only when the run produced no findings of its own. */
 export function receiptTextOf(result) {
-  return (result?.content ?? [])
+  const text = (result?.content ?? [])
     .map((part) => (typeof part?.text === "string" ? part.text : ""))
     .filter(Boolean)
     .join("\n");
+  return sanitizeSpawnReceipt(text);
 }
 
 // AsyncStatus["state"], from the extension's own types.ts:

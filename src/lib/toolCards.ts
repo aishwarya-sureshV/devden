@@ -30,6 +30,9 @@ const TOOL_CANONICAL: Record<string, string> = {
   replace: "edit",
   edit_file: "edit",
   apply_patch: "edit",
+  apply_diff: "edit",
+  replace_in_file: "edit",
+  create_file: "write",
   write_file: "write",
   read_file: "read",
   list_dir: "ls",
@@ -66,8 +69,29 @@ export function isFileEditTool(name: string): boolean {
   return canonical === "edit" || canonical === "write";
 }
 
+/** Edit/write by name, ACP kind, or the payload itself (Grok titles vary). */
+export function isFileChangeTool(item: ToolItem): boolean {
+  if (isFileEditTool(item.name) || item.execKind === "edit") return true;
+  const args = item.args;
+  if (typeof args.old_string === "string" || typeof args.new_string === "string")
+    return true;
+  if (typeof args.oldText === "string" || typeof args.newText === "string")
+    return true;
+  if (Array.isArray(args.edits) && args.edits.length) return true;
+  if (typeof item.details.patch === "string" && item.details.patch.trim())
+    return true;
+  return false;
+}
+
 export function toolPath(args: Record<string, unknown>): string {
-  for (const key of ["path", "file_path", "target_file"]) {
+  for (const key of [
+    "path",
+    "file_path",
+    "target_file",
+    "file",
+    "targetFile",
+    "filename",
+  ]) {
     if (typeof args[key] === "string" && args[key]) return args[key] as string;
   }
   return "";
@@ -219,7 +243,7 @@ export function getToolFileView(item: ToolItem): ToolFileView | null {
   if (isReadTool(item.name) && item.output) {
     return { title: path, language: langFromPath(path), content: item.output };
   }
-  if (isEditTool(item.name)) {
+  if (isEditTool(item.name) || isFileChangeTool(item)) {
     const diff = getToolDiff(item);
     if (diff) return { title: path, diff };
   }
@@ -227,9 +251,16 @@ export function getToolFileView(item: ToolItem): ToolFileView | null {
 }
 
 export function getToolDiff(item: ToolItem): ToolDiff | null {
-  if (isEditTool(item.name)) {
-    const patch = item.details.patch;
-    if (typeof patch === "string" && patch) return parseUnifiedPatch(patch);
+  const patch = item.details.patch;
+  if (typeof patch === "string" && patch) return parseUnifiedPatch(patch);
+
+  const looksEdit =
+    isEditTool(item.name) ||
+    item.execKind === "edit" ||
+    Array.isArray(item.args.edits) ||
+    typeof item.args.old_string === "string" ||
+    typeof item.args.oldText === "string";
+  if (looksEdit) {
     const edits = Array.isArray(item.args.edits)
       ? item.args.edits.map(asRecord)
       : [item.args];
@@ -250,14 +281,18 @@ export function getToolDiff(item: ToolItem): ToolDiff | null {
         });
       }
     }
-    if (!lines.length) return null;
-    return {
-      added: lines.filter((l) => l.kind === "add").length,
-      removed: lines.filter((l) => l.kind === "remove").length,
-      lines,
-    };
+    if (lines.length) {
+      return {
+        added: lines.filter((l) => l.kind === "add").length,
+        removed: lines.filter((l) => l.kind === "remove").length,
+        lines,
+      };
+    }
   }
-  if (isWriteTool(item.name) && typeof item.args.content === "string") {
+  if (
+    (isWriteTool(item.name) || isFileChangeTool(item)) &&
+    typeof item.args.content === "string"
+  ) {
     const lines = splitDisplayLines(item.args.content).map((text, index) => ({
       kind: "add" as const,
       text,

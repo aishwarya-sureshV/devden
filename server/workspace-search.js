@@ -29,7 +29,6 @@ const SKIP_DIRS = [
   ".venv",
   "venv",
   "target",
-  "graphify-out",
   "worktrees",
 ];
 
@@ -56,7 +55,10 @@ function run(command, args, cwd) {
     child.stderr.resume();
     child.on("error", () => resolve({ code: -1, stdout: "" }));
     child.on("close", (code) =>
-      resolve({ code: code ?? -1, stdout: Buffer.concat(chunks).toString("utf8") }),
+      resolve({
+        code: code ?? -1,
+        stdout: Buffer.concat(chunks).toString("utf8"),
+      }),
     );
   });
 }
@@ -150,7 +152,11 @@ export async function grepWorkspace(root, query, options = {}) {
   if (!caseSensitive) flags.push("-i");
   if (wholeWord) flags.push("-w");
 
-  const git = await run("git", ["-C", root, "grep", ...flags, "-e", needle], root);
+  const git = await run(
+    "git",
+    ["-C", root, "grep", ...flags, "-e", needle],
+    root,
+  );
   // git grep exits 1 for "no matches" and 128 for "not a git repository".
   const parsed =
     git.code === 0 || git.code === 1
@@ -216,7 +222,11 @@ export async function findDefinition(root, symbol) {
     return { ok: true, matches: [], truncated: false };
 
   const { matches } = parseNullGrep(git.stdout, root);
-  return { ok: true, matches: rankDefinitions(matches, name), truncated: false };
+  return {
+    ok: true,
+    matches: rankDefinitions(matches, name),
+    truncated: false,
+  };
 }
 
 /**
@@ -251,4 +261,9 @@ function rankDefinitions(matches, name) {
     }));
 }
 
-export const __test__ = { parseNullGrep, parsePlainGrep, rankDefinitions, columnOf };
+export const __test__ = {
+  parseNullGrep,
+  parsePlainGrep,
+  rankDefinitions,
+  columnOf,
+};

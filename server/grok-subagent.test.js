@@ -16,6 +16,7 @@ import {
   parentToolBelongsToFollow,
   parentTextAfterChild,
   subagentFindings,
+  assistantEndedOnTools,
   setStallMsForTesting,
   setQueueIdleMsForTesting,
   readJsonlFromOffset,
@@ -431,6 +432,112 @@ test("idle turn closes as soon as grok journals turn_completed", async () => {
     assert.ok(events.some((event) => event.type === "agent_settled"));
     const settled = events.filter((event) => event.type === "agent_settled");
     assert.equal(settled.length, 1);
+  } finally {
+    if (prevHome === undefined) delete process.env.GROK_HOME;
+    else process.env.GROK_HOME = prevHome;
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("assistantEndedOnTools is true only when the last real block is a tool", () => {
+  assert.equal(assistantEndedOnTools(undefined), false);
+  assert.equal(assistantEndedOnTools([]), false);
+  assert.equal(
+    assistantEndedOnTools([{ type: "text", text: "here is the answer" }]),
+    false,
+  );
+  assert.equal(
+    assistantEndedOnTools([
+      { type: "text", text: "I'll search." },
+      { type: "toolCall", id: "t1", name: "web_search" },
+    ]),
+    true,
+  );
+  assert.equal(
+    assistantEndedOnTools([
+      { type: "toolCall", id: "t1", name: "web_search" },
+      { type: "text", text: "   " },
+    ]),
+    true,
+  );
+  assert.equal(
+    assistantEndedOnTools([
+      { type: "text", text: "I'll search." },
+      { type: "toolCall", id: "t1", name: "web_search" },
+      { type: "text", text: "Call it Spawn." },
+    ]),
+    false,
+  );
+});
+
+test("a tool-only turn_completed does not settle the live prompt", async () => {
+  // The cutoff: grok journals turn_completed after tools. Treating that as
+  // the end of prompt() closed the turn and dropped whatever came next.
+  const home = mkdtempSync(join(tmpdir(), "grok-tool-tail-"));
+  const prevHome = process.env.GROK_HOME;
+  process.env.GROK_HOME = home;
+  try {
+    const agent = stubAliveAgent("tool-tail-watch");
+    agent.cwd = "/tmp/pi-web-tool-tail-cwd";
+    agent.sessionId = "sess-tool-tail";
+    const updates = join(
+      home,
+      "sessions",
+      encodeURIComponent(agent.cwd),
+      "sess-tool-tail",
+      "updates.jsonl",
+    );
+    mkdirSync(dirname(updates), { recursive: true });
+    writeFileSync(updates, "");
+    const events = [];
+    agent.onEvent((event) => events.push(event));
+    const pending = agent.prompt("suggest names");
+    agent.handleSessionUpdate({
+      update: {
+        sessionUpdate: "agent_message_chunk",
+        content: { type: "text", text: "I'll search." },
+      },
+    });
+    agent.handleSessionUpdate({
+      update: {
+        sessionUpdate: "tool_call",
+        toolCallId: "t1",
+        title: "web_search",
+        status: "completed",
+        rawInput: { query: "names" },
+      },
+    });
+    appendFileSync(
+      updates,
+      JSON.stringify({
+        method: "_x.ai/session/update",
+        params: { update: { sessionUpdate: "turn_completed" } },
+      }) + "\n",
+    );
+    await sleep(600);
+    assert.equal(agent.turn !== undefined, true, "must stay on the same turn");
+    assert.equal(
+      events.filter((event) => event.type === "agent_settled").length,
+      0,
+      "must not settle on a tool-only generation",
+    );
+    agent.handleSessionUpdate({
+      update: {
+        sessionUpdate: "agent_message_chunk",
+        content: { type: "text", text: "Call it Spawn." },
+      },
+    });
+    appendFileSync(
+      updates,
+      JSON.stringify({
+        method: "_x.ai/session/update",
+        params: { update: { sessionUpdate: "turn_completed" } },
+      }) + "\n",
+    );
+    const result = await pending;
+    assert.equal(result.ok, true);
+    assert.equal(agent.turn, undefined);
+    assert.ok(events.some((event) => event.type === "agent_settled"));
   } finally {
     if (prevHome === undefined) delete process.env.GROK_HOME;
     else process.env.GROK_HOME = prevHome;

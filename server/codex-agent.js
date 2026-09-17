@@ -14,6 +14,7 @@ import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import { AgentPool } from "./agent-pool.js";
+import { ApprovalGate } from "./approval-gate.js";
 import { attachQueue } from "./agent-queue.js";
 import { unsupported } from "./agent-methods.js";
 import {
@@ -25,7 +26,11 @@ import {
 } from "./agent-subagent.js";
 import { CodexAppServer, codexRequest } from "./codex-app-server.js";
 import { loadCodexUsage } from "./codex-usage.js";
-import { stripClarifyPrefix, withClarifyPrefix } from "./co-partner-prompt.js";
+import {
+  repoContext,
+  stripClarifyPrefix,
+  withClarifyPrefix,
+} from "./co-partner-prompt.js";
 
 export const CODEX_SESSIONS_ROOT = () =>
   join(process.env.CODEX_HOME || join(homedir(), ".codex"), "sessions");
@@ -146,6 +151,8 @@ class CodexAgentProcess {
     this.cwd = undefined;
     this.model = undefined;
     this.thinkingLevel = undefined;
+    this.agentMode = undefined;
+    this.approvalGate = new ApprovalGate(this);
     this.sessionFile = undefined;
     this.lastState = undefined;
     this.listeners = new Set();
@@ -233,6 +240,7 @@ class CodexAgentProcess {
     if (options.accessMode)
       this.accessMode =
         options.accessMode === "read-only" ? "read-only" : "workspace-write";
+    if (options.agentMode) this.agentMode = options.agentMode;
     if (options.model?.id)
       this.model = { provider: "codex", id: options.model.id };
     if (options.thinkingLevel) this.thinkingLevel = options.thinkingLevel;
@@ -247,10 +255,10 @@ class CodexAgentProcess {
       const config = {
         cwd: effectiveCwd,
         sandbox: this.accessMode,
-        // pi-web owns the access decision through accessMode; asking for
-        // approvals over a protocol nobody is watching would just hang the
-        // turn on an unanswered request.
-        approvalPolicy: "never",
+        // Manual mode asks the human per untrusted command via
+        // execCommandApproval; otherwise pi-web owns the access decision
+        // through accessMode and asking would hang the turn.
+        approvalPolicy: this.agentMode === "manual" ? "untrusted" : "never",
         ...(this.model?.id ? { model: this.model.id } : {}),
       };
       const resumeId =
@@ -378,9 +386,35 @@ class CodexAgentProcess {
   // ---- notification handling -------------------------------------------
 
   handleServerRequest(message) {
-    // approvalPolicy "never" means codex should not ask, but the protocol
-    // still allows a few request kinds. Decline rather than leave the turn
-    // blocked forever on a request no human is watching.
+    // Manual mode answers the approval asks a human is actually watching;
+    // otherwise approvalPolicy "never" keeps these rare, and any that still
+    // arrive are declined rather than left blocking the turn forever.
+    const approvalMethods = new Set([
+      "execCommandApproval",
+      "applyPatchApproval",
+    ]);
+    if (
+      this.agentMode === "manual" &&
+      approvalMethods.has(message.method) &&
+      this.approvalGate.enabled
+    ) {
+      const params = message.params ?? {};
+      void this.approvalGate
+        .request({
+          toolName: "Bash",
+          title: message.method === "applyPatchApproval" ? "patch" : "command",
+          detail: params.command ?? params.reason,
+        })
+        .then(({ allow }) => {
+          this.connection?.respond(message.id, {
+            decision: allow ? "approved" : "denied",
+          });
+        })
+        .catch(() => {
+          this.connection?.respond(message.id, { decision: "denied" });
+        });
+      return;
+    }
     const denial = {
       decision: "denied",
       "item/tool/requestUserInput": { response: null },
@@ -624,7 +658,10 @@ class CodexAgentProcess {
         type: "text",
         // The clarify gate applies to what the user typed. A steer or a
         // harness follow-up must not be told to stop and ask questions.
-        text: kind === "prompt" ? withClarifyPrefix(message) : message,
+        text:
+          kind === "prompt"
+            ? withClarifyPrefix(message, repoContext(this.cwd))
+            : message,
         text_elements: [],
       },
     ];
@@ -771,6 +808,7 @@ class CodexAgentProcess {
   }
 
   async abort() {
+    this.approvalGate.denyAll();
     this.holdQueue();
     if (!this.connection?.running || !this.threadId || !this.turn?.id)
       return { ok: true };
@@ -783,6 +821,11 @@ class CodexAgentProcess {
     } catch (error) {
       return { ok: false, error: String(error?.message ?? error) };
     }
+  }
+
+  /** Manual-mode answer from POST /api/<key>/approve. */
+  resolveApproval(requestId, optionId) {
+    return this.approvalGate.resolve(requestId, optionId);
   }
 
   async switchSession(sessionPath) {
@@ -806,7 +849,7 @@ class CodexAgentProcess {
       const started = await this.connection.request("thread/start", {
         cwd: this.cwd ?? homedir(),
         sandbox: this.accessMode,
-        approvalPolicy: "never",
+        approvalPolicy: this.agentMode === "manual" ? "untrusted" : "never",
         ...(this.model?.id ? { model: this.model.id } : {}),
       });
       this.threadId = started.thread.id;

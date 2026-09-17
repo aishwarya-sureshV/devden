@@ -2,7 +2,6 @@ node_modules
 dist
 *.log
 .DS_Store
-graphify-out/
 .claude/settings.local.json
 .pi-web-deploy.json
 .pi-web-deploy.json.tmp

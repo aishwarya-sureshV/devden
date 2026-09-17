@@ -125,7 +125,7 @@ test("replay keeps the restart-resume notice in front of the live turn", () => {
 });
 
 /**
- * The cache-miss summary is published after the turn settles so it sits at the
+ * A server notice is published after the turn settles so it sits at the
  * bottom of the final output -- which puts it outside every replay window,
  * since those start after the last agent_end. restoreLiveTurn then re-reads the
  * session file, and a notice was never in it. It must not vanish on refresh.
@@ -146,7 +146,7 @@ test("a settled run's trailing notice survives the session-file re-read", () => 
       source: "server",
       payload: {
         type: "notice",
-        message: "Cache miss — 21,803 tokens re-billed",
+        message: "Context compacted — summary replaces the older transcript",
       },
     },
   ] as unknown as Parameters<Timeline["replayLiveTurn"]>[0];
@@ -170,7 +170,7 @@ test("a settled run's trailing notice survives the session-file re-read", () => 
 
   const last = timeline.items.at(-1);
   assert.ok(
-    last?.kind === "notice" && last.text.includes("Cache miss"),
-    "the cache-miss notice must still be the last item after re-hydrating",
+    last?.kind === "notice" && last.text.includes("Context compacted"),
+    "the trailing notice must still be the last item after re-hydrating",
   );
 });

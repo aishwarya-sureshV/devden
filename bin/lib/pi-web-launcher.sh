@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Shared launcher helpers for pi-web's bin/pi and bin/claude-web wrappers.
+# Shared launcher helpers for pi-web's bin/pi-web and bin/claude-web wrappers.
 # Sourced by both; LAUNCHER_NAME must be set by the caller for messages.
 set -euo pipefail
 
-# Resolve the real launcher location before finding the project root. Homebrew
-# exposes these scripts through symlinks, and BASH_SOURCE otherwise points at
-# the symlink instead of the pi-web checkout.
+# Resolve the real launcher location before finding the project root. npm's
+# global installs and npm link expose these scripts through symlinks, and
+# BASH_SOURCE otherwise points at the symlink instead of the pi-web checkout.
 resolve_pi_web_root() {
   local launcher_path="${BASH_SOURCE[1]}"
   while [[ -L "$launcher_path" ]]; do

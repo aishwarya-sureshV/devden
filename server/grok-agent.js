@@ -47,10 +47,16 @@ import {
   ndJsonStream,
 } from "@zed-industries/agent-client-protocol";
 import { AgentPool } from "./agent-pool.js";
+import { ApprovalGate } from "./approval-gate.js";
 import { attachQueue } from "./agent-queue.js";
 import { unsupported } from "./agent-methods.js";
 import { isSubagentToolName } from "./agent-subagent.js";
-import { stripClarifyPrefix, withGrokPrefix } from "./co-partner-prompt.js";
+import {
+  repoContext,
+  stripClarifyPrefix,
+  withGrokPrefix,
+} from "./co-partner-prompt.js";
+import { withHostGuardEnv } from "./host-guard.js";
 import {
   GROK_PROXY_BASE,
   GROK_PROXY_HEADERS,
@@ -303,6 +309,21 @@ function toolResultText(content) {
     .join("\n");
 }
 
+/** True when the last real block is a tool call. Grok journals
+ *  `turn_completed` at the end of a generation, including ones that still
+ *  end on tools — that is not the end of the user prompt. */
+export function assistantEndedOnTools(content) {
+  if (!Array.isArray(content)) return false;
+  for (let index = content.length - 1; index >= 0; index -= 1) {
+    const block = content[index];
+    const type = String(block?.type ?? "");
+    if (type === "thinking") continue;
+    if (type === "text" && String(block?.text ?? "").trim()) return false;
+    if (type === "toolCall") return true;
+  }
+  return false;
+}
+
 // GROK_SESSIONS_ROOT/<encodeURIComponent(cwd)>/<sessionId>/chat_history.jsonl
 // -- grok's own on-disk layout. sessions.js discovers past sessions by
 // scanning this directly; this adapter only needs to go the other direction
@@ -330,6 +351,8 @@ class GrokAgentProcess {
     this.cwd = undefined;
     this.model = undefined;
     this.thinkingLevel = undefined;
+    this.agentMode = undefined;
+    this.approvalGate = new ApprovalGate(this);
     this.sessionFile = undefined;
     this.lastState = undefined;
     this.listeners = new Set();
@@ -477,7 +500,7 @@ class GrokAgentProcess {
       if (!this.hasConnection()) {
         const child = spawn(resolveGrokExecutable(), ["agent", "stdio"], {
           cwd: effectiveCwd,
-          env: process.env,
+          env: withHostGuardEnv(process.env),
           stdio: ["pipe", "pipe", "pipe"],
         });
         this.process = child;
@@ -543,6 +566,61 @@ class GrokAgentProcess {
             },
             async requestPermission(params) {
               const options = params.options ?? [];
+              // Manual mode routes the ask to the UI; the choice comes back
+              // as a gate option id, which maps onto ACP's optionId here.
+              // Read-only calls (kind "read") never prompt — same category
+              // split the pi extension and Claude Code use.
+              if (self.agentMode === "manual") {
+                if (params.toolCall?.kind === "read") {
+                  const readAllow = options.find(
+                    (o) => o.kind === "allow_once" || o.kind === "allow_always",
+                  );
+                  return readAllow
+                    ? {
+                        outcome: {
+                          outcome: "selected",
+                          optionId: readAllow.optionId,
+                        },
+                      }
+                    : { outcome: { outcome: "cancelled" } };
+                }
+                const { allow, choice } = await self.approvalGate.request({
+                  toolName: String(params.toolCall?.title ?? "tool"),
+                  title: String(params.toolCall?.title ?? "tool"),
+                  detail: params.toolCall?.rawInput,
+                  options: options.map((option) => ({
+                    id: option.optionId,
+                    label:
+                      option.name ??
+                      (option.kind === "allow_once"
+                        ? "Allow once"
+                        : option.kind === "allow_always"
+                          ? "Always allow"
+                          : option.kind === "reject_once"
+                            ? "Deny"
+                            : (option.kind ?? "Skip")),
+                  })),
+                });
+                const picked = options.find(
+                  (option) => option.optionId === choice,
+                );
+                if (allow && picked)
+                  return {
+                    outcome: {
+                      outcome: "selected",
+                      optionId: picked.optionId,
+                    },
+                  };
+                const reject = options.find((o) => o.kind === "reject_once");
+                return reject
+                  ? {
+                      outcome: {
+                        outcome: "selected",
+                        optionId: reject.optionId,
+                      },
+                    }
+                  : { outcome: { outcome: "cancelled" } };
+              }
               const chosen =
                 options.find((o) => o.kind === "allow_always") ??
                 options.find((o) => o.kind === "allow_once") ??
@@ -585,6 +663,7 @@ class GrokAgentProcess {
           ? { provider: "grok-sdk", id: options.model.id }
           : (this.model ?? { provider: "grok-sdk", id: "grok-4.6" });
         if (options.thinkingLevel) this.thinkingLevel = options.thinkingLevel;
+        if (options.agentMode) this.agentMode = options.agentMode;
         this.setStatus("ready");
         return { ok: true, state: await this.getState() };
       }
@@ -606,6 +685,7 @@ class GrokAgentProcess {
         this.model = options.model?.id
           ? { provider: "grok-sdk", id: options.model.id }
           : { provider: "grok-sdk", id: "grok-4.6" };
+        if (options.agentMode) this.agentMode = options.agentMode;
         if (options.model?.id) {
           try {
             await this.connection.setSessionMode({
@@ -1374,7 +1454,14 @@ class GrokAgentProcess {
     const promptBlocks = [
       {
         type: "text",
-        text: kind === "prompt" ? withGrokPrefix(message) : message,
+        text:
+          kind === "prompt"
+            ? withGrokPrefix(
+                message,
+                repoContext(this.cwd),
+                this.agentMode === "manual",
+              )
+            : message,
       },
     ];
     for (const image of images ?? []) {
@@ -1596,11 +1683,19 @@ class GrokAgentProcess {
           continue;
         }
         if (event.params?.update?.sessionUpdate === "turn_completed") {
-          clearInterval(turn.fileTimer);
           if (event.params.update.usage)
             turn.message.usage = usageFrom(event.params.update.usage);
-          if (turn.idle) this.finishIdleTurn();
-          else turn.resolve?.({ stopReason: "end_turn" });
+          if (turn.idle) {
+            clearInterval(turn.fileTimer);
+            this.finishIdleTurn();
+            return;
+          }
+          // A generation that still ends on tools is not the user prompt
+          // finishing. Resolving here settled the UI and dropped whatever
+          // grok streamed next — the cut-off turn. Keep watching.
+          if (assistantEndedOnTools(turn.content)) continue;
+          clearInterval(turn.fileTimer);
+          turn.resolve?.({ stopReason: "end_turn" });
           return;
         }
       }
@@ -1679,6 +1774,7 @@ class GrokAgentProcess {
     // Cancel the ACP turn AND the jsonl follows. connection.cancel alone
     // left spawn_subagent `running`, so isHeldMainTool kept hiding later
     // parent tools after the user hit interrupt.
+    this.approvalGate.denyAll();
     this.holdQueue();
     this.stopSubagentFollows();
     if (!this.connection || !this.sessionId) return { ok: true };
@@ -1688,6 +1784,11 @@ class GrokAgentProcess {
     } catch (error) {
       return { ok: false, error: String(error?.message ?? error) };
     }
+  }
+
+  /** Manual-mode answer from POST /api/<key>/approve. */
+  resolveApproval(requestId, optionId) {
+    return this.approvalGate.resolve(requestId, optionId);
   }
 
   // Hot-swaps an already-running process onto a different saved session,

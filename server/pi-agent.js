@@ -10,7 +10,9 @@ import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { StringDecoder } from "node:string_decoder";
+import { fileURLToPath } from "node:url";
 import { AgentPool } from "./agent-pool.js";
+import { ApprovalGate } from "./approval-gate.js";
 import { attachQueue } from "./agent-queue.js";
 import {
   attachSubagentFollows,
@@ -24,16 +26,21 @@ import { readResumeSession } from "./sessions.js";
 import { logFault } from "./log-fault.js";
 import {
   CO_PARTNER_PROMPT,
+  CO_PARTNER_PROMPT_MANUAL,
   CLARIFY_PROMPT,
-  HOST_PROMPT,
   REPORT_PROMPT,
-  SUBAGENT_PROMPT,
 } from "./co-partner-prompt.js";
+import { withHostGuardEnv } from "./host-guard.js";
 import {
   listOllamaModels,
   mergeModelLists,
   syncOllamaModelsJson,
 } from "./ollama-models.js";
+
+const MANUAL_APPROVE_EXTENSION_URL = new URL(
+  "./pi-extensions/manual-approve.ts",
+  import.meta.url,
+);
 
 const PLAN_MODE_PROMPT = [
   "You are in plan mode, a strictly read-only exploration phase.",
@@ -222,6 +229,8 @@ export class PiAgentProcess {
     this.lastState = undefined;
     this.usageRequest = undefined;
     this.usageCache = { at: 0, result: undefined };
+    this.agentMode = undefined;
+    this.approvalGate = new ApprovalGate(this);
     /** @type {Set<(event: object) => void>} */
     this.listeners = new Set();
     // First-response watchdog state (see armFirstResponseWatchdog).
@@ -336,19 +345,22 @@ export class PiAgentProcess {
   /**
    * Backstop for a turn that ended without saying so.
    *
-   * prompt/steer are in UNTIMED_COMMANDS because their RPC response resolves
-   * only once the whole turn is over -- which makes that response an
-   * authoritative end-of-turn signal. But "ready" was reached solely through
-   * the agent_settled *event*, so when that event never arrived the agent sat
-   * on "working" forever: nothing times out an untimed command, the
-   * first-response watchdog had already disarmed at the first chunk, and
-   * getState() kept answering isStreaming -- which is why even the page's
-   * reconcile poll was correctly told the turn was still live. The reply was
-   * on screen and on disk the whole time; only the spinner disagreed.
+   * prompt/steer are in UNTIMED_COMMANDS on the theory that their RPC
+   * response resolves once the whole turn is over -- but on current pi the
+   * prompt response is an ack that resolves the millisecond the turn
+   * *starts*, so this backstop is armed on every turn and used to settle
+   * healthy >5s turns mid-flight: the agent flipped to "ready", isBusy()
+   * went false, and the user's next message was fired as a concurrent
+   * prompt into the live turn, which pi rejects -- silently dropping it.
+   * (Seen live: a `tailscale serve` bash call that never exited, and two
+   * lost "what happened?" messages.)
    *
-   * The grace window is what keeps this a backstop: agent_settled normally
-   * lands within milliseconds of the response, and settling ahead of it would
-   * cut off the trailing events of a healthy turn.
+   * pi's own state is the authority: the timer asks get_state, and only
+   * settles when pi says no turn is streaming. If agent_settled is lost but
+   * the turn is genuinely over, get_state answers isStreaming:false and the
+   * settle fires; a live turn -- even one hung in a blocking tool -- answers
+   * isStreaming:true (get_state responds even while a tool runs) and is
+   * left alone.
    */
   settleAfterResponse(delayMs = STRANDED_TURN_GRACE_MS) {
     // Already settled: pi's agent_settled normally lands *before* the
@@ -359,21 +371,41 @@ export class PiAgentProcess {
     if (this.status !== "working") return;
     if (this.strandedTurnTimer) clearTimeout(this.strandedTurnTimer);
     const turn = this.turnSeq;
-    this.strandedTurnTimer = setTimeout(() => {
+    const poll = () => {
       this.strandedTurnTimer = undefined;
       // Only ever settle the turn this backstop was armed for.
       if (this.status !== "working" || this.turnSeq !== turn) return;
-      // Recorded, not announced. This lands at the bottom of the transcript,
-      // where it reads as if it describes whatever the user just sent -- and
-      // by now the settle is a handled condition, not something they can act
-      // on. server-faults.log is where it belongs.
-      logFault(
-        "stranded pi turn settled from its RPC response",
-        this.sessionKey,
-      );
-      this.settleTurn();
-      this.emit({ type: "agent_settled", sessionKey: this.sessionKey });
-    }, delayMs);
+      // pi is the authority on liveness: with ack-style prompt responses
+      // the first poll fires 5s into every live turn, so never settle
+      // without asking.
+      void this.getState()
+        .then((state) => {
+          if (this.status !== "working" || this.turnSeq !== turn) return;
+          if (state?.isStreaming) {
+            // The prompt response is an ack at turn start, so this fires
+            // mid-turn on every live turn. The old one-shot gave up here,
+            // and a turn whose agent_settled went missing stayed "working"
+            // forever -- the sidebar's running dot outlived the finished
+            // conversation until the next prompt. Re-arm until pi says the
+            // turn is over: one cheap get_state per grace window.
+            this.strandedTurnTimer = setTimeout(poll, delayMs);
+            this.strandedTurnTimer.unref?.();
+            return;
+          }
+          // Recorded, not announced. This lands at the bottom of the
+          // transcript, where it reads as if it describes whatever the user
+          // just sent -- and by now the settle is a handled condition, not
+          // something they can act on. server-faults.log is where it belongs.
+          logFault(
+            "stranded pi turn settled from its RPC response",
+            this.sessionKey,
+          );
+          this.settleTurn();
+          this.emit({ type: "agent_settled", sessionKey: this.sessionKey });
+        })
+        .catch(() => {});
+    };
+    this.strandedTurnTimer = setTimeout(poll, delayMs);
     this.strandedTurnTimer.unref?.();
   }
 
@@ -415,13 +447,16 @@ export class PiAgentProcess {
     }
     this.setStatus("starting");
     this.cwd = cwd;
+    this.agentMode = options.agentMode;
     this.stdoutBuffer = "";
     const systemPrompt = [
-      CO_PARTNER_PROMPT,
+      // Manual mode skips the pre-tool narration line: the approval card
+      // already shows what is about to run, so it would be pure token spend.
+      options.agentMode === "manual"
+        ? CO_PARTNER_PROMPT_MANUAL
+        : CO_PARTNER_PROMPT,
       CLARIFY_PROMPT,
-      HOST_PROMPT,
       REPORT_PROMPT,
-      SUBAGENT_PROMPT,
       ...(options.agentMode === "plan" ? [PLAN_MODE_PROMPT] : []),
     ].join("\n\n");
     const args = [
@@ -434,6 +469,12 @@ export class PiAgentProcess {
     if (options.accessMode === "read-only" || options.agentMode === "plan") {
       args.push("--tools", "read,grep,find,ls");
     }
+    if (this.agentMode === "manual") {
+      // pi's RPC protocol has no built-in tool approval; the extension
+      // provides it by blocking tool_call and asking over ctx.ui.select,
+      // which reaches us as extension_ui_request on the RPC stream.
+      args.push("-e", fileURLToPath(MANUAL_APPROVE_EXTENSION_URL));
+    }
     if (options.sessionPath) args.push("--session", options.sessionPath);
     if (options.model?.provider && options.model?.id)
       args.push(
@@ -445,7 +486,11 @@ export class PiAgentProcess {
     if (options.thinkingLevel) args.push("--thinking", options.thinkingLevel);
     const child = spawn(resolvePiExecutable(), args, {
       cwd,
-      env: { ...process.env, FORCE_COLOR: "0", NO_COLOR: "1" },
+      env: withHostGuardEnv({
+        ...process.env,
+        FORCE_COLOR: "0",
+        NO_COLOR: "1",
+      }),
       stdio: ["pipe", "pipe", "pipe"],
     });
     this.process = child;
@@ -546,8 +591,14 @@ export class PiAgentProcess {
     });
   }
   abort() {
+    this.approvalGate.denyAll();
     this.holdQueue();
     return this.runCommand({ type: "abort" });
+  }
+
+  /** Manual-mode answer from POST /api/<key>/approve. */
+  resolveApproval(requestId, optionId) {
+    return this.approvalGate.resolve(requestId, optionId);
   }
   newSession() {
     return this.runSessionCommand({ type: "new_session" });
@@ -1068,6 +1119,44 @@ export class PiAgentProcess {
       if (holdEnd) return;
     }
     if (event.type === "agent_settled") this.settleTurn();
+    if (
+      event.type === "extension_ui_request" &&
+      event.method === "select" &&
+      this.approvalGate.enabled
+    ) {
+      // The manual-approve extension asking to run a tool. Title is
+      // "Allow <tool>\n<input json>" — split it back apart for the card.
+      const title = String(event.title ?? "");
+      const split = title.indexOf("\n");
+      const toolName =
+        split === -1
+          ? title.replace(/^Allow\s+/, "").replace(/\?$/, "") || "tool"
+          : title
+              .slice(0, split)
+              .replace(/^Allow\s+/, "")
+              .replace(/\?$/, "") || "tool";
+      const detail = split === -1 ? "" : title.slice(split + 1);
+      void this.approvalGate
+        .request({ toolName, title: toolName, detail })
+        .then(({ allow, choice }) => {
+          const value = !allow
+            ? "Deny"
+            : choice === "allow_always"
+              ? "Always allow"
+              : "Allow once";
+          // A response to pi's request: the id must match the request's,
+          // so this cannot go through send() (it stamps its own id).
+          this.process?.stdin.write(
+            `${JSON.stringify({ type: "extension_ui_response", id: event.id, value })}\n`,
+          );
+        })
+        .catch(() => {
+          /* gate failure: pi's select stays unanswered — same failure mode
+             as any unanswered dialog; the 10-min timeout denies instead. */
+        });
+      this.emit({ ...event, sessionKey: this.sessionKey });
+      return;
+    }
     this.emit({ ...event, sessionKey: this.sessionKey });
   }
 
@@ -1107,6 +1196,13 @@ export class PiAgentPool extends AgentPool {
  * the first user prompt into a concise, professional title. The main agent
  * process is never touched, so the conversation transcript stays clean.
  */
+/**
+ * A board card is a to-do, not a conversation: an imperative fragment reads
+ * right in a narrow lane where a Title Case noun phrase does not.
+ */
+export const CARD_TITLE_INSTRUCTION =
+  "Summarize this excerpt as a task title: 3-6 words, imperative mood, sentence case, no quotes, no trailing period. It labels a card on a kanban board. Reply with ONLY the title, nothing else.";
+
 const TITLE_INSTRUCTION =
   "Generate a short, professional title (3-7 words, Title Case, no quotes, no trailing period) for a conversation that starts with this user message. Reply with ONLY the title, nothing else.";
 
@@ -1137,13 +1233,19 @@ export function assistantText(message) {
 }
 
 /**
- * Generate a title for a conversation from its first user prompt. Best-effort:
- * resolves to "" on any failure so callers can fall back to the prompt itself.
+ * Generate a title from a piece of text. Best-effort: resolves to "" on any
+ * failure so callers can fall back to the text itself. `instruction` lets a
+ * caller ask for a different kind of title (board cards want an imperative
+ * label, not a conversation name) without a second spawner.
  */
-export function generateSessionTitle(firstPrompt, model) {
+export function generateSessionTitle(
+  firstPrompt,
+  model,
+  instruction = TITLE_INSTRUCTION,
+) {
   const prompt = String(firstPrompt ?? "").trim();
   if (!prompt) return Promise.resolve("");
-  const message = `${TITLE_INSTRUCTION}\n\nUser message:\n"${prompt.slice(0, 500)}"`;
+  const message = `${instruction}\n\nUser message:\n"${prompt.slice(0, 500)}"`;
   return new Promise((resolve) => {
     const args = [
       "--mode",

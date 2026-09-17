@@ -20,6 +20,7 @@ import {
   requestNotifications,
   setNotificationsEnabled,
 } from "../lib/notify";
+import { useStore } from "../lib/store";
 
 const EMPTY_CATALOG: PiCatalogResponse = {
   ok: true,
@@ -493,6 +494,15 @@ function SkillsView({
   const [editingName, setEditingName] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  // A skill distilled in a conversation (/skill) waits in the store until
+  // the user opens Skills; consuming it here is the review gate — the user
+  // edits and saves, or discards. Never auto-overwrite an open editor.
+  const { skillDraft, setSkillDraft } = useStore();
+  useEffect(() => {
+    if (!skillDraft || draft) return;
+    setDraft(skillDraft);
+    setSkillDraft(null);
+  }, [skillDraft, draft, setSkillDraft]);
 
   const startNew = () => {
     setEditingName(null);

@@ -50,6 +50,7 @@ import {
   IconSun,
   IconTrash,
   IconColumns,
+  IconPlus,
   IconTerminal,
   BackendLogo,
 } from "./icons";
@@ -362,6 +363,21 @@ export function Sidebar({
     void startFresh(tabs.find((tab) => tab.key === activeKey)?.cwd);
   };
 
+  // Same workspace, a second agent: the current pane keeps running and the
+  // new session tiles beside it. Default backend is unchanged so New session
+  // still opens on the agent this pane started with.
+  const openBeside = (backend: AgentBackend) => {
+    setBackendMenuOpen(false);
+    const cwd = tabs.find((tab) => tab.key === activeKey)?.cwd;
+    if (!cwd) {
+      switchBackend(backend);
+      return;
+    }
+    const key = openConversation(cwd, undefined, backend);
+    onSessionSplit(key);
+    onViewChange("sessions");
+  };
+
   const handleArchive = async (session: (typeof savedSessions)[number]) => {
     setOpenSessionMenu(null);
     const result = await archiveSession(session);
@@ -596,31 +612,61 @@ export function Sidebar({
                   const mark = backendMark(backend);
                   const active = currentBackend === backend;
                   return (
-                    <button
-                      type="button"
-                      role="menuitem"
+                    <div
                       key={backend}
-                      className={active ? "is-active" : undefined}
-                      onClick={() => switchBackend(backend)}
+                      className={`sidebar__backend-row${active ? " is-active" : ""}`}
                     >
-                      <span
-                        className="sidebar__backend-logo sidebar__backend-logo--sm"
-                        style={{ color: mark.color }}
-                        aria-hidden
+                      <button
+                        type="button"
+                        role="menuitem"
+                        className={active ? "is-active" : undefined}
+                        onClick={() => switchBackend(backend)}
                       >
-                        <BackendLogo backend={backend} size={18} />
-                      </span>
-                      <span className="sidebar__backend-option">
-                        <strong>{backendLabel(backend).toLowerCase()}</strong>
-                        <em>
-                          {backendModelLine(backend, tabs, resumeSessions)}
-                        </em>
-                      </span>
-                      <span className="sidebar__live-dot" aria-hidden />
-                      {active ? <span className="sidebar__tick">✓</span> : null}
-                    </button>
+                        <span
+                          className="sidebar__backend-logo sidebar__backend-logo--sm"
+                          style={{ color: mark.color }}
+                          aria-hidden
+                        >
+                          <BackendLogo backend={backend} size={18} />
+                        </span>
+                        <span className="sidebar__backend-option">
+                          <strong>
+                            {backendLabel(backend).toLowerCase()}
+                          </strong>
+                          <em>
+                            {backendModelLine(
+                              backend,
+                              tabs,
+                              resumeSessions,
+                            )}
+                          </em>
+                        </span>
+                        <span className="sidebar__live-dot" aria-hidden />
+                        {active ? (
+                          <span className="sidebar__tick">✓</span>
+                        ) : null}
+                      </button>
+                      {!active && (
+                        <button
+                          type="button"
+                          className="sidebar__backend-beside"
+                          aria-label={`Open a ${backendLabel(backend)} session beside this one`}
+                          title={`Open a ${backendLabel(backend)} session beside this one`}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            openBeside(backend);
+                          }}
+                        >
+                          <IconPlus size={12} />
+                        </button>
+                      )}
+                    </div>
                   );
                 })}
+                <p className="sidebar__backend-hint">
+                  Click a row to switch this pane. Plus opens that agent
+                  beside it — running sessions keep theirs.
+                </p>
               </div>
             )}
           </div>
@@ -1206,8 +1252,16 @@ export function Sidebar({
                     const isAwaiting = matchingTab
                       ? !isRunning && awaitingKeys.has(matchingTab.key)
                       : textAwaitsAnswer(session.lastAssistantText);
+                    // The list's stored name only appears once the turn
+                    // settles and set_session_name persists it; the open
+                    // tab's timeline already carries the live generated
+                    // title (session_title_set lands seconds after the
+                    // first prompt). Prefer it so the panel and the
+                    // conversation header agree during that window.
+                    const liveName =
+                      matchingTab?.timeline.state?.sessionName?.trim();
                     const title = savedSessionTitle(
-                      session.name,
+                      liveName || session.name,
                       session.firstPrompt,
                     );
                     const mark = backendMark(session.backend);

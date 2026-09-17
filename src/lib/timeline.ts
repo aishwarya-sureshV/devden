@@ -20,6 +20,14 @@ export interface UserMessageVersion {
   responseItems: TimelineItem[];
 }
 
+/** A manual-mode tool call waiting on the user's pick. */
+export interface PendingApproval {
+  requestId: string;
+  toolName: string;
+  detail: string;
+  options: { id: string; label: string }[];
+}
+
 export type TimelineItem =
   | {
       id: string;
@@ -188,6 +196,17 @@ export function persistedTurnLooksSettled(
     const role = String(messages[i]?.role ?? "").toLowerCase();
     if (role === "toolresult" || role === "tool") continue;
     if (role !== "assistant") return false;
+    // An assistant message carrying a tool call is a mid-flight turn: the
+    // tool's result is not on disk yet, so however much text the message
+    // also carries, the turn is not over. Calling it settled let the
+    // reconcile poll force the timeline idle (isStreaming:false) while a
+    // hung tool ran on -- the "no sign the agent is working" silence.
+    const blocks = messages[i]?.content;
+    if (
+      Array.isArray(blocks) &&
+      blocks.some((block) => String(block?.type ?? "") === "toolCall")
+    )
+      return false;
     return extractHistoryText(messages[i]?.content).trim().length > 0;
   }
   return false;
@@ -249,6 +268,8 @@ export class Timeline {
   status: RunStatus = "stopped";
   state: SessionState | null = null;
   cycle = 0;
+  /** Manual-mode tool calls waiting on the user's approval. */
+  pendingApprovals: PendingApproval[] = [];
   /**
    * The generated session title, kept outside `state` on purpose. It arrives
    * as its own background event and every later `state` event from the
@@ -327,6 +348,23 @@ export class Timeline {
   private updateItems(updater: (current: TimelineItem[]) => TimelineItem[]) {
     this.items = updater(this.items);
     this.notify();
+  }
+
+  /**
+   * Whether this turn has already reported the error a new notice repeats.
+   * `placeholder` is for the adapter's bare "Internal error", which says
+   * nothing once anything real has been reported; otherwise the text must match
+   * exactly. The scan stops at the last user message, so the same failure in a
+   * later turn is still shown.
+   */
+  private errorAlreadyReported(placeholder: boolean, text: string): boolean {
+    for (let index = this.items.length - 1; index >= 0; index -= 1) {
+      const item = this.items[index];
+      if (item?.kind === "user") return false;
+      if (item?.kind !== "notice" || item.tone !== "error") continue;
+      if (placeholder || item.text === text) return true;
+    }
+    return false;
   }
 
   appendNotice(
@@ -596,8 +634,8 @@ export class Timeline {
         settledAt = index;
     }
     if (settledAt >= 0) {
-      // The cache-miss summary is published after the turn settles, so it sits
-      // at the bottom of the final output -- which also puts it outside every
+      // A notice is published after the turn settles, so it sits at the
+      // bottom of the final output -- which also puts it outside every
       // window above, since those start after the last agent_end. The caller
       // re-reads the session file and a notice is not in it, so hold these for
       // hydrate() rather than dropping them on every refresh.
@@ -1031,15 +1069,20 @@ export class Timeline {
     if (event.type === "notice") {
       const raw = String(event.message ?? "");
       const clean = readableAgentError(raw);
-      if (isGenericAgentError(raw)) {
-        const last = this.items.at(-1);
-        if (last?.kind === "notice" && last.tone === "error") return;
-        this.appendNotice(clean || raw, noticeTone(event.tone));
+      const tone = noticeTone(event.tone);
+      // A failed turn reports itself twice: the provider's stderr lands first
+      // with the real sentence, then the adapter's settle notice repeats it — as
+      // a bare "Internal error" when the payload was JSON, or as the same
+      // sentence again. Only the last item used to be checked, which missed both
+      // whenever a rationale or a tool card arrived in between.
+      if (
+        tone === "error" &&
+        this.errorAlreadyReported(isGenericAgentError(raw), clean || raw)
+      )
         return;
-      }
       this.appendNotice(
         clean || raw,
-        noticeTone(event.tone),
+        tone,
         typeof event.parentToolUseId === "string"
           ? event.parentToolUseId
           : undefined,
@@ -1281,8 +1324,61 @@ export class Timeline {
 
     if (event.type === "agent_settled") {
       this.status = "ready";
+      // An approval cannot outlive the turn it gated.
+      if (this.pendingApprovals.length > 0) this.pendingApprovals = [];
       this.settle();
       this.notify();
+      return;
+    }
+
+    if (event.type === "approval_request") {
+      const requestId = String(event.requestId ?? "");
+      if (!requestId) return;
+      if (
+        this.pendingApprovals.some(
+          (approval) => approval.requestId === requestId,
+        )
+      )
+        return;
+      const options = Array.isArray(event.options)
+        ? (event.options as { id: string; label: string }[]).filter(
+            (option) =>
+              option &&
+              typeof option.id === "string" &&
+              typeof option.label === "string",
+          )
+        : [];
+      this.pendingApprovals = [
+        ...this.pendingApprovals,
+        {
+          requestId,
+          toolName: String(event.toolName ?? "tool"),
+          detail:
+            typeof event.detail === "string"
+              ? event.detail
+              : event.detail
+                ? JSON.stringify(event.detail, null, 2)
+                : "",
+          options,
+        },
+      ];
+      this.notify();
+      return;
+    }
+
+    if (event.type === "approval_resolved") {
+      const requestId = String(event.requestId ?? "");
+      if (
+        this.pendingApprovals.length > 0 &&
+        this.pendingApprovals.some(
+          (approval) => approval.requestId === requestId,
+        )
+      ) {
+        this.pendingApprovals = this.pendingApprovals.filter(
+          (approval) => approval.requestId !== requestId,
+        );
+        this.notify();
+      }
       return;
     }
 

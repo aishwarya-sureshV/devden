@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { IconCheck, IconCopy } from './icons'
 
-async function copyText(text: string) {
+export async function copyText(text: string) {
   if (navigator.clipboard?.writeText) {
     await navigator.clipboard.writeText(text)
     return

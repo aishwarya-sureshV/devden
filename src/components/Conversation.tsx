@@ -51,6 +51,14 @@ import {
 } from "../lib/modelIdentity";
 import { capabilitiesFor } from "../lib/agentCapabilities";
 import {
+  exhaustedWindow,
+  isUsageLimitError,
+  limitResumePrompt,
+  limitScope,
+  pendingLimitTurn,
+} from "../lib/usageLimit";
+import { LimitBanner } from "./LimitBanner";
+import {
   estimateContext,
   compactTokens,
   type ContextUsage,
@@ -61,6 +69,30 @@ import {
   timelineToMarkdown,
   transcriptFilename,
 } from "../lib/exportSession";
+import { DISTILL_SKILL_PROMPT } from "../lib/skilldraft";
+import {
+  formatReviewHunks,
+  integrityPrompt,
+  filterDiffToFiles,
+  lastUserRequest,
+  lastUserTimestamp,
+  partitionUnifiedDiff,
+  reviewPathsMatch,
+  scanPrechecks,
+  taskPrompt,
+  statsForTurn,
+  turnStats,
+} from "../lib/turnReview";
+import {
+  isTurnComplete,
+  isTurnLogOpen,
+  splitTurns,
+  turnBodyItems,
+  turnEndedAt,
+  turnKey,
+  turnSummaryItems,
+  turnUserItems,
+} from "../lib/turnFold";
 import type { TimelineItem } from "../lib/timeline";
 import {
   collectSubagentRuns,
@@ -81,7 +113,6 @@ import { SubagentPanel } from "./SubagentPanel";
 import { RichText } from "./RichText";
 import {
   getToolDiff,
-  isFileEditTool,
   type DiffLine,
   type ToolFileView,
 } from "../lib/toolCards";
@@ -96,13 +127,23 @@ import {
 import { CopyButton } from "./CopyButton";
 import { TodoTracker, TodoTranscript, extractTodos } from "./TodoTracker";
 import { ChangesPanel } from "./ChangesPanel";
-import { UsageSummary, usageResetLabel } from "./UsageDisplay";
+import { BoardPanel } from "./BoardPanel";
+import { SelectionTools } from "./SelectionTools";
+import { TurnCompleteBar } from "./TurnCompleteBar";
+import { TurnFilesCard, TurnFoldBar, turnChangedFiles } from "./TurnFoldBar";
+import { ReviewCard } from "./ReviewCard";
+import { RouteSetup } from "./RouteSetup";
+import { RouteChainStrip } from "./RouteChainStrip";
+import { RouteHandoffCard } from "./RouteHandoffCard";
+import { RouteRolePane } from "./RouteRolePane";
 import {
-  ActiveRunIndicator,
-  ToolActivitySummary,
-  ToolDetailsRail,
-  type ToolGroup,
-} from "./ToolActivity";
+  applyTemplate,
+  emptyRoute,
+  type RouteTemplate,
+  type SessionRoute,
+} from "../lib/route";
+import { UsageSummary, showsUsageSummary } from "./UsageDisplay";
+import { ActiveRunIndicator } from "./ToolActivity";
 import type { PaneDensity } from "../lib/sessionLayout";
 import {
   IconArrowUp,
@@ -118,6 +159,7 @@ import {
   IconFork,
   IconInfo,
   IconHistory,
+  IconColumns,
   IconList,
   IconPencil,
   IconPlus,
@@ -130,7 +172,9 @@ import {
 
 type ModelOption = { provider: string; id: string; label: string };
 type AccessMode = "workspace-write" | "read-only";
-type AgentMode = "standard" | "plan";
+type AgentMode = "standard" | "plan" | "routed" | "manual";
+const apiAgentMode = (mode: AgentMode): "standard" | "plan" | "manual" =>
+  mode === "plan" ? "plan" : mode === "manual" ? "manual" : "standard";
 const USAGE_IDLE_REFRESH_INTERVAL_MS = 5 * 60_000 + 30_000;
 const USAGE_RUNNING_REFRESH_INTERVAL_MS = 30_000;
 type Attachment = {
@@ -187,6 +231,18 @@ const LOCAL_COMMANDS: SlashCommand[] = [
     name: "goal",
     description:
       "Park a background goal with automatic check-ins (/goal off clears)",
+    source: "local",
+  },
+  {
+    name: "remote",
+    description:
+      "Open this workbench on your phone via a secure tunnel + QR (/remote off stops)",
+    source: "local",
+  },
+  {
+    name: "skill",
+    description:
+      "Distill this session into a reusable skill draft (review before saving)",
     source: "local",
   },
   {
@@ -256,6 +312,8 @@ export function Conversation({
     workspaceReveal,
     openForkedConversation,
     openConversation,
+    closeConversation,
+    revealConversation,
   } = useStore();
   const [draft, setDraft] = useState("");
   // The draft survives page reloads: keyed by conversation identity (the
@@ -300,6 +358,10 @@ export function Conversation({
     tab.backend === "claude" ? CLAUDE_EFFORT_LEVELS : [],
   );
   const [commandMenuOpen, setCommandMenuOpen] = useState(false);
+  const [remoteQr, setRemoteQr] = useState<{
+    qrDataUrl: string;
+    connectUrl: string;
+  } | null>(null);
   const [modeMenuOpen, setModeMenuOpen] = useState(false);
   // Compaction is a long, silent backend job: pi/claude re-summarize the whole
   // history before answering. Without a visible in-progress state the UI looked
@@ -307,8 +369,24 @@ export function Conversation({
   const [compacting, setCompacting] = useState(false);
   const [accessMode, setAccessMode] = useState<AccessMode>("workspace-write");
   const [agentMode, setAgentMode] = useState<AgentMode>("standard");
-  const [toolRail, setToolRail] = useState<ToolGroup | null>(null);
+  const [route, setRoute] = useState<SessionRoute>(emptyRoute);
+  const [routePicking, setRoutePicking] = useState(true);
+  const [openRoleId, setOpenRoleId] = useState<string | null>(null);
   const [forkingId, setForkingId] = useState<string | null>(null);
+  const [reviews, setReviews] = useState<
+    {
+      id: string;
+      backend: AgentBackend;
+      integrityKey: string;
+      taskKey: string;
+    }[]
+  >([]);
+  // Per-turn explicit expand/collapse. Cleared when the next prompt is sent
+  // so older logs fold; the newest finished turn stays open by default.
+  const [turnOpen, setTurnOpen] = useState<Record<string, boolean>>({});
+  const [reviewStarting, setReviewStarting] = useState<AgentBackend | null>(
+    null,
+  );
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const [configuring, setConfiguring] = useState(false);
   const [slashIndex, setSlashIndex] = useState(0);
@@ -338,6 +416,7 @@ export function Conversation({
   const [overflowOpen, setOverflowOpen] = useState(false);
   const overflowRef = useRef<HTMLDivElement | null>(null);
   const [workspaceOpen, setWorkspaceOpen] = useState(false);
+  const [boardOpen, setBoardOpen] = useState(false);
   const [workspaceMounted, setWorkspaceMounted] = useState(false);
   const [workspacePlacement, setWorkspacePlacement] =
     useState<WorkspacePlacement>(() =>
@@ -346,6 +425,11 @@ export function Conversation({
         : "side",
     );
   const workspacePickerRef = useRef<WorkspacePickerHandle | null>(null);
+  // Width-aware tight mode: any side pane (board, explorer, subagents, route
+  // pane) or a narrow window shrinks the conversation column — apply the same
+  // compact treatment split sessions get, whatever the cause.
+  const conversationRef = useRef<HTMLDivElement>(null);
+  const [narrow, setNarrow] = useState(false);
   const [providerUsage, setProviderUsage] = useState<ProviderUsage | null>(
     null,
   );
@@ -356,6 +440,7 @@ export function Conversation({
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const dragCounterRef = useRef(0);
   const addDetailsRef = useRef<HTMLDetailsElement | null>(null);
+  const modeMenuRef = useRef<HTMLDivElement | null>(null);
   const usageRequestRef = useRef<Promise<boolean> | null>(null);
   const usageRefreshPendingRef = useRef(false);
   const commandRequestRef = useRef<Promise<void> | null>(null);
@@ -381,6 +466,42 @@ export function Conversation({
   }, [overflowOpen]);
 
   const state = timeline.state;
+
+  const persistRoute = (next: SessionRoute) => {
+    setRoute(next);
+    void api.putRoute(tab.key, next, tab.sessionPath ?? state?.sessionFile);
+  };
+
+  useEffect(() => {
+    let cancelled = false;
+    void api.getRoute(tab.key, tab.sessionPath).then((result) => {
+      if (cancelled || !result.ok || !result.route) return;
+      setRoute(result.route);
+      setRoutePicking(!result.route.template);
+      if (result.route.enabled) setAgentMode("routed");
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [tab.key, tab.sessionPath]);
+
+  const awaitingRoute =
+    agentMode === "routed" && (routePicking || !route.template);
+
+  const dismissRoutePick = () => {
+    if (route.template) setRoutePicking(false);
+    else void switchAgentMode("standard");
+  };
+
+  useEffect(() => {
+    if (!awaitingRoute) return;
+    textareaRef.current?.blur();
+    const onKey = (event: globalThis.KeyboardEvent) => {
+      if (event.key === "Escape") dismissRoutePick();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [awaitingRoute]);
 
   const status = timeline.status;
   // A subagent run keeps going after pi's own turn settles (its children work
@@ -453,9 +574,148 @@ export function Conversation({
       /* storage unavailable; the event path still seeds it */
     }
     const key = openConversation(tab.cwd, undefined, backend);
+    onSessionSplit?.(key);
     window.dispatchEvent(
       new CustomEvent("pi-web:seed-draft", { detail: { key, text } }),
     );
+  };
+
+  const startTurnReview = async (backend: AgentBackend) => {
+    if (reviewStarting || streaming || !tab.cwd) return;
+    const userRequest = lastUserRequest(visibleItems);
+    if (!userRequest) {
+      timeline.appendNotice(
+        "Nothing to review — no user request on this turn.",
+        "info",
+      );
+      return;
+    }
+    setReviewStarting(backend);
+    try {
+      const payload = await collectReviewDiff(
+        tab.key,
+        tab.cwd,
+        lastUserTimestamp(visibleItems),
+        turnStats(visibleItems).files,
+      );
+      if (!payload.ok) {
+        timeline.appendNotice(
+          payload.error ?? "Could not collect the review diff.",
+          "error",
+        );
+        return;
+      }
+      if (!payload.diff.trim()) {
+        timeline.appendNotice(
+          payload.reason ??
+            "Nothing to review — this turn did not change the tree.",
+          "info",
+        );
+        return;
+      }
+      const parts = partitionUnifiedDiff(payload.diff);
+      const sourceHunks = capText(formatReviewHunks(parts.sourceDiff));
+      const testHunks = capText(formatReviewHunks(parts.testDiff)) || "none";
+      const prechecks = scanPrechecks(parts.sourceDiff, parts.testDiff);
+      const integrity = integrityPrompt({
+        userRequest,
+        sourceHunks,
+        testHunks,
+        prechecks,
+      });
+      const task = taskPrompt({ userRequest, sourceHunks });
+      const [integrityRun, taskRun] = await Promise.all([
+        launchReviewSession({
+          backend,
+          cwd: tab.cwd,
+          label: `${displayTitle} · integrity`,
+          prompt: integrity,
+        }),
+        launchReviewSession({
+          backend,
+          cwd: tab.cwd,
+          label: `${displayTitle} · task`,
+          prompt: task,
+        }),
+      ]);
+      if ("error" in integrityRun && "error" in taskRun) {
+        timeline.appendNotice(
+          integrityRun.error ??
+            "Integrity and task review both failed to start.",
+          "error",
+        );
+        return;
+      }
+      if ("error" in integrityRun)
+        timeline.appendNotice(
+          integrityRun.error ?? "Integrity review failed to start.",
+          "warning",
+        );
+      if ("error" in taskRun)
+        timeline.appendNotice(
+          taskRun.error ?? "Task review failed to start.",
+          "warning",
+        );
+      if ("key" in integrityRun && "key" in taskRun) {
+        setReviews((current) => [
+          ...current,
+          {
+            id: crypto.randomUUID(),
+            backend,
+            integrityKey: integrityRun.key,
+            taskKey: taskRun.key,
+          },
+        ]);
+      }
+    } finally {
+      setReviewStarting(null);
+    }
+  };
+
+  const launchReviewSession = async (args: {
+    backend: AgentBackend;
+    cwd: string;
+    label: string;
+    prompt: string;
+  }): Promise<{ key: string } | { error: string }> => {
+    const key = openConversation(args.cwd, args.label, args.backend, {
+      activate: false,
+      guest: true,
+    });
+    const configured = await api.configure(
+      key,
+      args.cwd,
+      "workspace-write",
+      "standard",
+      undefined,
+      BACKEND_DEFAULT_EFFORT[args.backend],
+      undefined,
+      args.backend,
+    );
+    if (!configured.ok) {
+      closeConversation(key);
+      return {
+        error:
+          configured.error ??
+          `${backendLabel(args.backend)} could not start the review.`,
+      };
+    }
+    const sent = await api.prompt(key, args.prompt, {
+      cwd: args.cwd,
+      backend: args.backend,
+      thinkingLevel: BACKEND_DEFAULT_EFFORT[args.backend],
+      accessMode: "workspace-write",
+      agentMode: "standard",
+    });
+    if (!sent.ok) {
+      closeConversation(key);
+      return {
+        error:
+          sent.error ??
+          `${backendLabel(args.backend)} did not take the review.`,
+      };
+    }
+    return { key };
   };
 
   useEffect(() => {
@@ -487,6 +747,17 @@ export function Conversation({
       }
     : estimated;
   const hasItems = timeline.items.length > 0;
+  useEffect(() => {
+    const el = conversationRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver((entries) => {
+      setNarrow(
+        (entries[entries.length - 1]?.contentRect.width ?? Infinity) < 640,
+      );
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [hasItems]);
   // The handoff field shows a single backend — the first one this session is
   // not already running on — so the closed select stays as narrow as its mark
   // instead of listing every other agent at once.
@@ -516,6 +787,17 @@ export function Conversation({
   const mirrorsChildWork = tab.backend === "grok";
   const subagentBusy =
     mirrorsChildWork && subagentRuns.some((run) => run.status === "running");
+
+  // --- The quota wall ------------------------------------------------------
+  // Only a turn that actually died on an exhausted limit gets the pill. A
+  // percentage readout is not an event: a window sitting at 100% on an idle
+  // session has nothing to resume, and a transient 429 that clears on its own
+  // is not the same failure as a quota that has run out. The provider's own
+  // numbers still supply the window's name and its reset instant.
+  const limitTurn = pendingLimitTurn(timeline.items, isLocalCommandText);
+  const limitWindow = exhaustedWindow(providerUsage);
+  const limitVisible = Boolean(limitTurn);
+
   const visibleItems = timeline.items
     .filter(
       (item) =>
@@ -537,7 +819,14 @@ export function Conversation({
         !isSubagentCheckIn(item, timeline.items) &&
         !(mirrorsChildWork && isSubagentEcho(item, timeline.items)) &&
         !(mirrorsChildWork && isSubagentToolEcho(item, timeline.items)) &&
-        !(item.kind === "user" && isLocalCommandText(item.text)),
+        !(item.kind === "user" && isLocalCommandText(item.text)) &&
+        // The quota pill above the composer owns this message; a red block in
+        // the transcript saying the same thing is the same wall twice.
+        !(
+          limitVisible &&
+          item.kind === "notice" &&
+          isUsageLimitError(item.text)
+        ),
     )
     .filter((item, index, all) => {
       if (item.kind !== "assistant" || !isAskMessage(item.text)) return true;
@@ -558,7 +847,11 @@ export function Conversation({
       ? liveNarration.text
       : "",
   );
-  const chatRows = buildChatRows(visibleItems, streaming);
+  const chatTurns = useMemo(() => splitTurns(visibleItems), [visibleItems]);
+  const lastTurnKey = chatTurns.at(-1) ? turnKey(chatTurns.at(-1)!) : "";
+  useEffect(() => {
+    setTurnOpen({});
+  }, [tab.key, lastTurnKey]);
   // TimelineRow is memoized; passing fresh inline closures here would bust the
   // memo on every tick. Route the calls through a ref so identities stay
   // stable while the closures always see the latest state.
@@ -703,6 +996,31 @@ export function Conversation({
   const lastAssistantId = streaming
     ? undefined
     : lastAnswerableAssistantId(visibleItems);
+  const renderTimelineItem = (item: TimelineItem) => (
+    <TimelineRow
+      key={item.id}
+      item={item}
+      onOpenFile={setViewer}
+      onFork={stableRowHandlers.onFork}
+      onRewindFiles={stableRowHandlers.onRewindFiles}
+      subagentChildren={subagentChildren}
+      onOpenSubagent={stableRowHandlers.onOpenSubagent}
+      onBackgroundSubagent={stableRowHandlers.onBackgroundSubagent}
+      forking={forkingId === item.id}
+      canFork={caps.fork}
+      canTruncate={caps.truncate}
+      showActions={responseActionIds.has(item.id)}
+      showModelTag={item.id === lastAssistantId}
+      onAnswer={
+        item.id === lastAssistantId ? stableRowHandlers.onAnswer : undefined
+      }
+      editingId={editingMessageId}
+      streaming={streaming}
+      onEditMessage={stableRowHandlers.onEditMessage}
+      onCancelEdit={stableRowHandlers.onCancelEdit}
+      onVersionChange={stableRowHandlers.onVersionChange}
+    />
+  );
   const runningShell = streaming
     ? [...timeline.items]
         .reverse()
@@ -871,13 +1189,59 @@ export function Conversation({
     }
   }, [refreshUsage]);
 
+  // The percentages lag the failure (the poll runs every 30-60s), so ask now
+  // that it has landed rather than showing the banner with stale numbers.
+  useEffect(() => {
+    if (limitTurn?.noticeId) void refreshUsage(true);
+  }, [limitTurn?.noticeId, refreshUsage]);
+
+  /**
+   * Sends a harness nudge rather than the user's text again: the agent still
+   * holds its session, so all it is missing is the fact that the last turn
+   * never finished. Nothing is appended to the transcript — the nudge is not
+   * the user talking.
+   */
+  const resumeFromLimit = async () => {
+    if (!limitTurn || streaming) return;
+    const prompt = limitResumePrompt(
+      limitTurn.request,
+      limitScope(limitWindow?.label ?? ""),
+    );
+    timeline.appendNotice("Resuming the interrupted turn…", "info");
+    timeline.markPendingRun();
+    const result: {
+      ok: boolean;
+      error?: string;
+      data?: { queued?: boolean };
+    } = await api.prompt(tab.key, prompt, {
+      cwd: tab.cwd,
+      backend: tab.backend,
+      sessionPath: tab.sessionPath ?? state?.sessionFile ?? undefined,
+      model: state?.model ?? undefined,
+      thinkingLevel: state?.thinkingLevel ?? undefined,
+    });
+    if (!result.ok) {
+      timeline.clearPendingRun();
+      timeline.appendNotice(
+        result.error ?? "Could not resume the interrupted turn",
+        "error",
+      );
+    } else if (result.data?.queued) timeline.clearPendingRun();
+  };
+
   useEffect(() => {
     // Refresh once when the session loads. While the agent is working, poll every
     // 30s with a forced provider check so the composer usage stays current.
-    if (status === "starting" || status === "stopped" || !state) return;
+    // A session whose turn is done — or that was only opened for viewing —
+    // still owns a usage quota, so ask as long as there is something to ask
+    // about: a live state, or a session file the server can read. Only a
+    // brand-new conversation (neither) stays quiet.
+    // ponytail: each tab polls its backend independently — N open tabs mean N
+    // fetches per interval. Provider-global dedupe if that ever shows.
+    if (status === "starting" || (!state && !tab.sessionPath)) return;
     let timer: number | undefined;
     let cancelled = false;
-    const running = status === "working" || state.isStreaming === true;
+    const running = status === "working" || state?.isStreaming === true;
     const interval = running
       ? USAGE_RUNNING_REFRESH_INTERVAL_MS
       : USAGE_IDLE_REFRESH_INTERVAL_MS;
@@ -923,6 +1287,7 @@ export function Conversation({
     state?.model?.id,
     state?.model?.provider,
     status,
+    tab.sessionPath,
   ]);
 
   useEffect(() => {
@@ -1179,12 +1544,18 @@ export function Conversation({
       openWorkspace();
       return;
     }
+    if (nextMode === "routed" && !switchingFolder) {
+      setAgentMode("routed");
+      persistRoute({ ...route, enabled: true });
+      setRoutePicking(!route.template);
+      return;
+    }
     setConfiguring(true);
     const result = await api.configure(
       tab.key,
       nextCwd,
       nextAccess,
-      nextMode,
+      apiAgentMode(nextMode),
       state?.model,
       state?.thinkingLevel,
       undefined,
@@ -1200,7 +1571,7 @@ export function Conversation({
       return;
     }
     setAccessMode(nextAccess);
-    setAgentMode(nextMode);
+    setAgentMode(nextMode === "routed" ? "routed" : nextMode);
     timeline.reset(result.state);
     if (nextCwd !== tab.cwd) setConversationWorkspace(tab.key, nextCwd);
   };
@@ -1209,7 +1580,22 @@ export function Conversation({
   // against the same session file (plan mode = different system prompt + tool
   // allowlist, which only apply at spawn time), so the transcript is reloaded
   // from the persisted session afterwards.
-  const switchAgentMode = async (nextMode: AgentMode) => {
+  const switchAgentMode = async (nextMode: AgentMode, silent = false) => {
+    if (nextMode === "routed") {
+      if (agentMode === "plan") {
+        if (hasItems) await switchAgentMode("standard", true);
+        else await configureSession(accessMode, "standard");
+      }
+      setAgentMode("routed");
+      persistRoute({ ...route, enabled: true });
+      setRoutePicking(!route.template);
+      return;
+    }
+    if (agentMode === "routed") {
+      persistRoute({ ...route, enabled: false });
+      setOpenRoleId(null);
+      setRoutePicking(false);
+    }
     if (configuring || nextMode === agentMode) return;
     if (!hasItems) {
       void configureSession(accessMode, nextMode);
@@ -1235,7 +1621,7 @@ export function Conversation({
       tab.key,
       tab.cwd,
       accessMode,
-      nextMode,
+      apiAgentMode(nextMode),
       state?.model,
       state?.thinkingLevel,
       sessionFile,
@@ -1254,12 +1640,16 @@ export function Conversation({
     else timeline.reset(result.state);
     setAgentMode(nextMode);
     setConversationSessionPath(tab.key, sessionFile);
-    timeline.appendNotice(
-      nextMode === "plan"
-        ? "Plan mode is on — read-only exploration until you run the plan."
-        : "Auto mode is on.",
-      "info",
-    );
+    if (!silent) {
+      timeline.appendNotice(
+        nextMode === "plan"
+          ? "Plan mode is on — read-only exploration until you run the plan."
+          : nextMode === "manual"
+            ? "Manual mode is on — the agent asks before running tools."
+            : "Auto mode is on.",
+        "info",
+      );
+    }
   };
 
   // Edit + resend: rewind the backend to just before the chosen message (the
@@ -1328,6 +1718,7 @@ export function Conversation({
   };
 
   const send = async (raw: string) => {
+    if (awaitingRoute) return;
     const message = raw.trim();
     if (!message && attachments.length === 0) return;
     // Enter in the textarea and the form submit can fire in the same tick,
@@ -1569,6 +1960,37 @@ export function Conversation({
         );
         return;
       }
+      if (message === "/remote" || message.startsWith("/remote ")) {
+        const arg = message.slice("/remote".length).trim();
+        setDraft("");
+        if (arg === "off") {
+          const result = await api.remoteStop();
+          timeline.appendNotice(
+            result.ok
+              ? "Remote tunnel closed."
+              : "No remote tunnel was running.",
+            "info",
+          );
+          return;
+        }
+        timeline.appendNotice(
+          "Opening a secure tunnel — first run downloads cloudflared (~35 MB); later runs take a few seconds…",
+          "info",
+        );
+        const result = await api.remoteStart();
+        if (!result.ok || !result.connectUrl || !result.qrDataUrl) {
+          timeline.appendNotice(
+            result.error ?? "Could not start the remote tunnel.",
+            "error",
+          );
+          return;
+        }
+        setRemoteQr({
+          qrDataUrl: result.qrDataUrl,
+          connectUrl: result.connectUrl,
+        });
+        return;
+      }
       if (message === "/push" || message === "/pull") {
         const op = message.slice(1) as "push" | "pull";
         setDraft("");
@@ -1589,15 +2011,19 @@ export function Conversation({
       // An image attachment is already inline in the `images` payload below.
       // Listing its path under "inspect the attached file(s)" made agents Read
       // it a second time, so the same picture entered context twice and was
-      // re-billed on every later cache miss. The path stays -- it is the only
+      // re-billed as fresh input on every later turn. The path stays -- it is the only
       // way to act on the file itself -- but it says it has already been seen.
       const attachmentLines = pickedAttachments.map((attachment) =>
         attachment.imageData
           ? `- ${attachment.name} (already attached inline — open this path only to edit the file, never to view it): ${attachment.path}`
           : `- ${attachment.name}: ${attachment.path}`,
       );
+      // /skill sends the distill prompt to the agent itself — its own
+      // history is the input, nothing to attach or re-read. The transcript
+      // keeps the short "/skill" bubble instead of the canned prompt.
       const outboundMessage = [
-        message || "Please inspect the attached file(s).",
+        (message === "/skill" ? DISTILL_SKILL_PROMPT : message) ||
+          "Please inspect the attached file(s).",
         attachmentLines.length
           ? `Attached files:\n${attachmentLines.join("\n")}`
           : "",
@@ -1705,6 +2131,13 @@ export function Conversation({
           // and shows no open marker against it.
           setConversationSessionPath(tab.key, result.sessionPath);
         }
+        if (agentMode === "routed") {
+          void api.putRoute(
+            tab.key,
+            route,
+            result.sessionPath ?? tab.sessionPath ?? state?.sessionFile,
+          );
+        }
       } else {
         setAttachments(pickedAttachments);
         if (!willQueue) timeline.clearPendingRun();
@@ -1736,11 +2169,17 @@ export function Conversation({
       }
       if (commandMenuOpen && !target.closest(".composer"))
         setCommandMenuOpen(false);
+      if (
+        modeMenuOpen &&
+        modeMenuRef.current &&
+        !modeMenuRef.current.contains(target)
+      )
+        setModeMenuOpen(false);
     };
     document.addEventListener("pointerdown", closeFloatingMenus);
     return () =>
       document.removeEventListener("pointerdown", closeFloatingMenus);
-  }, [commandMenuOpen]);
+  }, [commandMenuOpen, modeMenuOpen]);
 
   // slash filtering for the command menu opened by typing "/"
   const localCommands = LOCAL_COMMANDS.filter((command) => {
@@ -2039,7 +2478,7 @@ export function Conversation({
     refreshSessions();
   };
 
-  const tight = split && density !== "full";
+  const tight = (split && density !== "full") || narrow;
 
   const setupChips = (
     <div className="composer__setup">
@@ -2073,11 +2512,13 @@ export function Conversation({
             value={agentMode}
             disabled={configuring}
             onChange={(event) =>
-              void configureSession(accessMode, event.target.value as AgentMode)
+              void switchAgentMode(event.target.value as AgentMode)
             }
           >
             <option value="standard">Auto mode</option>
             <option value="plan">Plan mode</option>
+            <option value="routed">Routed mode</option>
+            <option value="manual">Manual mode</option>
           </select>
           <span className="native-select__chev">
             <IconChevronDown size={13} />
@@ -2102,25 +2543,49 @@ export function Conversation({
     </div>
   ) : null;
 
+  const pickRoute = (template: RouteTemplate) => {
+    if (template !== route.template)
+      persistRoute(applyTemplate(template, tab.backend));
+    setRoutePicking(false);
+    window.setTimeout(() => textareaRef.current?.focus(), 0);
+  };
+
+  const routeOverlay = awaitingRoute ? (
+    <div
+      className="route-overlay"
+      role="presentation"
+      onClick={dismissRoutePick}
+    />
+  ) : null;
+
   const composer = (
     <div
-      className={`composer${tight ? " composer--tight" : ""}`}
+      className={`composer${tight ? " composer--tight" : ""}${awaitingRoute ? " is-picking-route" : ""}`}
       data-backend={tab.backend}
     >
       {!streaming && hasItems && tab.cwd && (
-        <ChangesPanel
-          sessionKey={tab.key}
-          cwd={tab.cwd}
-          streaming={streaming}
-          compact={tight}
-          onWorkspaceClick={() => workspacePickerRef.current?.openBrowser()}
-          usageReset={providerUsage ? usageResetLabel(providerUsage) : null}
-          onAskAgent={(prompt) =>
-            setDraft((current) =>
-              current.trim() ? `${current}\n\n${prompt}` : prompt,
-            )
-          }
-        />
+        <div className="composer__turn-bar">
+          <ChangesPanel
+            sessionKey={tab.key}
+            cwd={tab.cwd}
+            streaming={streaming}
+            compact={tight}
+            onWorkspaceClick={() => workspacePickerRef.current?.openBrowser()}
+            onAskAgent={(prompt) =>
+              setDraft((current) =>
+                current.trim() ? `${current}\n\n${prompt}` : prompt,
+              )
+            }
+          />
+          {lastAssistantId && (
+            <TurnCompleteBar
+              backend={tab.backend}
+              stats={turnStats(visibleItems)}
+              starting={reviewStarting}
+              onReview={(backend) => void startTurnReview(backend)}
+            />
+          )}
+        </div>
       )}
       {/* The changes card clips its overflow, so the workspace picker's modal
           has to be hosted outside it. Kept mounted (and hidden) so the folder
@@ -2138,6 +2603,17 @@ export function Conversation({
         />
       )}
       {!hasItems && setupChips}
+      {agentMode === "routed" && (
+        <RouteSetup
+          route={route}
+          sessionKey={tab.key}
+          sessionBackend={tab.backend}
+          picking={awaitingRoute}
+          onChange={(next) => persistRoute({ ...next, enabled: true })}
+          onPick={pickRoute}
+          onChangeRoute={() => setRoutePicking(true)}
+        />
+      )}
       {editingMessageId !== null && (
         <div className="composer__editing" role="status">
           <span>Editing message — press Enter to resend, Esc to cancel</span>
@@ -2192,6 +2668,53 @@ export function Conversation({
         </div>
       )}
       {streaming && todos.length > 0 && <TodoTracker tasks={todos} />}
+      {timeline.pendingApprovals.map((approval) => (
+        <div
+          className="approval-card"
+          key={approval.requestId}
+          role="alertdialog"
+          aria-label={`Approve ${approval.toolName}`}
+        >
+          <div className="approval-card__head">
+            <span className="approval-card__badge">Approval needed</span>
+            <strong>{approval.toolName}</strong>
+          </div>
+          {approval.detail && (
+            <pre className="approval-card__detail">{approval.detail}</pre>
+          )}
+          <div className="approval-card__options" role="group">
+            {approval.options.map((option) => (
+              <button
+                key={option.id}
+                type="button"
+                className={
+                  option.id === "deny" || option.id === "reject_once"
+                    ? "is-danger"
+                    : undefined
+                }
+                onClick={() =>
+                  void api
+                    .approve(
+                      tab.key,
+                      approval.requestId,
+                      option.id,
+                      tab.backend,
+                    )
+                    .then((result) => {
+                      if (!result.ok)
+                        timeline.appendNotice(
+                          result.error ?? "Could not send approval",
+                          "error",
+                        );
+                    })
+                }
+              >
+                {option.label}
+              </button>
+            ))}
+          </div>
+        </div>
+      ))}
       {compacting && (
         <div className="compacting-strip" role="status" aria-live="polite">
           <p className="compacting-strip__hint">
@@ -2287,8 +2810,17 @@ export function Conversation({
           ))}
         </div>
       )}
+      {limitVisible && (
+        <LimitBanner
+          scope={limitScope(limitWindow?.label ?? "")}
+          label={limitWindow?.label}
+          resetsAt={limitWindow?.resetsAt}
+          busy={streaming}
+          onResume={() => void resumeFromLimit()}
+        />
+      )}
       <form
-        className="composer__card"
+        className={`composer__card${awaitingRoute ? " is-awaiting-route" : ""}`}
         onSubmit={(e: FormEvent) => {
           e.preventDefault();
           void send(draft);
@@ -2365,14 +2897,19 @@ export function Conversation({
             ref={textareaRef}
             className="composer__textarea"
             rows={2}
+            disabled={awaitingRoute}
             placeholder={
-              editingMessageId === null
-                ? hasItems
-                  ? tight
-                    ? "Reply…"
-                    : "Reply, or queue the next step…"
-                  : "Describe what you want to build"
-                : "Edit your message…"
+              awaitingRoute
+                ? "Pick a route above"
+                : editingMessageId === null
+                  ? hasItems
+                    ? streaming
+                      ? tight
+                        ? "Reply…"
+                        : "Reply, or queue the next step…"
+                      : "Describe what you want next…"
+                    : "Describe what you want to build"
+                  : "Edit your message…"
             }
             value={draft}
             onChange={(e) => {
@@ -2431,7 +2968,7 @@ export function Conversation({
               </div>
             </details>
             {hasItems && (
-              <div className="composer__mode">
+              <div className="composer__mode" ref={modeMenuRef}>
                 <button
                   type="button"
                   className="composer__mode-trigger"
@@ -2444,18 +2981,33 @@ export function Conversation({
                     ? "Read-only"
                     : agentMode === "plan"
                       ? "Plan"
-                      : "Auto"}
+                      : agentMode === "routed"
+                        ? "Routed"
+                        : agentMode === "manual"
+                          ? "Manual"
+                          : "Auto"}
                   {tight ? "" : " mode"}
                   <IconChevronDown size={11} />
                 </button>
                 {modeMenuOpen && (
                   <div className="composer__mode-menu" role="menu">
+                    <span className="composer__mode-heading">Mode</span>
                     {(
                       [
-                        ["standard", "Auto"],
-                        ["plan", "Plan"],
+                        ["standard", "Auto", "This agent runs the whole turn"],
+                        [
+                          "plan",
+                          "Plan",
+                          "Map the work first; nothing is written",
+                        ],
+                        [
+                          "routed",
+                          "Routed",
+                          "Pass the turn through a chain of agents",
+                        ],
+                        ["manual", "Manual", "Ask before each tool call"],
                       ] as const
-                    ).map(([id, label]) => {
+                    ).map(([id, label, sub]) => {
                       const selected =
                         accessMode !== "read-only" && agentMode === id;
                       return (
@@ -2479,7 +3031,8 @@ export function Conversation({
                           }}
                         >
                           <span>
-                            <strong>{label} mode</strong>
+                            <strong>{label}</strong>
+                            <em>{sub}</em>
                           </span>
                           {selected ? <span>✓</span> : null}
                         </button>
@@ -2489,9 +3042,23 @@ export function Conversation({
                 )}
               </div>
             )}
+            {agentMode === "routed" && (
+              <button
+                type="button"
+                className={`composer__route-chip${awaitingRoute ? " is-open" : ""}`}
+                aria-haspopup="menu"
+                aria-expanded={awaitingRoute}
+                disabled={configuring || streaming}
+                onClick={() =>
+                  awaitingRoute ? dismissRoutePick() : setRoutePicking(true)
+                }
+              >
+                {awaitingRoute ? "esc" : "/ route"}
+              </button>
+            )}
           </div>
           <div className="composer__trailing">
-            {providerUsage?.available && (
+            {providerUsage && showsUsageSummary(providerUsage) && (
               <>
                 <UsageSummary usage={providerUsage} />
                 <span className="usage-summary__rule" aria-hidden="true" />
@@ -2591,7 +3158,9 @@ export function Conversation({
                 type="submit"
                 className="composer__primary"
                 aria-label="Send"
-                disabled={!draft.trim() && attachments.length === 0}
+                disabled={
+                  awaitingRoute || (!draft.trim() && attachments.length === 0)
+                }
               >
                 <IconArrowUp />
               </button>
@@ -2645,19 +3214,18 @@ export function Conversation({
               <IconChevronDown size={12} />
             </span>
           </div>
-          {providerUsage?.available && usageResetLabel(providerUsage) && (
+          {providerUsage?.available && (
             <span className="composer__handoff-reset">
               <button
                 type="button"
                 className={`usage-refresh${usageRefreshing ? " is-spinning" : ""}`}
-                aria-label="Refresh usage and reset time"
-                title="Refresh usage and reset time"
+                aria-label="Refresh usage"
+                title="Refresh usage"
                 disabled={usageRefreshing}
                 onClick={() => void refreshUsageNow()}
               >
                 <IconRefresh size={12} />
               </button>
-              {usageResetLabel(providerUsage)}
             </span>
           )}
         </div>
@@ -2707,6 +3275,21 @@ export function Conversation({
       onClose={closeWorkspace}
       onAddToChat={addWorkspacePathToChat}
     />
+  ) : null;
+
+  // Remounts per workspace: the board seeds from localStorage on mount only.
+  const boardPanel =
+    boardOpen && tab.cwd ? (
+      <BoardPanel
+        key={tab.cwd}
+        cwd={tab.cwd}
+        sessionPath={tab.sessionPath}
+        onClose={() => setBoardOpen(false)}
+      />
+    ) : null;
+
+  const selectionTools = tab.cwd ? (
+    <SelectionTools cwd={tab.cwd} sessionPath={tab.sessionPath} />
   ) : null;
 
   const folderChip =
@@ -2861,7 +3444,20 @@ export function Conversation({
           </div>
         )}
         <div className="conversation-stage">
-          <div className="conversation conversation--empty" {...dropZoneProps}>
+          <div
+            className="conversation conversation--empty"
+            ref={conversationRef}
+            {...dropZoneProps}
+          >
+            {routeOverlay}
+            {agentMode === "routed" && route.steps.length > 0 && (
+              <RouteChainStrip
+                steps={route.steps}
+                activeId={openRoleId}
+                onSelect={setOpenRoleId}
+                onEdit={() => setRoutePicking(true)}
+              />
+            )}
             {/* Standalone hero with flex: 1 — it centers the headline in the
                 free space and pushes the composer down, exactly like the
                 pre-grok layout. Nesting it inside the (top-aligned, flex:
@@ -2881,7 +3477,21 @@ export function Conversation({
             {composer}
             {dropOverlay}
           </div>
+          {agentMode === "routed" &&
+            !tight &&
+            openRoleId &&
+            route.steps.some((step) => step.id === openRoleId) && (
+              <RouteRolePane
+                step={
+                  route.steps.find((step) => step.id === openRoleId) ??
+                  route.steps[0]!
+                }
+                onClose={() => setOpenRoleId(null)}
+              />
+            )}
           {workspaceExplorer}
+          {boardPanel}
+          {selectionTools}
         </div>
         {viewer && <FileViewer view={viewer} onClose={() => setViewer(null)} />}
       </>
@@ -2922,6 +3532,9 @@ export function Conversation({
               <div className="conversation-header__mode">
                 <IconCube size={13} /> Plan mode
               </div>
+            )}
+            {agentMode === "routed" && !tight && (
+              <div className="conversation-header__mode">Routed</div>
             )}
             {viewSwitcher}
           </div>
@@ -2970,6 +3583,18 @@ export function Conversation({
                 <IconCode size={14} />
               </button>
             )}
+            {!split && tab.cwd && (
+              <button
+                type="button"
+                className={`conversation-header__download conversation-header__icon-btn${boardOpen ? " is-active" : ""}`}
+                aria-pressed={boardOpen}
+                aria-label="Board"
+                title="Board"
+                onClick={() => setBoardOpen((open) => !open)}
+              >
+                <IconColumns size={14} />
+              </button>
+            )}
             {!tight && (
               <button
                 type="button"
@@ -2987,7 +3612,16 @@ export function Conversation({
       </div>
 
       <div className="conversation-stage">
-        <div className="conversation" {...dropZoneProps}>
+        <div className="conversation" ref={conversationRef} {...dropZoneProps}>
+          {routeOverlay}
+          {agentMode === "routed" && route.steps.length > 0 && (
+            <RouteChainStrip
+              steps={route.steps}
+              activeId={openRoleId}
+              onSelect={setOpenRoleId}
+              onEdit={() => setRoutePicking(true)}
+            />
+          )}
           {conversationView === "chat" ? (
             <div
               className="conversation__scroll"
@@ -2998,43 +3632,81 @@ export function Conversation({
               tabIndex={0}
             >
               <div className="conversation__column">
-                {chatRows.map((row) =>
-                  row.kind === "summary" ? (
-                    <ToolActivitySummary
-                      key={row.id}
-                      items={row.items}
-                      onOpen={setToolRail}
-                    />
-                  ) : (
-                    <TimelineRow
-                      key={row.item.id}
-                      item={row.item}
-                      onOpenFile={setViewer}
-                      onFork={stableRowHandlers.onFork}
-                      onRewindFiles={stableRowHandlers.onRewindFiles}
-                      subagentChildren={subagentChildren}
-                      onOpenSubagent={stableRowHandlers.onOpenSubagent}
-                      onBackgroundSubagent={
-                        stableRowHandlers.onBackgroundSubagent
-                      }
-                      forking={forkingId === row.item.id}
-                      canFork={caps.fork}
-                      canTruncate={caps.truncate}
-                      showActions={responseActionIds.has(row.item.id)}
-                      showModelTag={row.item.id === lastAssistantId}
-                      onAnswer={
-                        row.item.id === lastAssistantId
-                          ? stableRowHandlers.onAnswer
-                          : undefined
-                      }
-                      editingId={editingMessageId}
-                      streaming={streaming}
-                      onEditMessage={stableRowHandlers.onEditMessage}
-                      onCancelEdit={stableRowHandlers.onCancelEdit}
-                      onVersionChange={stableRowHandlers.onVersionChange}
-                    />
-                  ),
-                )}
+                {chatTurns.map((turn, turnIndex) => {
+                  const id = turnKey(turn);
+                  const live = streaming && turnIndex === chatTurns.length - 1;
+                  const complete = isTurnComplete(turn);
+                  const logOpen = isTurnLogOpen({
+                    live,
+                    isLast: turnIndex === chatTurns.length - 1,
+                    complete,
+                    explicit: id in turnOpen ? turnOpen[id] : undefined,
+                  });
+                  const showFold = !live && complete;
+                  const bodyItems = logOpen
+                    ? turnBodyItems(turn)
+                    : turnSummaryItems(turn);
+                  const changedFiles = turnChangedFiles(turn);
+                  const stats = showFold ? statsForTurn(turn) : null;
+                  return (
+                    <div className="chat-turn" key={id || turnIndex}>
+                      {turnUserItems(turn).map(renderTimelineItem)}
+                      {showFold && stats && (
+                        <TurnFoldBar
+                          durationMs={stats.durationMs}
+                          endedAt={turnEndedAt(turn)}
+                          toolCount={stats.toolCount}
+                          fileCount={changedFiles.length || stats.fileCount}
+                          open={logOpen}
+                          onToggle={() =>
+                            setTurnOpen((current) => ({
+                              ...current,
+                              [id]: !logOpen,
+                            }))
+                          }
+                        />
+                      )}
+                      {bodyItems.map(renderTimelineItem)}
+                      {!logOpen && (
+                        <TurnFilesCard
+                          files={changedFiles}
+                          onOpenFile={setViewer}
+                        />
+                      )}
+                    </div>
+                  );
+                })}
+                {agentMode === "routed" &&
+                  hasItems &&
+                  route.steps
+                    .filter((step) => step.enabled)
+                    .map((step) => (
+                      <RouteHandoffCard
+                        key={step.id}
+                        step={step}
+                        onOpen={() => setOpenRoleId(step.id)}
+                      />
+                    ))}
+                {reviews.map((review) => (
+                  <ReviewCard
+                    key={review.id}
+                    backend={review.backend}
+                    integrityKey={review.integrityKey}
+                    taskKey={review.taskKey}
+                    onQueue={(text) => setDraft(text)}
+                    onOpen={() => {
+                      revealConversation(review.integrityKey);
+                      onSessionSplit?.(review.integrityKey);
+                    }}
+                    onDismiss={() => {
+                      closeConversation(review.integrityKey);
+                      closeConversation(review.taskKey);
+                      setReviews((current) =>
+                        current.filter((item) => item.id !== review.id),
+                      );
+                    }}
+                  />
+                ))}
                 {!streaming && <TodoTranscript tasks={todos} />}
                 {subagentRuns.some(
                   (run) => run.status === "running" && run.attention,
@@ -3080,6 +3752,18 @@ export function Conversation({
           {conversationView === "chat" && composer}
           {dropOverlay}
         </div>
+        {agentMode === "routed" &&
+          !tight &&
+          openRoleId &&
+          route.steps.some((step) => step.id === openRoleId) && (
+            <RouteRolePane
+              step={
+                route.steps.find((step) => step.id === openRoleId) ??
+                route.steps[0]!
+              }
+              onClose={() => setOpenRoleId(null)}
+            />
+          )}
         {openSubagents.length > 0 &&
           subagentRuns.some((run) => openSubagents.includes(run.id)) && (
             <SubagentPanel
@@ -3110,12 +3794,11 @@ export function Conversation({
             />
           )}
         {workspaceExplorer}
+        {boardPanel}
+        {selectionTools}
       </div>
 
       {viewer && <FileViewer view={viewer} onClose={() => setViewer(null)} />}
-      {toolRail && (
-        <ToolDetailsRail group={toolRail} onClose={() => setToolRail(null)} />
-      )}
       {sessionDetailsOpen && (
         <div className="viewer" onClick={() => setSessionDetailsOpen(false)}>
           <div
@@ -3158,6 +3841,42 @@ export function Conversation({
                 }}
               >
                 Download session log <IconDownload size={14} />
+              </a>
+            </div>
+          </div>
+        </div>
+      )}
+      {remoteQr && (
+        <div className="viewer" onClick={() => setRemoteQr(null)}>
+          <div
+            className="viewer__panel remote-qr"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="viewer__head">
+              <span>Open on your phone</span>
+              <button
+                type="button"
+                className="viewer__close"
+                aria-label="Close"
+                onClick={() => setRemoteQr(null)}
+              >
+                ×
+              </button>
+            </div>
+            <div className="remote-qr__body">
+              <img
+                className="remote-qr__image"
+                src={remoteQr.qrDataUrl}
+                alt="QR code to open pi-web on your phone"
+              />
+              <p>
+                Scan with your phone camera — the link logs in automatically for
+                7 days. Add to Home Screen for the full-screen app experience.
+                The tunnel stays up while the server runs;{" "}
+                <code>/remote off</code> closes it.
+              </p>
+              <a href={remoteQr.connectUrl} target="_blank" rel="noreferrer">
+                {remoteQr.connectUrl}
               </a>
             </div>
           </div>
@@ -3546,60 +4265,6 @@ function lastAnswerableAssistantId(items: TimelineItem[]): string | undefined {
   return (tail.find((item) => isAskMessage(item.text)) ?? tail[0])?.id;
 }
 
-type ToolItem = Extract<TimelineItem, { kind: "tool" }>;
-type ChatRow =
-  | { kind: "item"; item: TimelineItem }
-  | { kind: "summary"; id: string; items: ToolItem[] };
-
-function isExpandableActivity(item: TimelineItem): item is ToolItem {
-  if (item.kind !== "tool") return false;
-  // Spawn stays a SubagentCard while the run is live. Folding it into the
-  // "N tool calls" chip is what made the inline card vanish and remount.
-  if (isSubagentTool(item.name)) return false;
-  return !isFileEditTool(item.name);
-}
-
-function buildChatRows(items: TimelineItem[], streaming: boolean): ChatRow[] {
-  const segments: TimelineItem[][] = [];
-  let current: TimelineItem[] = [];
-  for (const item of items) {
-    if (item.kind === "user" && current.length) {
-      segments.push(current);
-      current = [];
-    }
-    current.push(item);
-  }
-  if (current.length) segments.push(current);
-
-  return segments.flatMap((segment, segmentIndex) => {
-    const active = streaming && segmentIndex === segments.length - 1;
-    if (active) return segment.map((item) => ({ kind: "item" as const, item }));
-
-    const rows: ChatRow[] = [];
-    let activity: ToolItem[] = [];
-    const flushActivity = () => {
-      if (activity.length) {
-        rows.push({
-          kind: "summary",
-          id: `tool-summary-${activity[0]?.id ?? segmentIndex}`,
-          items: activity,
-        });
-        activity = [];
-      }
-    };
-    segment.forEach((item) => {
-      if (isExpandableActivity(item)) {
-        activity.push(item);
-        return;
-      }
-      flushActivity();
-      rows.push({ kind: "item", item });
-    });
-    flushActivity();
-    return rows;
-  });
-}
-
 function getResponseActionIds(
   items: TimelineItem[],
   streaming: boolean,
@@ -3629,4 +4294,54 @@ function getResponseActionIds(
     if (response?.kind === "assistant") ids.add(response.id);
   });
   return ids;
+}
+
+function capText(text: string, limit = 80_000): string {
+  if (text.length <= limit) return text;
+  return `${text.slice(0, limit)}\n… (truncated)`;
+}
+
+async function collectReviewDiff(
+  key: string,
+  cwd: string,
+  since: number,
+  turnFiles: string[],
+): Promise<
+  { ok: true; diff: string; reason?: string } | { ok: false; error: string }
+> {
+  const bulk = await api.gitReviewDiff(key, cwd, since);
+  if (bulk.ok && bulk.repo === false)
+    return { ok: false, error: "This folder is not a git repository." };
+  if (bulk.ok && typeof bulk.diff === "string" && bulk.diff.trim()) {
+    const diff =
+      bulk.scope === "turn" || turnFiles.length === 0
+        ? bulk.diff
+        : filterDiffToFiles(bulk.diff, turnFiles, cwd);
+    if (diff.trim()) return { ok: true, diff };
+  }
+  const listed = await api.gitChanges(key, cwd);
+  if (!listed.ok)
+    return { ok: false, error: listed.error ?? "Could not list git changes." };
+  if (listed.repo === false)
+    return { ok: false, error: "This folder is not a git repository." };
+  const changes = listed.changes ?? [];
+  if (changes.length === 0) return { ok: true, diff: "" };
+  const matched = turnFiles.length
+    ? changes.filter((file) =>
+        turnFiles.some((path) => reviewPathsMatch(file.path, path, cwd)),
+      )
+    : [];
+  // Isolation missed (absolute tool paths, old API without snapshot diffs).
+  // The working tree is dirty — review that rather than claiming no change.
+  const files = matched.length ? matched : changes;
+  const pieces = await Promise.all(
+    files.map((file) => api.gitFileDiff(key, cwd, file.path)),
+  );
+  return {
+    ok: true,
+    diff: pieces
+      .map((piece) => piece.diff ?? "")
+      .filter((block) => block.trim())
+      .join("\n"),
+  };
 }

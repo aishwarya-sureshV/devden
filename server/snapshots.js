@@ -180,3 +180,60 @@ export async function restoreSnapshot(cwd, timestamp, dryRun = false) {
   if (!applied.ok) return { ok: false, error: applied.error };
   return { ok: true, data: { ...counts, dryRun: false, snapshotAt: snap.at } };
 }
+
+/**
+ * Unified diff of what this turn changed: snapshot taken as the user
+ * message landed → current working tree. `git diff` exits 1 when there
+ * are hunks, so stdout is kept on that status.
+ */
+export async function diffSinceSnapshot(cwd, timestamp, context = 15) {
+  const snaps = await listSnapshots(cwd);
+  if (!snaps.length)
+    return { ok: false, error: "No turn snapshots for this workspace." };
+  const target = Number(timestamp);
+  const snap = Number.isFinite(target)
+    ? snaps.find((entry) => entry.at <= target + SLACK_MS)
+    : snaps[0];
+  if (!snap)
+    return { ok: false, error: "No snapshot from before that turn." };
+  const env = await scratchEnv(cwd);
+  if (!env) return { ok: false, error: "Not a git repository." };
+  const staged = await git(cwd, ["add", "-A"], env);
+  if (!staged.ok) return { ok: false, error: staged.error };
+  const depth = Number.isFinite(context) ? Math.max(3, Math.min(50, context)) : 15;
+  let out = "";
+  try {
+    const result = await execFileAsync(
+      "git",
+      [
+        "-C",
+        cwd,
+        "diff",
+        `-U${depth}`,
+        "--cached",
+        "--no-renames",
+        snap.commit,
+      ],
+      {
+        timeout: 30_000,
+        maxBuffer: 8 * 1024 * 1024,
+        env: { ...process.env, ...env },
+      },
+    );
+    out = String(result.stdout ?? "");
+  } catch (error) {
+    const status = error?.status ?? error?.code;
+    if (status !== 1 && status !== "1")
+      return {
+        ok: false,
+        error: String(error?.stderr || error?.message || error).trim(),
+      };
+    out = String(error?.stdout ?? "");
+  }
+  return {
+    ok: true,
+    diff: out,
+    snapshotAt: snap.at,
+    commit: snap.commit,
+  };
+}

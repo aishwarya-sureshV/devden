@@ -1,9 +1,17 @@
 {
   "name": "pi-web",
-  "private": true,
   "version": "0.1.0",
   "type": "module",
-  "description": "DeepSeek-harness-style web UI for the local pi coding agent (pi --mode rpc)",
+  "description": "Web workbench for local coding agents: pi, Claude Code, and grok",
+  "bin": {
+    "pi-web": "bin/pi-web",
+    "claude-web": "bin/claude-web"
+  },
+  "files": [
+    "bin",
+    "server",
+    "dist"
+  ],
   "scripts": {
     "dev": "concurrently -k \"npm:dev:server\" \"npm:dev:web\"",
     "dev:server": "node scripts/supervise.mjs",
@@ -13,7 +21,8 @@
     "start": "node scripts/supervise.mjs",
     "typecheck": "tsc --noEmit",
     "test": "node --test server/ src/lib/",
-    "check:grok": "node server/grok-selfcheck.js"
+    "check:grok": "node server/grok-selfcheck.js",
+    "prepublishOnly": "npm run build"
   },
   "dependencies": {
     "@codemirror/autocomplete": "^6.20.3",
@@ -35,6 +44,7 @@
     "@zed-industries/agent-client-protocol": "^0.4.5",
     "codemirror": "^6.0.2",
     "node-pty": "^1.1.0",
+    "qrcode": "^1.5.4",
     "ws": "^8.21.3"
   },
   "devDependencies": {

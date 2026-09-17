@@ -1,5 +1,7 @@
 /** Types shared with the pi-web server. */
 
+import type { SessionRoute } from "./route";
+
 export type RunStatus = "stopped" | "starting" | "ready" | "working" | "error";
 export const AGENT_BACKENDS = ["pi", "claude", "grok", "codex"] as const;
 export type AgentBackend = (typeof AGENT_BACKENDS)[number];
@@ -579,6 +581,11 @@ export const api = {
     get<WorkspaceListingResponse>(
       `/api/workspace?path=${encodeURIComponent(path)}`,
     ),
+  /** Short title for a board card. Resolves to "" when the model is
+   *  unavailable, so callers keep their own fallback. */
+  cardTitle: (text: string) =>
+    post<{ ok: boolean; title?: string }>("/api/board/card-title", { text }),
+
   workspaceSearch: (root: string, q: string) =>
     get<{ ok: boolean; matches?: WorkspaceMatch[]; error?: string }>(
       `/api/workspace/search?root=${encodeURIComponent(root)}&q=${encodeURIComponent(q)}`,
@@ -713,6 +720,8 @@ export const api = {
       sessionPath?: string;
       model?: ModelInfo | null;
       thinkingLevel?: string | null;
+      accessMode?: "workspace-write" | "read-only";
+      agentMode?: "standard" | "plan";
     },
   ) => {
     const body: Record<string, unknown> = {
@@ -724,6 +733,8 @@ export const api = {
     if (options?.sessionPath) body.sessionPath = options.sessionPath;
     if (options?.model) body.model = options.model;
     if (options?.thinkingLevel) body.thinkingLevel = options.thinkingLevel;
+    if (options?.accessMode) body.accessMode = options.accessMode;
+    if (options?.agentMode) body.agentMode = options.agentMode;
     return post<{ ok: boolean; error?: string; sessionPath?: string }>(
       `/api/${key}/prompt`,
       body,
@@ -793,6 +804,16 @@ export const api = {
       `/api/${key}/goal`,
       { text },
     ),
+  remoteStart: () =>
+    post<{
+      ok: boolean;
+      url?: string;
+      connectUrl?: string;
+      qrDataUrl?: string;
+      error?: string;
+    }>("/api/remote/start", {}, 300_000),
+  remoteStop: () =>
+    post<{ ok: boolean; error?: string }>("/api/remote/stop", {}),
   gitRun: (key: string, cwd: string, op: GitOp, options?: GitOpOptions) =>
     post<{ ok: boolean; output?: string; error?: string }>(
       `/api/${key}/git`,
@@ -803,6 +824,24 @@ export const api = {
     get<GitChangesResponse>(
       `/api/${key}/git-changes?cwd=${encodeURIComponent(cwd)}`,
     ),
+  /** This-turn diff (snapshot → now) at -U15. `since` is the user-message time. */
+  gitReviewDiff: (key: string, cwd: string, since?: number) => {
+    const params = new URLSearchParams({
+      cwd,
+      review: "1",
+    });
+    if (since && Number.isFinite(since)) params.set("since", String(since));
+    return get<{
+      ok: boolean;
+      repo?: boolean;
+      scope?: "turn" | "head";
+      snapshotAt?: number;
+      diff?: string;
+      truncated?: boolean;
+      untrackedOmitted?: number;
+      error?: string;
+    }>(`/api/${key}/git-changes?${params}`);
+  },
   revertHunk: (key: string, cwd: string, file: string, hunkIndex: number) =>
     post<{
       ok: boolean;
@@ -859,13 +898,37 @@ export const api = {
     post<{ ok: boolean; error?: string }>(`/api/${key}/set-thinking`, {
       level,
     }),
+  getRoute: (key: string, sessionFile?: string) => {
+    const query = sessionFile
+      ? `?sessionFile=${encodeURIComponent(sessionFile)}`
+      : "";
+    return get<{ ok: boolean; route?: SessionRoute; error?: string }>(
+      `/api/${key}/route${query}`,
+    );
+  },
+  putRoute: (key: string, route: SessionRoute, sessionFile?: string) =>
+    put<{ ok: boolean; route?: SessionRoute; error?: string }>(
+      `/api/${key}/route`,
+      { route, sessionFile },
+    ),
   stop: (key: string) =>
     post<{ ok: boolean; error?: string }>(`/api/${key}/stop`, {}),
+  approve: (
+    key: string,
+    requestId: string,
+    optionId: string,
+    backend: AgentBackend = "pi",
+  ) =>
+    post<{ ok: boolean; error?: string }>(`/api/${key}/approve`, {
+      requestId,
+      optionId,
+      backend,
+    }),
   configure: (
     key: string,
     cwd: string,
     accessMode: "workspace-write" | "read-only",
-    agentMode: "standard" | "plan",
+    agentMode: "standard" | "plan" | "manual",
     model?: ModelInfo | null,
     thinkingLevel?: string,
     sessionPath?: string,
@@ -1007,6 +1070,11 @@ function openEventStream(
   onStatus?: (status: "connected" | "reconnecting") => void,
 ): () => void {
   let source: EventSource | null = null;
+  let socket: WebSocket | null = null;
+  // Cloudflare quick tunnels buffer SSE bodies (a documented limitation), so
+  // pages loaded through the /remote tunnel switch to the WebSocket twin at
+  // /api/events-ws — same events, same __ping watchdog, streaming transport.
+  const useWebSocket = location.hostname.endsWith(".trycloudflare.com");
   let closed = false;
   let reconnecting = false;
   let retryTimer: number | undefined;
@@ -1018,6 +1086,8 @@ function openEventStream(
     onStatus?.("reconnecting");
     source?.close();
     source = null;
+    socket?.close();
+    socket = null;
     retryTimer = window.setTimeout(() => {
       reconnecting = false;
       void connect();
@@ -1040,6 +1110,21 @@ function openEventStream(
     // could arm a second timer and open a duplicate EventSource.
     reconnecting = true;
     try {
+      if (useWebSocket) {
+        const scheme = location.protocol === "https:" ? "wss:" : "ws:";
+        socket = new WebSocket(`${scheme}//${location.host}/api/events-ws`);
+        socket.onopen = () => onStatus?.("connected");
+        socket.onmessage = (message) => {
+          lastMessage = Date.now();
+          try {
+            onEvent(JSON.parse(String(message.data)) as AgentEvent);
+          } catch {
+            /* ignore malformed */
+          }
+        };
+        socket.onclose = scheduleReconnect;
+        return;
+      }
       let url = apiUrl("/api/events");
       if (authToken) {
         try {
@@ -1075,5 +1160,6 @@ function openEventStream(
     window.clearInterval(watchdog);
     if (retryTimer !== undefined) window.clearTimeout(retryTimer);
     source?.close();
+    socket?.close();
   };
 }

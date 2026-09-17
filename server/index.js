@@ -13,6 +13,7 @@
  *   GET  /api/workspace/grep?root=&q=      -> content matches across the project
  *   GET  /api/workspace/definition?root=&symbol= -> where a symbol is defined
  *   PUT  /api/workspace/file               { path, content }
+ *   POST /api/board/card-title             { text } -> short title for a board card
  *   POST /api/workspace/rename|delete|copy|move|reveal|open
  *   GET  /api/events                       -> SSE stream of all agent events
  *   POST /api/:sessionKey/start            { cwd }
@@ -26,6 +27,8 @@
  *   POST /api/:sessionKey/compact          { customInstructions? }
  *   POST /api/:sessionKey/set-model        { provider, modelId }
  *   POST /api/:sessionKey/set-thinking     { level }
+ *   GET  /api/:sessionKey/route            -> saved composer route (no chain)
+ *   PUT  /api/:sessionKey/route            { route, sessionFile? }
  *   GET  /api/:sessionKey/git-changes?cwd=  -> branch, remote, per-file working-tree changes
  *   GET  /api/:sessionKey/git-changes?cwd=&file= -> one file's diff vs HEAD
  *   POST /api/:sessionKey/git              { cwd, op } where op is one of
@@ -37,6 +40,9 @@
  *   GET  /api/:sessionKey/commands
  *   GET  /api/:sessionKey/models
  *   GET  /api/:sessionKey/thinking-levels
+ *   GET  /api/remote/status                 -> is the /remote phone tunnel up?
+ *   POST /api/remote/start                  -> cloudflared quick tunnel + QR
+ *   POST /api/remote/stop
  */
 import "./env.js";
 import { createServer } from "node:http";
@@ -70,14 +76,15 @@ import { spawn, execFile, execSync } from "node:child_process";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import { logFault } from "./log-fault.js";
+import { leaseVerdict } from "./lease-sweep.js";
 import { WebSocketServer } from "ws";
 import pty from "node-pty";
 import {
   PiAgentPool,
   assistantText,
+  CARD_TITLE_INSTRUCTION,
   generateSessionTitle,
 } from "./pi-agent.js";
-import { cacheMissNotice, resetCacheTracking } from "./cache-stats.js";
 import { ClaudeAgentPool, startClaudeAuthKeepalive } from "./claude-agent.js";
 import { GrokAgentPool } from "./grok-agent.js";
 import { CodexAgentPool } from "./codex-agent.js";
@@ -104,7 +111,12 @@ import {
   takeInterruptedTurns,
 } from "./inflight.js";
 import { resumePrompt } from "./co-partner-prompt.js";
-import { restoreSnapshot, takeSnapshot } from "./snapshots.js";
+import { isOneShotSseClient, SSE_ONESHOT_MS } from "./host-guard.js";
+import {
+  diffSinceSnapshot,
+  restoreSnapshot,
+  takeSnapshot,
+} from "./snapshots.js";
 import {
   archiveSession,
   deleteSession,
@@ -123,6 +135,13 @@ import {
 } from "./workspace-paths.js";
 import { findDefinition, grepWorkspace } from "./workspace-search.js";
 import { saveDisplayOverlay, withDisplayHistory } from "./display-history.js";
+import { loadRoute, saveRoute } from "./session-route.js";
+import {
+  startRemoteTunnel,
+  stopRemoteTunnel,
+  getRemoteTunnel,
+} from "./remote-tunnel.js";
+import qrcode from "qrcode";
 
 const __dirname = fileURLToPath(new URL(".", import.meta.url));
 const ROOT = join(__dirname, "..");
@@ -167,7 +186,6 @@ const SEARCH_SKIP = new Set([
   ".venv",
   "venv",
   "target",
-  "graphify-out",
   // Git worktrees hold a second copy of the whole repo; every file would
   // otherwise show up twice in the picker.
   "worktrees",
@@ -301,16 +319,15 @@ function pruneAuthTickets() {
  * old pagehide beacon raced adoptLiveAgent and killed the very process a
  * refresh was supposed to rebind. With leases, a refresh never stops the
  * agent: the new page's /start adopts the live process, and only a page that
- * stops heartbeating (a real close) lets the sweep reap it.
+ * stops heartbeating (a real close) lets the sweep reap it. A lapsed lease
+ * alone does not prove the page is gone — a background tab the browser
+ * froze, or a sleeping machine, stops heartbeating while still open — so
+ * the sweep spares every live agent (working or idle) for a bounded grace
+ * window; the verdict itself lives in lease-sweep.js.
  */
 const SESSION_LEASES = new Map();
-const LEASE_TIMEOUT_MS = 5 * 60_000;
 const LEASE_SWEEP_MS = 60_000;
-// How long an agent that is still working may outlive its page's heartbeat.
-// Long enough to cover a sleeping laptop or a long tool call, short enough
-// that a wedged agent is not immortal.
-const LEASE_WORK_GRACE_MS = 60 * 60_000;
-const LEASE_WORK_GRACE = new Map();
+const LEASE_GRACE = new Map();
 
 function renewLease(sessionKey) {
   SESSION_LEASES.set(sessionKey, Date.now());
@@ -319,25 +336,17 @@ function renewLease(sessionKey) {
 function sweepExpiredLeases() {
   const now = Date.now();
   for (const [key, lastHeartbeat] of SESSION_LEASES) {
-    if (now - lastHeartbeat <= LEASE_TIMEOUT_MS) {
-      LEASE_WORK_GRACE.delete(key);
-      continue;
-    }
     const backend = sessionBackends.get(key);
-    // A lease lapses for two very different reasons: the page is really
-    // gone, or it merely stopped heartbeating (the machine slept, the tab
-    // was throttled). Killing a turn that is still running is the one
-    // outcome the user cannot recover from -- the work stops mid-flight and
-    // the tab sits frozen until a reload -- so a working agent is spared and
-    // re-checked on the next sweep. The grace is bounded: an agent wedged in
-    // "working" with no page behind it would otherwise never be reaped.
     const agent = backend ? poolFor(backend).agents.get(key) : undefined;
-    if (agent?.status === "working") {
-      const deadline = LEASE_WORK_GRACE.get(key) ?? now + LEASE_WORK_GRACE_MS;
-      LEASE_WORK_GRACE.set(key, deadline);
-      if (now < deadline) continue;
-    }
-    LEASE_WORK_GRACE.delete(key);
+    const { reap, deadline } = leaseVerdict({
+      lastHeartbeat,
+      status: agent?.status,
+      now,
+      deadline: LEASE_GRACE.get(key),
+    });
+    if (deadline === undefined) LEASE_GRACE.delete(key);
+    else LEASE_GRACE.set(key, deadline);
+    if (!reap) continue;
     SESSION_LEASES.delete(key);
     if (!backend) continue;
     poolFor(backend).stop(key);
@@ -654,6 +663,13 @@ function resolveSessionKey(sessionKey) {
 }
 /** @type {Set<import('node:http').ServerResponse>} */
 const sseClients = new Set();
+/**
+ * WebSocket twin of the SSE fan-out. Cloudflare quick tunnels do not support
+ * SSE (documented limitation — the edge buffers text/event-stream bodies),
+ * but they pass WebSockets cleanly, so /remote clients connect here instead.
+ * @type {Set<import('ws').WebSocket>}
+ */
+const eventSockets = new Set();
 /** @type {Map<string, Array<{ id: string, timestamp: number, source: string, type: string, payload: object }>>} */
 const runtimeLogs = new Map();
 const MAX_RUNTIME_LOG_ENTRIES = 25_000;
@@ -679,8 +695,10 @@ function broadcast(event) {
   // here and take the server down mid-turn, which loses the in-flight events
   // and freezes every open page on stuck tool cards until a manual refresh.
   let line;
+  let json;
   try {
-    line = `data: ${JSON.stringify(event)}\n\n`;
+    json = JSON.stringify(event);
+    line = `data: ${json}\n\n`;
   } catch (error) {
     // Named, because a silently dropped event is the exact failure mode this
     // guard exists to survive -- and the only trace of it.
@@ -690,6 +708,13 @@ function broadcast(event) {
   for (const res of sseClients) {
     try {
       res.write(line);
+    } catch {
+      /* dropped */
+    }
+  }
+  for (const socket of eventSockets) {
+    try {
+      socket.send(json);
     } catch {
       /* dropped */
     }
@@ -757,24 +782,12 @@ function publishRuntimeEvent(sessionKey, source, event) {
     if (target !== sessionKey) continue;
     broadcast({ ...payload, sessionKey: alias });
   }
-  // Prompt-cache misses, for whichever backend produced this turn. Misses
-  // accumulate through the turn and are published only on the event that ends
-  // it, so the notice sits at the bottom of the final output instead of
-  // between every pair of tool calls. The recursive call carries a notice,
-  // which is not an assistant message, so it terminates immediately.
-  const missNotice = cacheMissNotice(sessionKey, event);
-  if (missNotice)
-    publishRuntimeEvent(sessionKey, source, {
-      type: "notice",
-      message: missNotice,
-    });
   // The check-in prompt asks the agent to end a standing goal by replying
   // GOAL DONE, but nothing read it, so a goal that was achieved kept billing
-  // a full-context turn every two hours. Checked here for the same reason the
-  // cache stats are: every backend's events pass through this one funnel.
+  // a full-context turn every two hours. Checked here because every backend's
+  // events pass through this one funnel.
   if (
-    // Both types, for the same reason cache-stats.js inspects both: the
-    // completed assistant message lands on message_end for pi/Claude/Grok
+    // The completed assistant message lands on message_end for pi/Claude/Grok
     // and on turn_end for Codex.
     (event?.type === "message_end" || event?.type === "turn_end") &&
     event.message?.role === "assistant" &&
@@ -1639,32 +1652,73 @@ async function openWorkspaceTerminal(requested) {
   return { ok: true, path: folder };
 }
 
+/**
+ * Every token that currently grants access: the static env token plus the
+ * rotating one minted by `/remote` while a tunnel is up. The tunnel token is
+ * revoked the moment the tunnel stops.
+ */
+function accessTokens() {
+  const tunnel = getRemoteTunnel();
+  return [ACCESS_TOKEN, tunnel?.token].filter(Boolean);
+}
+
+/**
+ * Loopback requests (including same-machine proxies like `tailscale serve`)
+ * stay open even while a public tunnel is active: the tunnel token gates the
+ * public URL, not the desktop that started it.
+ *
+ * cloudflared also runs on this machine, so tunnel traffic arrives from
+ * 127.0.0.1 too — Cloudflare's edge headers (cf-connecting-ip /
+ * x-forwarded-for, present on every proxied request) distinguish it from a
+ * genuinely local request. Spoofing them only costs an attacker access, so
+ * the check is safe to take at face value.
+ */
+function isLoopbackRequest(req) {
+  if (req.headers["cf-connecting-ip"] || req.headers["x-forwarded-for"])
+    return false;
+  const address = String(req.socket?.remoteAddress || "");
+  return (
+    address === "127.0.0.1" ||
+    address === "::1" ||
+    address === "::ffff:127.0.0.1"
+  );
+}
+
 function requestHasAccess(req, url) {
-  if (!ACCESS_TOKEN) return true;
+  const tokens = accessTokens();
+  if (tokens.length === 0) return true;
   const header = String(req.headers.authorization || "");
-  if (header === `Bearer ${ACCESS_TOKEN}`) return true;
-  if (header.startsWith("Basic ")) {
-    try {
-      const decoded = Buffer.from(header.slice(6), "base64").toString("utf8");
-      const password = decoded.includes(":")
-        ? decoded.slice(decoded.indexOf(":") + 1)
-        : decoded;
-      if (password === ACCESS_TOKEN) return true;
-    } catch {
-      /* invalid basic auth */
-    }
-  }
   const cookie = String(req.headers.cookie || "");
-  if (
-    cookie
-      .split(";")
-      .some((part) => part.trim() === `pi-web-token=${ACCESS_TOKEN}`)
-  )
-    return true;
+  for (const token of tokens) {
+    if (header === `Bearer ${token}`) return true;
+    if (header.startsWith("Basic ")) {
+      try {
+        const decoded = Buffer.from(header.slice(6), "base64").toString("utf8");
+        const password = decoded.includes(":")
+          ? decoded.slice(decoded.indexOf(":") + 1)
+          : decoded;
+        if (password === token) return true;
+      } catch {
+        /* invalid basic auth */
+      }
+    }
+    if (
+      cookie.split(";").some((part) => part.trim() === `pi-web-token=${token}`)
+    )
+      return true;
+  }
   // One-time ticket for transports that cannot send headers or cookies
   // (cross-origin EventSource / WebSocket). The raw token is deliberately not
   // accepted in the query string: it would leak into server logs and history.
-  return consumeAuthTicket(url.searchParams.get("ticket"));
+  // (Exception: the /remote QR — see the tunnel check below.)
+  if (consumeAuthTicket(url.searchParams.get("ticket"))) return true;
+  // The /remote QR code URL carries the tunnel token in the query exactly
+  // once; route() swaps it for a cookie and redirects to a clean URL, so it
+  // never lingers in the phone's address bar or history. Tunnel URLs rotate
+  // every run and the token dies with the tunnel.
+  const tunnel = getRemoteTunnel();
+  if (tunnel && url.searchParams.get("token") === tunnel.token) return true;
+  return false;
 }
 
 function denyAccess(res) {
@@ -1677,6 +1731,47 @@ function denyAccess(res) {
   res.end("Unauthorized");
 }
 
+/**
+ * `npm run build` for the /remote tunnel's first run — the phone needs dist/.
+ * Only ever triggered by /api/remote/start when dist/index.html is missing,
+ * so a user who has never built still gets a working phone UI.
+ */
+function buildDist() {
+  return new Promise((resolve) => {
+    const child = spawn("npm", ["run", "build"], {
+      cwd: ROOT,
+      shell: true,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let output = "";
+    child.stdout?.on("data", (chunk) => {
+      output += chunk;
+    });
+    child.stderr?.on("data", (chunk) => {
+      output += chunk;
+    });
+    const timer = setTimeout(() => {
+      child.kill();
+      resolve({
+        ok: false,
+        error: "npm run build timed out after 10 minutes.",
+      });
+    }, 600_000);
+    child.on("exit", (code) => {
+      clearTimeout(timer);
+      resolve(
+        code === 0
+          ? { ok: true }
+          : {
+              ok: false,
+              error: `npm run build failed (exit ${code}):
+${output.split("\n").slice(-8).join("\n")}`,
+            },
+      );
+    });
+  });
+}
+
 async function route(req, res) {
   const url = new URL(req.url, `http://${req.headers.host}`);
   let pathname;
@@ -1684,6 +1779,20 @@ async function route(req, res) {
     pathname = decodeURIComponent(url.pathname);
   } catch {
     return sendJson(res, 400, { ok: false, error: "Malformed URL." });
+  }
+
+  // A first load from the /remote QR carries the tunnel token in the query.
+  // Swap it for the 7-day cookie and redirect to the clean URL so the token
+  // never lingers in the phone's address bar or history.
+  const qrTunnel = getRemoteTunnel();
+  if (qrTunnel && url.searchParams.get("token") === qrTunnel.token) {
+    res.writeHead(302, {
+      "Set-Cookie": `pi-web-token=${qrTunnel.token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=604800`,
+      Location: pathname,
+      "Cache-Control": "no-store",
+    });
+    res.end();
+    return;
   }
 
   if (pathname === "/api/health") {
@@ -1707,7 +1816,8 @@ async function route(req, res) {
     const header = String(req.headers.authorization || "");
     const headerToken = header.startsWith("Bearer ") ? header.slice(7) : "";
     const candidate = typeof body.token === "string" ? body.token : headerToken;
-    if (!candidate || candidate !== ACCESS_TOKEN) return denyAccess(res);
+    const matched = accessTokens().find((token) => token === candidate);
+    if (!candidate || !matched) return denyAccess(res);
     const ticket = mintAuthTicket();
     const headers = {
       "Content-Type": "application/json; charset=utf-8",
@@ -1718,16 +1828,55 @@ async function route(req, res) {
     // HttpOnly cookie so same-origin EventSource/WebSocket authenticate without
     // exposing the token to script. Only set when the token is a safe cookie
     // value; otherwise the client relies on the ticket + Authorization header.
-    if (/^[A-Za-z0-9._-]+$/.test(ACCESS_TOKEN)) {
+    if (/^[A-Za-z0-9._-]+$/.test(matched)) {
       headers["Set-Cookie"] =
-        `pi-web-token=${ACCESS_TOKEN}; HttpOnly; SameSite=Strict; Path=/; Max-Age=604800`;
+        `pi-web-token=${matched}; HttpOnly; SameSite=Strict; Path=/; Max-Age=604800`;
     }
     res.writeHead(200, headers);
     res.end(JSON.stringify({ ok: true, ticket }));
     return;
   }
 
-  if (ACCESS_TOKEN && !requestHasAccess(req, url)) return denyAccess(res);
+  const requiresAccess = accessTokens().length > 0;
+  if (requiresAccess && !isLoopbackRequest(req) && !requestHasAccess(req, url))
+    return denyAccess(res);
+
+  if (pathname === "/api/remote/status" && req.method === "GET") {
+    const tunnel = getRemoteTunnel();
+    return sendJson(res, 200, {
+      ok: true,
+      active: Boolean(tunnel),
+      url: tunnel?.url ?? null,
+    });
+  }
+
+  if (pathname === "/api/remote/start" && req.method === "POST") {
+    // The tunnel serves the built UI from dist/; build it first if missing.
+    if (!existsSync(join(DIST, "index.html"))) {
+      const built = await buildDist();
+      if (!built.ok)
+        return sendJson(res, 500, { ok: false, error: built.error });
+    }
+    const started = await startRemoteTunnel(PORT);
+    const connectUrl = `${started.url}/?token=${started.token}`;
+    // PNG data URL rather than SVG markup: the client renders a plain <img>,
+    // so no raw HTML ever crosses the wire into the DOM.
+    const qrDataUrl = await qrcode.toDataURL(connectUrl, {
+      margin: 1,
+      width: 260,
+    });
+    return sendJson(res, 200, {
+      ok: true,
+      url: started.url,
+      connectUrl,
+      qrDataUrl,
+    });
+  }
+
+  if (pathname === "/api/remote/stop" && req.method === "POST") {
+    stopRemoteTunnel();
+    return sendJson(res, 200, { ok: true });
+  }
 
   if (pathname === "/api/auth/status" && req.method === "GET") {
     return sendJson(res, 200, { ok: true });
@@ -2005,6 +2154,20 @@ async function route(req, res) {
     }
   }
 
+  // A board card made from a selection: the excerpt is the card's description,
+  // and this names it. Same ephemeral pi process the session titles use, so
+  // there is no new model plumbing — and it degrades to "" (the client keeps
+  // its truncated fallback) when pi is not installed or the call fails.
+  if (pathname === "/api/board/card-title" && req.method === "POST") {
+    const body = await readBody(req);
+    const title = await generateSessionTitle(
+      String(body.text ?? ""),
+      undefined,
+      CARD_TITLE_INSTRUCTION,
+    );
+    return sendJson(res, 200, { ok: true, title });
+  }
+
   // Auto-saved conversation transcripts. Kept in ~/.pi-web/transcripts rather
   // than the workspace on purpose: this writes after every turn, and a file
   // that reappears in `git status` on every reply is worse than no feature.
@@ -2191,6 +2354,17 @@ async function route(req, res) {
     res.write(`data: ${JSON.stringify({ type: "__hello" })}\n\n`);
     sseClients.add(res);
     req.on("close", () => sseClients.delete(res));
+    // curl/wget hang here forever (SSE never closes). EventSource is uncapped.
+    if (isOneShotSseClient(req)) {
+      setTimeout(() => {
+        if (res.writableEnded) return;
+        res.write(
+          `data: ${JSON.stringify({ type: "__timeout", message: "/api/events is SSE and never closes" })}\n\n`,
+        );
+        res.end();
+        sseClients.delete(res);
+      }, SSE_ONESHOT_MS).unref();
+    }
     return;
   }
 
@@ -2317,6 +2491,11 @@ async function route(req, res) {
           thinkingLevel:
             typeof body.thinkingLevel === "string"
               ? body.thinkingLevel
+              : undefined,
+          accessMode: body.accessMode === "read-only" ? "read-only" : undefined,
+          agentMode:
+            body.agentMode === "plan" || body.agentMode === "manual"
+              ? body.agentMode
               : undefined,
         }),
       );
@@ -2500,6 +2679,21 @@ async function route(req, res) {
       ),
     );
   }
+  if (req.method === "POST" && action === "approve") {
+    // Manual-mode tool approval answer from the UI.
+    const body = await readBody(req);
+    const agent = watch(sessionKey);
+    if (typeof agent.resolveApproval !== "function")
+      return sendJson(res, 400, {
+        ok: false,
+        error: "this backend has no approval flow",
+      });
+    return sendJson(
+      res,
+      200,
+      agent.resolveApproval(body.requestId, String(body.optionId ?? "deny")),
+    );
+  }
   if (req.method === "POST" && action === "stop") {
     const backend = sessionBackends.get(sessionKey) ?? "pi";
     const result = await runLoggedCommand(sessionKey, "stop", {}, () => {
@@ -2514,6 +2708,24 @@ async function route(req, res) {
       return { ok: true };
     });
     return sendJson(res, 200, result);
+  }
+  if (action === "route") {
+    const sessionFile =
+      req.method === "GET" ? url.searchParams.get("sessionFile") || "" : "";
+    if (req.method === "GET") {
+      return sendJson(res, 200, {
+        ok: true,
+        route: (await loadRoute(sessionKey, sessionFile)) ?? undefined,
+      });
+    }
+    if (req.method === "PUT") {
+      const body = await readBody(req);
+      const file =
+        typeof body.sessionFile === "string" ? body.sessionFile : sessionFile;
+      const result = await saveRoute(sessionKey, file, body.route);
+      return sendJson(res, result.ok ? 200 : 400, result);
+    }
+    return sendJson(res, 405, { ok: false, error: "method not allowed" });
   }
   if (req.method === "POST" && action === "configure") {
     const body = await readBody(req);
@@ -2549,7 +2761,10 @@ async function route(req, res) {
       agent.start(String(body.cwd || process.cwd()), {
         accessMode:
           body.accessMode === "read-only" ? "read-only" : "workspace-write",
-        agentMode: body.agentMode === "plan" ? "plan" : "standard",
+        agentMode:
+          body.agentMode === "plan" || body.agentMode === "manual"
+            ? body.agentMode
+            : "standard",
         sessionPath:
           typeof body.sessionPath === "string" && body.sessionPath
             ? body.sessionPath
@@ -2839,6 +3054,59 @@ async function route(req, res) {
         connected: false,
         changes: [],
       });
+    // Review payload. Prefer the per-turn snapshot so leftover dirty files
+    // from earlier turns are not in the evidence. Fall back to HEAD.
+    if (url.searchParams.get("review") === "1") {
+      const since = Number(url.searchParams.get("since"));
+      if (Number.isFinite(since) && since > 0) {
+        const isolated = await diffSinceSnapshot(dir, since, 15);
+        if (isolated.ok) {
+          const diff = String(isolated.diff ?? "");
+          return sendJson(res, 200, {
+            ok: true,
+            repo: true,
+            scope: "turn",
+            snapshotAt: isolated.snapshotAt,
+            diff: diff.slice(0, 400_000),
+            truncated: diff.length > 400_000,
+          });
+        }
+      }
+      const tracked = await git(["diff", "-U15", "HEAD"]);
+      const others = await git(["ls-files", "--others", "--exclude-standard"]);
+      const untracked = others.stdout
+        .split("\n")
+        .map((row) => row.trim())
+        .filter(Boolean)
+        .slice(0, 40);
+      const extra = [];
+      for (const file of untracked) {
+        if (file.split(/[\\/]/).includes("..")) continue;
+        const piece = await git([
+          "diff",
+          "-U15",
+          "--no-index",
+          "--",
+          "/dev/null",
+          file,
+        ]);
+        extra.push(piece.stdout);
+      }
+      const diff = [tracked.stdout, ...extra]
+        .filter((block) => block && block.trim())
+        .join("\n");
+      return sendJson(res, 200, {
+        ok: true,
+        repo: true,
+        scope: "head",
+        diff: diff.slice(0, 400_000),
+        truncated: diff.length > 400_000,
+        untrackedOmitted: Math.max(
+          0,
+          others.stdout.split("\n").filter(Boolean).length - untracked.length,
+        ),
+      });
+    }
     if (url.searchParams.has("file")) {
       const file = String(url.searchParams.get("file"));
       if (
@@ -3343,10 +3611,6 @@ async function route(req, res) {
     const instructions = capabilitiesFor(compactBackend).compactInstructions
       ? body.customInstructions
       : undefined;
-    // The context legitimately changed: the next turn's prompt is new content,
-    // not re-billed content, so it must not count as a miss. Keyed the way
-    // publishRuntimeEvent keys it -- an adopted tab's raw key is an alias.
-    resetCacheTracking(resolveSessionKey(sessionKey));
     const agent = watch(sessionKey);
     const sessionPath = sessionPathOf(agent);
     let before = await clientMessages(agent, sessionPath);
@@ -3497,6 +3761,9 @@ const server = createServer((req, res) => {
 });
 
 const terminalSockets = new WebSocketServer({ noServer: true });
+// Upgrades for /api/events-ws share the same auth gate as terminals below;
+// the connections themselves live in the eventSockets fan-out set.
+const eventSocketsServer = new WebSocketServer({ noServer: true });
 server.on("upgrade", (req, socket, head) => {
   const url = new URL(
     req.url || "/",
@@ -3511,10 +3778,28 @@ server.on("upgrade", (req, socket, head) => {
     return;
   }
   if (
-    url.pathname !== "/api/terminal" ||
-    (ACCESS_TOKEN && !requestHasAccess(req, url))
+    (url.pathname !== "/api/terminal" && url.pathname !== "/api/events-ws") ||
+    (accessTokens().length > 0 &&
+      !isLoopbackRequest(req) &&
+      !requestHasAccess(req, url))
   ) {
     socket.destroy();
+    return;
+  }
+  if (url.pathname === "/api/events-ws") {
+    eventSocketsServer.handleUpgrade(req, socket, head, (webSocket) => {
+      // Same contract as /api/events: __hello on connect, the shared
+      // broadcast() fan-out, and the 10s __ping keeping it distinguishable
+      // from a half-open proxy connection.
+      try {
+        webSocket.send(JSON.stringify({ type: "__hello" }));
+      } catch {
+        /* dropped */
+      }
+      eventSockets.add(webSocket);
+      webSocket.on("close", () => eventSockets.delete(webSocket));
+      webSocket.on("error", () => eventSockets.delete(webSocket));
+    });
     return;
   }
   terminalSockets.handleUpgrade(req, socket, head, (webSocket) =>

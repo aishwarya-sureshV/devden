@@ -188,10 +188,12 @@ function Frame() {
   };
 
   const visibleTabs = splitSessions
-    ? tabs.filter(
-        (tab) =>
-          splitSessionKeys.length === 0 || splitSessionKeys.includes(tab.key),
-      )
+    ? tabs.filter((tab) => {
+        if (tab.guest && !splitSessionKeys.includes(tab.key)) return false;
+        return (
+          splitSessionKeys.length === 0 || splitSessionKeys.includes(tab.key)
+        );
+      })
     : active
       ? [active]
       : [];
@@ -310,6 +312,7 @@ function Frame() {
                     showThinking={showThinking}
                     onActivate={setActiveKey}
                     onClose={closeConversation}
+                    onSessionSplit={splitWithSession}
                   />
                 ) : (
                   <EmptyCenter />
@@ -380,6 +383,7 @@ function SessionGrid({
   showThinking,
   onActivate,
   onClose,
+  onSessionSplit,
 }: {
   tabs: ConversationTab[];
   visibleTabs: ConversationTab[];
@@ -387,6 +391,7 @@ function SessionGrid({
   showThinking: boolean;
   onActivate: (key: string) => void;
   onClose: (key: string) => void;
+  onSessionSplit: (key: string) => void;
 }) {
   const split = visibleTabs.length > 1;
   const layout = sessionPaneLayout(visibleTabs.length);
@@ -430,6 +435,7 @@ function SessionGrid({
                 split={split}
                 density={split ? layout.density : "full"}
                 onClose={visible && split ? () => onClose(tab.key) : undefined}
+                onSessionSplit={onSessionSplit}
               />
             </section>
           </div>

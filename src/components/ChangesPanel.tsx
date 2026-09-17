@@ -132,7 +132,6 @@ export function ChangesPanel({
   streaming,
   compact = false,
   onWorkspaceClick,
-  usageReset,
   onAskAgent,
 }: {
   sessionKey: string;
@@ -142,8 +141,6 @@ export function ChangesPanel({
   compact?: boolean;
   /** Opens the workspace folder browser; the identity card's only action. */
   onWorkspaceClick?: () => void;
-  /** Quota reset time, shown at the right of the commit row when known. */
-  usageReset?: string | null;
   /** Drops a prompt in the composer; the user still presses send. */
   onAskAgent?: (prompt: string) => void;
 }) {
@@ -810,9 +807,7 @@ export function ChangesPanel({
             aria-hidden
           >
             {compact ? (
-              <span className="changes__files-count">
-                {changes.length}f ›
-              </span>
+              <span className="changes__files-count">{changes.length}f ›</span>
             ) : (
               <IconChevronDown size={14} />
             )}
@@ -989,7 +984,6 @@ export function ChangesPanel({
           >
             {pushBusy ? "Pushing…" : `Push to GitHub (${included.length})`}
           </button>
-          {usageReset && <span className="changes__reset">{usageReset}</span>}
         </footer>
       )}
       {failure}

@@ -4,8 +4,10 @@ import { clipOutput, isShellLanguage } from "../lib/runInTerminal";
 import { useTerminalRuns, type TerminalRun } from "../lib/terminalRuns";
 import { CopyButton } from "./CopyButton";
 import { AskCard } from "./AskCard";
+import { SkillDraftCard } from "./SkillDraftCard";
 import { IconPlay } from "./icons";
 import { hasAskBlock, messageAsk, parseAsk } from "../lib/askBlock";
+import { parseSkillDraft } from "../lib/skilldraft";
 
 /** Start of a fence-less questions payload still streaming in. */
 const BARE_ASK_START = /^\s*\{\s*"questions"\s*:/;
@@ -78,9 +80,10 @@ function MaybeAskBlock({
   onAnswer?: (text: string) => void;
 }) {
   const questions = language === "ask" ? parseAsk(code) : null;
-  if (!questions)
-    return <CodeBlock code={code} language={language} live={live} />;
-  return <AskCard questions={questions} onAnswer={onAnswer} />;
+  if (questions) return <AskCard questions={questions} onAnswer={onAnswer} />;
+  const skillDraft = language === "skilldraft" ? parseSkillDraft(code) : null;
+  if (skillDraft) return <SkillDraftCard draft={skillDraft} />;
+  return <CodeBlock code={code} language={language} live={live} />;
 }
 
 function CodeBlock({

@@ -18,6 +18,7 @@ import {
   isSpawnArgs,
   controlNotices,
   receiptTextOf,
+  sanitizeSpawnReceipt,
   resolveAsyncDir,
   runIdOf,
   setStallMsForTesting,
@@ -204,6 +205,25 @@ describe("run identification", () => {
     // A foreground child (`async: false`) has no artifacts to follow.
     assert.equal(asyncDirOf({ details: {} }), "");
     assert.equal(receiptTextOf({ content: [{ type: "text", text: "started" }] }), "started");
+  });
+
+  it("strips spawn-receipt machinery and keeps the id the UI parses", () => {
+    const receipt = [
+      "Subagent started in background.",
+      "subagent_id: 01a08782-f05a-7770-b454-686a549ba415",
+      "The workflow wrapper launched a child; a wake subscription is armed.",
+      "The supervisor will resume when the child returns control.",
+    ].join("\n");
+    const clean = sanitizeSpawnReceipt(receipt);
+    assert.match(clean, /Subagent started in background/);
+    assert.match(clean, /subagent_id: 01a08782-f05a-7770-b454-686a549ba415/);
+    assert.equal(clean.includes("workflow wrapper"), false);
+    assert.equal(clean.includes("wake subscription"), false);
+    assert.equal(clean.includes("supervisor"), false);
+    assert.equal(
+      receiptTextOf({ content: [{ type: "text", text: receipt }] }),
+      clean,
+    );
   });
 
   it("uses the extension's own state vocabulary", () => {

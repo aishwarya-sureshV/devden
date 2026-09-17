@@ -51,8 +51,7 @@ export async function loadGrokUsage() {
       },
       signal: AbortSignal.timeout(10_000),
     });
-    if (!response.ok)
-      throw new Error(`Grok usage returned ${response.status}`);
+    if (!response.ok) throw new Error(`Grok usage returned ${response.status}`);
     const payload = await response.json();
     const config = payload?.config ?? payload;
     const usedPercent = Number(config?.creditUsagePercent);
@@ -61,15 +60,19 @@ export async function loadGrokUsage() {
         String(config?.currentPeriod?.end ?? config?.billingPeriodEnd ?? ""),
       ) / 1000;
     const resetsAt = Number.isFinite(resetAt) ? resetAt * 1000 : undefined;
-    const windows = Number.isFinite(usedPercent)
-      ? [
-          {
-            label: "Current week",
-            usedPercent,
-            ...(resetsAt ? { resetsAt } : {}),
-          },
-        ]
-      : [];
+    // The window exists when *either* number is known. Unified-billing
+    // accounts come back with currentPeriod and no creditUsagePercent at all;
+    // gating the window on the percent threw the reset instant away with it,
+    // which left an exhausted account with nothing to show but "no balance".
+    const known = Number.isFinite(usedPercent) || Boolean(resetsAt);
+    const window = {
+      label: /weekly/i.test(String(config?.currentPeriod?.type ?? ""))
+        ? "Current week"
+        : "Current period",
+    };
+    if (Number.isFinite(usedPercent)) window.usedPercent = usedPercent;
+    if (resetsAt) window.resetsAt = resetsAt;
+    const windows = known ? [window] : [];
     return {
       ok: true,
       usage: {

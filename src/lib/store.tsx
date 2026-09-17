@@ -31,6 +31,7 @@ import { persistedTurnLooksSettled, Timeline } from "./timeline";
 import { notify } from "./notify";
 import { savedSessionTitle } from "./sessionTitle";
 import { isAwaitingAnswer } from "./awaitingAnswer";
+import type { SkillDraftSeed } from "./skilldraft";
 import {
   CLAUDE_DEFAULT_EFFORT,
   CLAUDE_DEFAULT_MODEL,
@@ -45,7 +46,16 @@ export interface ConversationTab {
   backend: AgentBackend;
   /** Created from New session (as opposed to opening saved history). */
   isFresh: boolean;
+  /** Guest tabs (cross-backend review) stay off the grid until opened. */
+  guest?: boolean;
   timeline: Timeline;
+}
+
+export interface OpenConversationOptions {
+  /** When false, the new tab is created without becoming the focused pane. */
+  activate?: boolean;
+  /** Hidden from split/focus until revealConversation. */
+  guest?: boolean;
 }
 
 /** How long a "working" conversation may stay silent before the page stops
@@ -79,7 +89,10 @@ interface StoreValue {
     cwd: string,
     label?: string,
     backend?: AgentBackend,
+    options?: OpenConversationOptions,
   ) => string;
+  /** Make a guest tab a normal pane and focus it. */
+  revealConversation: (key: string) => void;
   openDefaultConversation: () => Promise<string>;
   resumeConversation: (session: ResumeSession) => string;
   openForkedConversation: (args: {
@@ -121,6 +134,10 @@ interface StoreValue {
   ) => void;
   workspaceReveal: { key: string; nonce: number } | null;
   revealWorkspace: (key: string) => void;
+  /** A distilled skill draft staged by the SkillDraftCard, waiting for the
+   *  Skills view to open it in its editor for review before save. */
+  skillDraft: SkillDraftSeed | null;
+  setSkillDraft: (draft: SkillDraftSeed | null) => void;
 }
 
 const StoreContext = createContext<StoreValue | null>(null);
@@ -265,6 +282,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     key: string;
     nonce: number;
   } | null>(null);
+  const [skillDraft, setSkillDraft] = useState<SkillDraftSeed | null>(null);
   const defaultCwd = useRef("");
   // The backend NEW sessions use. It is no longer the identity of the whole
   // page: switching it used to reload with ?backend=, which is what made
@@ -654,6 +672,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       label?: string,
       sessionPath?: string,
       backend = defaultBackendRef.current,
+      options?: OpenConversationOptions,
     ): ConversationTab => {
       // Include a page-scoped UUID so separate browser windows never bind to the
       // same Pi RPC process (each page's local counter otherwise starts at 1).
@@ -664,7 +683,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
             tab.timeline.state?.sessionFile === sessionPath,
         );
         if (existing) {
-          setActiveKey(existing.key);
+          if (options?.activate !== false) setActiveKey(existing.key);
           return existing;
         }
       }
@@ -676,13 +695,14 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         sessionPath,
         backend,
         isFresh: sessionPath === undefined,
+        guest: options?.guest === true,
         timeline: timelineFor(key),
       };
       // Keep the ref in sync immediately. This prevents two quick clicks on
       // "New session" from racing the React state update and creating twins.
       tabsRef.current = [...tabsRef.current, tab];
       setTabs(tabsRef.current);
-      setActiveKey(key);
+      if (options?.activate !== false) setActiveKey(key);
       return tab;
     },
     [],
@@ -693,24 +713,35 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       cwd: string,
       label?: string,
       backend = defaultBackendRef.current,
+      options?: OpenConversationOptions,
     ): string => {
-      const freshTab = tabsRef.current.find(
-        (candidate) =>
-          candidate.backend === backend &&
-          candidate.cwd === cwd &&
-          candidate.isFresh &&
-          !candidate.timeline.items.some(
-            (item) =>
-              item.kind === "user" ||
-              item.kind === "assistant" ||
-              item.kind === "tool",
-          ),
-      );
+      const freshTab =
+        options?.guest
+          ? undefined
+          : tabsRef.current.find(
+              (candidate) =>
+                candidate.backend === backend &&
+                candidate.cwd === cwd &&
+                candidate.isFresh &&
+                !candidate.guest &&
+                !candidate.timeline.items.some(
+                  (item) =>
+                    item.kind === "user" ||
+                    item.kind === "assistant" ||
+                    item.kind === "tool",
+                ),
+            );
       if (freshTab) {
-        setActiveKey(freshTab.key);
+        if (options?.activate !== false) setActiveKey(freshTab.key);
         return freshTab.key;
       }
-      const tab = createConversationTab(cwd, label, undefined, backend);
+      const tab = createConversationTab(
+        cwd,
+        label,
+        undefined,
+        backend,
+        options,
+      );
       const preferredModel =
         preferredModels.current.get(modelPreferenceKey(backend, cwd)) ??
         BACKEND_DEFAULT_MODEL[backend];
@@ -722,6 +753,10 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         messageCount: 0,
         pendingMessageCount: 0,
       });
+      // Guest reviews start on the first prompt, in read-only, so a warm
+      // spawn here would open a writable agent before the review contract
+      // is applied.
+      if (options?.guest) return tab.key;
       // Lazy backends stay unspawned even for fresh conversations: starting
       // the agent just to show an empty composer costs a process spawn per
       // workbench visit and can write a ghost "Untitled session" file. The
@@ -1204,18 +1239,31 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       didRenderRestoredSessions.current = true;
     }
     const snapshot: PersistedOpenSession[] = dedupeOpenSessions(
-      tabs.map((tab) => ({
-        cwd: tab.cwd,
-        label: tab.label,
-        backend: tab.backend,
-        sessionPath: tab.sessionPath ?? tab.timeline.state?.sessionFile,
-        model: tab.timeline.state?.model,
-        thinkingLevel: tab.timeline.state?.thinkingLevel,
-        active: tab.key === activeKey,
-      })),
+      tabs
+        .filter((tab) => !tab.guest)
+        .map((tab) => ({
+          cwd: tab.cwd,
+          label: tab.label,
+          backend: tab.backend,
+          sessionPath: tab.sessionPath ?? tab.timeline.state?.sessionFile,
+          model: tab.timeline.state?.model,
+          thinkingLevel: tab.timeline.state?.thinkingLevel,
+          active: tab.key === activeKey,
+        })),
     );
     localStorage.setItem(OPEN_SESSIONS_KEY, JSON.stringify(snapshot));
   }, [activeKey, tabs]);
+
+  const revealConversation = useCallback((key: string) => {
+    setTabs((current) => {
+      const next = current.map((tab) =>
+        tab.key === key && tab.guest ? { ...tab, guest: false } : tab,
+      );
+      tabsRef.current = next;
+      return next;
+    });
+    setActiveKey(key);
+  }, []);
 
   const closeConversation = useCallback((key: string) => {
     setTabs((current) => {
@@ -1394,7 +1442,6 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const revealWorkspace = useCallback((key: string) => {
     setWorkspaceReveal({ key, nonce: Date.now() });
   }, []);
-
   const setPreferredModel = useCallback(
     (backend: AgentBackend, cwd: string, model: ModelInfo | null) => {
       const key = modelPreferenceKey(backend, cwd);
@@ -1432,6 +1479,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     openDefaultConversation,
     resumeConversation,
     openForkedConversation,
+    revealConversation,
     closeConversation,
     setActiveKey,
     setConversationSessionPath,
@@ -1449,6 +1497,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     setPreferredModel,
     workspaceReveal,
     revealWorkspace,
+    skillDraft,
+    setSkillDraft,
   };
 
   return (

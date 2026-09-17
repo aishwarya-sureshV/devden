@@ -1,5 +1,4 @@
 import type { ProviderUsage, UsageWindow } from "../lib/api";
-import { formatCountdown } from "../lib/time";
 
 function windowFor(
   usage: ProviderUsage,
@@ -28,68 +27,40 @@ function displayWindows(usage: ProviderUsage): UsageWindow[] {
     (usage.windows.length > 1 ? usage.windows[1] : undefined);
   return [fiveHour, weekly].filter(
     (window, index, all): window is UsageWindow =>
-      Boolean(window) && all.indexOf(window) === index,
+      window !== undefined &&
+      // A window with neither a percent nor a count has no number to print --
+      // and "0%" reads as an untouched quota rather than an unmeasured one.
+      // Grok's window is one of these now; it carries only its reset instant.
+      (window.usedPercent !== undefined || Boolean(window.usedText)) &&
+      all.indexOf(window) === index,
   );
 }
 
-/** "Mon 4:30 AM" -- the week turns over on a fixed schedule, so name it. */
-function formatClock(at: number): string {
-  return new Date(at).toLocaleString("en-US", {
-    weekday: "short",
-    hour: "numeric",
-    minute: "2-digit",
-  });
-}
-
-/**
- * The week resets on a fixed schedule (Monday 04:30), so the day and time are
- * the useful fact. The rolling session window is never more than 5 hours out,
- * so a countdown is.
- */
-function formatResetWhen(window: UsageWindow, at: number, now: number): string {
-  return window.label.toLowerCase().includes("week")
-    ? formatClock(at)
-    : formatCountdown(at, now);
-}
-
 function usageTitle(windows: UsageWindow[]): string {
-  const now = Date.now();
   return windows
-    .map((window) => {
-      const reset =
-        typeof window.resetsAt === "number"
-          ? ` · resets ${formatResetWhen(window, window.resetsAt, now)}`
-          : "";
-      return `${window.label} ${window.usedText ?? `${percent(window.usedPercent ?? 0)}% used`}${reset}`;
-    })
+    .map(
+      (window) =>
+        `${window.label} ${window.usedText ?? `${percent(window.usedPercent ?? 0)}% used`}`,
+    )
     .join(" · ");
 }
 
 /**
- * "resets 5h 1h 35m · wk Sun 4:30 AM": each window that reports one, named by
- * its short label. The session window counts down; the week names its day and
- * time. Reads instants rather than preformatted strings so the countdown keeps
- * ticking instead of freezing at whatever the last poll saw.
+ * Whether the chip will render anything. The caller needs this to decide
+ * whether to draw the rule beside it: a provider can report `available` with no
+ * usable number at all (Grok's unified billing sends only its reset instant),
+ * which otherwise left the composer with a divider and no chip.
  */
-export function usageResetLabel(
-  usage: ProviderUsage,
-  now = Date.now(),
-): string | null {
-  const parts = usage.windows
-    .filter(
-      (window): window is UsageWindow & { resetsAt: number } =>
-        typeof window.resetsAt === "number",
-    )
-    .map(
-      (window) =>
-        `${shortLabel(window)} ${formatResetWhen(window, window.resetsAt, now)}`,
-    );
-  return parts.length > 0 ? `resets ${parts.join(" · ")}` : null;
+export function showsUsageSummary(usage: ProviderUsage): boolean {
+  return (
+    usage.available &&
+    (displayWindows(usage).length > 0 || Boolean(usage.tokens))
+  );
 }
 
 /** 4a — compact quota next to this session's model picker. */
 export function UsageSummary({ usage }: { usage: ProviderUsage }) {
-  if (!usage.available) return null;
+  if (!showsUsageSummary(usage)) return null;
   const windows = displayWindows(usage);
   if (windows.length === 0 && usage.tokens) {
     return (
