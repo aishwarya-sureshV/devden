@@ -18,8 +18,9 @@ import {
   type BoardColumn,
   type BoardPriority,
 } from "../lib/board";
+import { api } from "../lib/api";
 import { useStore } from "../lib/store";
-import { IconChat, IconPlus, IconTrash, IconUpload } from "./icons";
+import { IconChat, IconCode, IconPlus, IconTrash, IconUpload } from "./icons";
 
 type DropTarget = { column: BoardColumn; beforeId?: string };
 
@@ -39,12 +40,17 @@ export function BoardPanel({
   sessionPath?: string;
   onClose: () => void;
 }) {
-  const { resumeSessions, resumeConversation } = useStore();
+  const { resumeSessions, resumeConversation, openConversation, seedTask } =
+    useStore();
+  const [dispatching, setDispatching] = useState<string | null>(null);
+  const [dispatchError, setDispatchError] = useState<string | null>(null);
   const [cards, setCards] = useState<BoardCard[]>(() => loadBoard(cwd));
   const [dragId, setDragId] = useState<string | null>(null);
   const [over, setOver] = useState<DropTarget | null>(null);
   const [openId, setOpenId] = useState<string | null>(null);
-  const [drafts, setDrafts] = useState<Partial<Record<BoardColumn, string>>>({});
+  const [drafts, setDrafts] = useState<Partial<Record<BoardColumn, string>>>(
+    {},
+  );
   const [shot, setShot] = useState<string | null>(null);
   const [shotError, setShotError] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement | null>(null);
@@ -93,6 +99,38 @@ export function BoardPanel({
         ? updateCard(next, id, { sessionPath })
         : next;
     });
+
+  /**
+   * Hand a card to its own agent in its own checkout. Several cards dispatched
+   * this way run at once without seeing each other's files, and each leaves a
+   * branch to review instead of a shared dirty tree.
+   */
+  const dispatch = async (card: BoardCard) => {
+    if (dispatching) return;
+    setDispatching(card.id);
+    setDispatchError(null);
+    try {
+      // Any session key will do for the call; the server keys worktrees off
+      // the repo, not the caller.
+      const made = await api.createWorktree("board", cwd, card.title);
+      if (!made.ok || !made.data) {
+        setDispatchError(made.error ?? "Could not create a worktree.");
+        return;
+      }
+      const key = openConversation(made.data.path, card.title);
+      seedTask(key, {
+        prompt: card.note ? `${card.title}\n\n${card.note}` : card.title,
+      });
+      // Write the lane change straight through: closing the board unmounts
+      // it in the same tick, so the save-on-change effect would never run.
+      const next = moveCard(cards, card.id, "doing");
+      setCards(next);
+      saveBoard(cwd, next);
+      onClose();
+    } finally {
+      setDispatching(null);
+    }
+  };
 
   const drop = (target: DropTarget) => {
     if (dragId && dragId !== target.beforeId)
@@ -261,9 +299,9 @@ export function BoardPanel({
                 <small>paste, drop, or click to browse</small>
               </button>
             )}
-            {shotError ? (
+            {shotError || dispatchError ? (
               <p className="board-detail__error" role="status">
-                {shotError}
+                {shotError ?? dispatchError}
               </p>
             ) : null}
             <input
@@ -301,6 +339,22 @@ export function BoardPanel({
               </span>
             )}
             <span className="board-detail__spacer" />
+            {opened.column !== "done" && (
+              <button
+                type="button"
+                className="board-detail__open"
+                disabled={dispatching !== null}
+                title="Run this card in its own checkout, on its own branch"
+                onClick={() => void dispatch(opened)}
+              >
+                <IconCode size={13} />
+                <span>
+                  {dispatching === opened.id
+                    ? "Preparing…"
+                    : "Run in a worktree"}
+                </span>
+              </button>
+            )}
             <button
               type="button"
               className="board-detail__delete"

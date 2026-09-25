@@ -6,8 +6,14 @@
  * consumed by pi-web's Timeline, while exposing the same public surface as
  * PiAgentProcess.
  */
-import { execFile, spawn } from "node:child_process";
-import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
+import { execFile, execFileSync, spawn } from "node:child_process";
+import {
+  existsSync,
+  readFileSync,
+  readdirSync,
+  realpathSync,
+  statSync,
+} from "node:fs";
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
@@ -27,6 +33,7 @@ import {
   CLARIFY_PROMPT,
 } from "./co-partner-prompt.js";
 import { withHostGuardEnv } from "./host-guard.js";
+import { forkClaudeTranscript } from "./claude-fork.js";
 
 function formatClaudeModelName(value) {
   const stripped = String(value || "")
@@ -48,7 +55,8 @@ function formatClaudeModelName(value) {
   return [family, version.join("."), ...extras].filter(Boolean).join(" ");
 }
 
-const CLAUDE_MODELS = [
+const CLAUDE_FAMILIES = ["opus", "fable", "sonnet", "haiku"];
+const CLAUDE_MODEL_FALLBACK_IDS = [
   "claude-opus-5",
   "claude-fable-5",
   "claude-sonnet-5",
@@ -59,13 +67,105 @@ const CLAUDE_MODELS = [
   "claude-sonnet-4-5",
   "claude-opus-4-5",
   "claude-haiku-4-5",
-].map((id) => ({ provider: "anthropic", id, name: formatClaudeModelName(id) }));
-const CLAUDE_ALIASES = {
-  fable: "claude-fable-5",
-  opus: "claude-opus-5",
-  sonnet: "claude-sonnet-5",
-  haiku: "claude-haiku-4-5",
-};
+];
+const toClaudeModels = (ids) =>
+  ids.map((id) => ({
+    provider: "anthropic",
+    id,
+    name: formatClaudeModelName(id),
+  }));
+
+/** Newest model id per family (list is sorted newest-first). */
+function claudeAliasesFor(models) {
+  const aliases = {};
+  for (const family of CLAUDE_FAMILIES) {
+    const newest = models.find((model) =>
+      model.id.startsWith(`claude-${family}-`),
+    );
+    if (newest) aliases[family] = newest.id;
+  }
+  return aliases;
+}
+
+/**
+ * Extract model ids from the installed CLI bundle so a `claude` update is
+ * picked up without touching this file. The bundle's model catalog is a chain
+ * of `x==="claude-..."` comparisons — preferred, because raw strings include
+ * dead ids the CLI itself rejects (e.g. claude-sonnet-3-7). Loose strings are
+ * only the fallback. Bare majors are kept for the family's newest major only
+ * (the CLI's own convention), and `-0` / dated (`-20250514`) variants never
+ * match.
+ */
+// ponytail: single-digit version parts and the four families only — a
+// "claude-x-4-10" or a fifth family needs this widened.
+export function parseClaudeModelIds(text) {
+  const source = String(text);
+  const candidates = new Set();
+  for (const m of source.matchAll(/[A-Za-z_$][\w$]*==="(claude-[\w-]+)"/g))
+    candidates.add(m[1]);
+  if (candidates.size === 0)
+    for (const m of source.matchAll(
+      /claude-(?:opus|fable|sonnet|haiku)-[\w-]+/g,
+    ))
+      candidates.add(m[0]);
+  const found = new Map();
+  for (const id of candidates) {
+    const m = id.match(
+      /^claude-(opus|fable|sonnet|haiku)-(\d{1,2})(?:-(\d{1,2}))?$/,
+    );
+    if (!m) continue;
+    const major = Number(m[2]);
+    const minor = m[3] === undefined ? null : Number(m[3]);
+    if (major > 9 || (minor !== null && (minor === 0 || minor > 9))) continue;
+    found.set(m[0], { family: m[1], major, minor });
+  }
+  const maxMajor = new Map();
+  for (const { family, major } of found.values()) {
+    maxMajor.set(family, Math.max(maxMajor.get(family) ?? 0, major));
+  }
+  return [...found.entries()]
+    .filter(([, m]) => m.minor !== null || m.major === maxMajor.get(m.family))
+    .sort(
+      (a, b) =>
+        b[1].major - a[1].major ||
+        (b[1].minor ?? 0) - (a[1].minor ?? 0) ||
+        CLAUDE_FAMILIES.indexOf(a[1].family) -
+          CLAUDE_FAMILIES.indexOf(b[1].family),
+    )
+    .map(([id]) => id);
+}
+
+let CLAUDE_MODELS = toClaudeModels(CLAUDE_MODEL_FALLBACK_IDS);
+let CLAUDE_ALIASES = claudeAliasesFor(CLAUDE_MODELS);
+
+// Rescanned only when the resolved `claude` binary's path or mtime changes,
+// i.e. when the CLI updates — the models endpoint picks the new list up
+// within its 5-min cache TTL, no pi-web restart needed. A failed or
+// unfamiliar bundle keeps the previous list.
+let claudeModelScan = { path: "", mtimeMs: -1 };
+
+async function refreshClaudeModels() {
+  let bin;
+  try {
+    bin = realpathSync(
+      execFileSync("which", ["claude"], { encoding: "utf8" }).trim(),
+    );
+    const mtimeMs = statSync(bin).mtimeMs;
+    if (claudeModelScan.path === bin && claudeModelScan.mtimeMs === mtimeMs)
+      return;
+    claudeModelScan = { path: bin, mtimeMs };
+  } catch {
+    return;
+  }
+  try {
+    const ids = parseClaudeModelIds(await readFile(bin, "latin1"));
+    if (ids.length === 0) return;
+    CLAUDE_MODELS = toClaudeModels(ids);
+    CLAUDE_ALIASES = claudeAliasesFor(CLAUDE_MODELS);
+  } catch {
+    // scan failed: keep the previous list
+  }
+}
 const CLAUDE_EFFORT_LEVELS = ["low", "medium", "high", "xhigh", "max"];
 const DEFAULT_CLAUDE_MODEL_ID = "claude-sonnet-5";
 const DEFAULT_CLAUDE_EFFORT = "high";
@@ -104,6 +204,26 @@ function claudeModelInfo(modelId) {
     id: alias || raw,
     name: formatClaudeModelName(alias || stripped || raw),
   };
+}
+
+/**
+ * Claude ids only. The CLI takes any string for --model, so a proxied or
+ * experimental id (`glm-5.3-flash`) used to be adopted as the session's model
+ * and prepended to the model list — which is how a `claude` row ended up
+ * advertising another provider's model.
+ */
+function isClaudeModelId(modelId) {
+  const raw = String(modelId || "").trim();
+  if (!raw) return false;
+  if (raw.toLowerCase().startsWith("claude")) return true;
+  return Boolean(CLAUDE_ALIASES[raw.toLowerCase()]);
+}
+
+/** The session's model: the Claude id given, or the default when it is foreign. */
+function claudeModelOrDefault(modelId) {
+  return isClaudeModelId(modelId)
+    ? claudeModelInfo(modelId)
+    : claudeModelInfo(DEFAULT_CLAUDE_MODEL_ID);
 }
 
 function parseClaudeUsageText(stdout) {
@@ -604,9 +724,17 @@ function expectedSessionPath(cwd, sessionId) {
     homedir(),
     ".claude",
     "projects",
-    cwd.replaceAll("/", "-"),
+    claudeProjectDirName(cwd),
     `${sessionId}.jsonl`,
   );
+}
+
+/** Claude Code encodes the cwd with every non-alphanumeric character as a
+ *  dash, not only the separators: /Users/x/dev/.repo becomes
+ *  -Users-x-dev--repo. Slash-only encoding pointed at a directory Claude
+ *  never creates, so sessions inside dot-folders could not be found. */
+function claudeProjectDirName(cwd) {
+  return String(cwd).replace(/[^a-zA-Z0-9]/g, "-");
 }
 
 function contentText(content) {
@@ -997,27 +1125,15 @@ export class ClaudeAgentProcess {
       this.sessionId = sessionIdFromPath(options.sessionPath);
       const runtime = await readClaudeSessionRuntime(options.sessionPath);
       this.model = options.model?.id
-        ? (claudeModelInfo(options.model.id) ?? {
-            provider: "anthropic",
-            id: options.model.id,
-            name: options.model.name || options.model.id,
-          })
+        ? claudeModelOrDefault(options.model.id)
         : runtime.model
-          ? (claudeModelInfo(runtime.model) ?? {
-              provider: "anthropic",
-              id: runtime.model,
-              name: runtime.model,
-            })
+          ? claudeModelOrDefault(runtime.model)
           : null;
       if (!options.thinkingLevel && runtime.effort)
         this.thinkingLevel = runtime.effort;
     } else {
       this.model = options.model?.id
-        ? (claudeModelInfo(options.model.id) ?? {
-            provider: "anthropic",
-            id: options.model.id,
-            name: options.model.name || options.model.id,
-          })
+        ? claudeModelOrDefault(options.model.id)
         : claudeModelInfo(DEFAULT_CLAUDE_MODEL_ID);
     }
     try {
@@ -1065,15 +1181,7 @@ export class ClaudeAgentProcess {
       args.push("--dangerously-skip-permissions");
     }
     if (this.sessionId) args.push("--resume", this.sessionId);
-    // A fork tab resumes the ORIGINAL session with --fork-session: claude
-    // copies the whole conversation into a new session id when the fork's
-    // first prompt runs, so the original conversation is never touched.
-    if (this.options.forkResume && this.sessionId) {
-      args.push("--fork-session");
-      this.resumedSessionId = this.sessionId;
-    } else {
-      this.resumedSessionId = this.sessionId || undefined;
-    }
+    this.resumedSessionId = this.sessionId || undefined;
     if (this.model?.id) args.push("--model", this.model.id);
     if (this.thinkingLevel) args.push("--effort", this.thinkingLevel);
     args.push(...extraArgs);
@@ -1301,13 +1409,7 @@ export class ClaudeAgentProcess {
     this.sessionId = sessionId;
     this.sessionFile = sessionPath;
     const runtime = await readClaudeSessionRuntime(sessionPath);
-    this.model = runtime.model
-      ? (claudeModelInfo(runtime.model) ?? {
-          provider: "anthropic",
-          id: runtime.model,
-          name: runtime.model,
-        })
-      : null;
+    this.model = runtime.model ? claudeModelOrDefault(runtime.model) : null;
     if (runtime.effort) this.thinkingLevel = runtime.effort;
     try {
       await this.spawnProcess();
@@ -1325,11 +1427,7 @@ export class ClaudeAgentProcess {
   }
 
   async setModel(_provider, modelId) {
-    this.model = claudeModelInfo(modelId) ?? {
-      provider: "anthropic",
-      id: modelId,
-      name: modelId,
-    };
+    this.model = claudeModelOrDefault(modelId);
     const result = await this.restart();
     return result.ok
       ? { ok: true, data: this.model, state: await this.getState() }
@@ -1371,23 +1469,51 @@ export class ClaudeAgentProcess {
     return entries.flatMap(normalizeHistoryEntry);
   }
 
-  async forkAt() {
-    if (!this.sessionId)
+  async forkAt(timestamp, context = {}) {
+    const named =
+      typeof context.sessionPath === "string" ? context.sessionPath : "";
+    const source =
+      named && existsSync(named)
+        ? named
+        : this.sessionFile && existsSync(this.sessionFile)
+          ? this.sessionFile
+          : expectedSessionPath(this.cwd || context.cwd, this.sessionId);
+    if (!source || !existsSync(source))
       return { ok: false, error: "No Claude session is available to fork." };
-    // Claude Code has no fork-at-a-message: --fork-session copies the whole
-    // conversation into a new session id when the fork's first prompt runs.
-    // So hand back this session with forkResume set -- the fork tab opens on
-    // the same file and diverges into its own session on the first prompt,
-    // leaving this conversation untouched.
-    // ponytail: full-history fork only; claude's CLI offers no point cutoff.
-    return {
-      ok: true,
-      restored: true,
-      forkResume: true,
-      forkCwd: this.cwd,
-      state: await this.getState(),
-      messages: await this.getMessages(),
-    };
+    try {
+      // Copy the JSONL through the clicked assistant, remap ids, write a new
+      // session file. The original transcript is untouched.
+      const destDir = context.forkCwd
+        ? join(
+            homedir(),
+            ".claude",
+            "projects",
+            claudeProjectDirName(context.forkCwd),
+          )
+        : undefined;
+      const forked = await forkClaudeTranscript(
+        source,
+        timestamp,
+        destDir,
+        context.forkCwd,
+      );
+      const messages = forked.entries.flatMap(normalizeHistoryEntry);
+      const state = await this.getState();
+      return {
+        ok: true,
+        restored: true,
+        forkCwd: context.forkCwd || this.cwd,
+        state: {
+          ...state,
+          sessionId: forked.sessionId,
+          sessionFile: forked.sessionFile,
+          isStreaming: false,
+        },
+        messages,
+      };
+    } catch (error) {
+      return { ok: false, error: String(error?.message ?? error) };
+    }
   }
 
   getCommands() {
@@ -1399,12 +1525,9 @@ export class ClaudeAgentProcess {
       })),
     });
   }
-  getAvailableModels() {
-    const models = [...CLAUDE_MODELS];
-    if (this.model?.id && !models.some((model) => model.id === this.model.id)) {
-      models.unshift(this.model);
-    }
-    return Promise.resolve({ ok: true, models });
+  async getAvailableModels() {
+    await refreshClaudeModels();
+    return { ok: true, models: [...CLAUDE_MODELS] };
   }
   getThinkingLevels() {
     return Promise.resolve({ ok: true, levels: CLAUDE_EFFORT_LEVELS });
@@ -1893,12 +2016,8 @@ export class ClaudeAgentProcess {
         this.resumedSessionId = event.session_id;
         this.sessionFile = expectedSessionPath(this.cwd, event.session_id);
       }
-      if (typeof event.model === "string")
-        this.model = claudeModelInfo(event.model) ?? {
-          provider: "anthropic",
-          id: event.model,
-          name: event.model,
-        };
+      if (typeof event.model === "string" && isClaudeModelId(event.model))
+        this.model = claudeModelInfo(event.model);
       if (Array.isArray(event.tools))
         this.availableTools = event.tools.filter(
           (tool) => typeof tool === "string",

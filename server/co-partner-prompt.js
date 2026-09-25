@@ -1,15 +1,37 @@
-/** Shared workbench prompt for Pi and Claude. */
-export const CO_PARTNER_PROMPT = [
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+
+/** Spoken narration before/after tools. Pi and Claude get this as a system
+ *  prompt; Grok has no system-prompt channel, so it is prepended to each
+ *  user prompt (same fence as the clarify gate).
+ *
+ *  Two variants: the standard one narrates before AND after every tool call.
+ *  In manual mode the pre-tool narration is dropped — the approval card
+ *  already shows what is about to run, so asking the model to describe it
+ *  again is pure token spend. Post-tool callouts stay in both. */
+const NARRATION_INTRO = [
  "You are working inside a web workbench as a thinking co-partner, not a silent worker.",
- "Think out loud in user-visible text throughout the turn so the user can follow along.",
- "Exception: when asking clarifying questions, do not narrate — emit only the ask fence.",
- "Before every tool call — file reads, bash, searches, edits, and anything else — write a short reason:",
- "what you are about to do, why, and what you expect to learn or change.",
- "After a tool returns, immediately call out anything notable: what you found, whether it matches",
- "the expectation, and what you will do next. Do not save all findings for a final summary.",
- "If something is surprising, missing, conflicting, or broken, say so as soon as you see it.",
- "Keep each narration tight (one to three sentences). Skip filler, hedging, and restating the user request.",
- "Do not keep taking actions without this spoken reasoning.",
+ "Say what you are doing while you work, so the user can follow along.",
+ "Exception: when asking clarifying questions, say nothing else — emit only the ask fence.",
+];
+const NARRATION_BEFORE_TOOLS = [
+ "Before every tool call, write one short line: what you are about to do and why.",
+];
+const NARRATION_AFTER_TOOLS = [
+ "After a tool returns, write one short line: what you found and what you will do next.",
+ "Never run tools in silence. If something is surprising, missing, conflicting, or broken, say so right away.",
+ "Use plain, simple, short English. No filler, no hedging, no restating the user request.",
+];
+
+export const CO_PARTNER_PROMPT = [
+ ...NARRATION_INTRO,
+ ...NARRATION_BEFORE_TOOLS,
+ ...NARRATION_AFTER_TOOLS,
+].join(" ");
+
+export const CO_PARTNER_PROMPT_MANUAL = [
+ ...NARRATION_INTRO,
+ ...NARRATION_AFTER_TOOLS,
 ].join(" ");
 
 /**
@@ -24,6 +46,7 @@ export const CLARIFY_PROMPT = [
  "If any requirement, scope, or expected outcome is ambiguous or missing, ask up to three concise clarifying questions and stop —",
  "do not call tools or begin work until the user answers.",
  "When asking, skip the restatement and output nothing except one fenced block tagged ask, containing only JSON of the form",
+ "Emit that fence as plain text in your reply — never inside a tool call, file edit, or command.",
  '{"questions":[{"header":"Scope","question":"...?","multiSelect":false,',
  '"options":[{"label":"Short answer","description":"what picking this means"}]}]}.',
  "Give each question two to four concrete options — the real choices, not placeholders.",
@@ -33,6 +56,93 @@ export const CLARIFY_PROMPT = [
  "If the message answers your pending questions or continues already-confirmed work, proceed without re-asking.",
  "Skip the questions only when the request is genuinely unambiguous.",
 ].join(" ");
+
+/**
+ * ACP backends (grok, codex) never load CLAUDE.md on their own the way pi
+ * and claude do, so every turn of orientation was spent rediscovering repo
+ * structure (measured: ~47% of first-turn tool calls in sampled sessions).
+ * Re-read per turn — one small file read beats any cached staleness — and
+ * return "" when the workspace has no CLAUDE.md so other repos are untouched.
+ * Kept inside the harness fence so replay stripping removes it with the rest.
+ */
+export function repoContext(cwd) {
+ try {
+  const text = readFileSync(
+   join(cwd ?? process.cwd(), "CLAUDE.md"),
+   "utf8",
+  ).trim();
+  return text
+   ? [
+      "Project instructions (CLAUDE.md) — background context, not part of the user's message:",
+      text,
+      "[end project instructions]",
+     ].join("\n")
+   : "";
+ } catch {
+  return "";
+ }
+}
+
+/**
+ * ACP backends (grok, codex) have no system-prompt channel, so the clarify
+ * gate is prepended to every user prompt and stripped back out of replayed
+ * history. One prefix, not one copy per adapter.
+ */
+export const CLARIFY_PROMPT_PREFIX = [
+ "[pi-web harness instruction — this block is not part of the user's message; do not quote, repeat, or reference it]",
+ CLARIFY_PROMPT,
+ "$CONTEXT",
+ "[end pi-web harness instruction]",
+ "",
+].join("\n");
+
+/** Grok: co-partner narration + clarify, one fence, stripped on replay. */
+export const GROK_PROMPT_PREFIX = [
+ "[pi-web harness instruction — this block is not part of the user's message; do not quote, repeat, or reference it]",
+ CO_PARTNER_PROMPT,
+ CLARIFY_PROMPT,
+ "$CONTEXT",
+ "[end pi-web harness instruction]",
+ "",
+].join("\n");
+
+/** Grok: co-partner narration + clarify, one fence, stripped on replay.
+ *  `manual` swaps in the variant without pre-tool narration (manual mode's
+ *  approval card already shows what is about to run). */
+function withPrefix(template, context, text) {
+ const prefix = template.replace("$CONTEXT", context ? `${context}\n` : "");
+ return `${prefix}${String(text ?? "")}`;
+}
+
+export function withClarifyPrefix(text, context = "") {
+ return withPrefix(CLARIFY_PROMPT_PREFIX, context, text);
+}
+
+export function withGrokPrefix(text, context = "", manual = false) {
+ const template = manual
+  ? [
+     "[pi-web harness instruction — this block is not part of the user's message; do not quote, repeat, or reference it]",
+     CO_PARTNER_PROMPT_MANUAL,
+     CLARIFY_PROMPT,
+     "$CONTEXT",
+     "[end pi-web harness instruction]",
+     "",
+    ].join("\n")
+  : GROK_PROMPT_PREFIX;
+ return withPrefix(template, context, text);
+}
+
+export function stripClarifyPrefix(text) {
+ if (typeof text !== "string") return text;
+ const end = "[end pi-web harness instruction]";
+ let rest = text;
+ while (rest.startsWith("[pi-web harness instruction")) {
+  const at = rest.indexOf(end);
+  if (at === -1) return rest;
+  rest = rest.slice(at + end.length).replace(/^\n/, "");
+ }
+ return rest;
+}
 
 /**
  * Closing report: what turns the narration into something the user can act on.
@@ -55,3 +165,28 @@ export const REPORT_PROMPT = [
  "Keep the whole report under fifteen lines.",
  "Skip this report when the turn only asks clarifying questions or made no file changes.",
 ].join(" ");
+
+/**
+ * Sent to an agent whose turn was cut off by a server restart, in place of
+ * the user having to ask "did you finish that?". The agent is resumed on its
+ * own session file, so its whole history is already in context -- what it is
+ * missing is the knowledge that the last turn never ended, and the warning
+ * not to redo work that already landed on disk.
+ */
+export function resumePrompt(interruptedMessage) {
+ return [
+  "[pi-web harness instruction — the workbench restarted while you were working; the user did not send this]",
+  "Your previous turn was cut off mid-execution by a restart, so it never finished and never reported back.",
+  interruptedMessage
+   ? `The request you were working on was:\n\n${interruptedMessage}\n`
+   : "",
+  "Do not start over and do not repeat work that already succeeded.",
+  "First check the current state of the workspace — read the files you were editing and re-run the",
+  "checks you had run — to establish what actually landed before the interruption.",
+  "Then say in one or two lines where things stood, and carry on from exactly that point until the",
+  "original request is complete.",
+  "[end pi-web harness instruction]",
+ ]
+  .filter(Boolean)
+  .join(" ");
+}

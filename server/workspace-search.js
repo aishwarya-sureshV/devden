@@ -145,7 +145,18 @@ export async function grepWorkspace(root, query, options = {}) {
   if (needle.length > 512)
     return { ok: false, error: "Search text is too long." };
 
-  const { caseSensitive = false, wholeWord = false, regex = false } = options;
+  const {
+    caseSensitive = false,
+    wholeWord = false,
+    regex = false,
+    pathspec = "",
+  } = options;
+  // Scoping belongs in the grep, not in a filter over its output: this
+  // function caps at MAX_MATCHES, so filtering afterwards can discard every
+  // match and report "none found" for a query that has plenty.
+  const scope = String(pathspec).trim();
+  if (scope.includes("\0") || scope.length > 256)
+    return { ok: false, error: "Search path is not usable." };
   // --untracked so a file created since the last commit is still findable;
   // ignored paths stay out either way.
   const flags = ["-I", "-n", "-z", "--untracked", regex ? "-E" : "-F"];
@@ -154,7 +165,17 @@ export async function grepWorkspace(root, query, options = {}) {
 
   const git = await run(
     "git",
-    ["-C", root, "grep", ...flags, "-e", needle],
+    [
+      "-C",
+      root,
+      "grep",
+      ...flags,
+      "-e",
+      needle,
+      // `*foo*` matches anywhere in the path, so a caller can scope by a bare
+      // file or directory fragment without knowing the full path.
+      ...(scope ? ["--", `*${scope}*`] : []),
+    ],
     root,
   );
   // git grep exits 1 for "no matches" and 128 for "not a git repository".
@@ -171,6 +192,9 @@ export async function grepWorkspace(root, query, options = {}) {
                 ...(caseSensitive ? [] : ["-i"]),
                 ...(wholeWord ? ["-w"] : []),
                 ...SKIP_DIRS.map((dir) => `--exclude-dir=${dir}`),
+                // --include, not a path argument: it gives the fragment the
+                // same meaning here that the `*scope*` pathspec gives git.
+                ...(scope ? [`--include=*${scope}*`] : []),
                 "-e",
                 needle,
                 ".",

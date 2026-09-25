@@ -4,7 +4,14 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "no
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { diffSinceSnapshot, listSnapshots, restoreSnapshot, takeSnapshot } from "./snapshots.js";
+import {
+  commitForFork,
+  diffSinceSnapshot,
+  snapshotAfterFork,
+  listSnapshots,
+  restoreSnapshot,
+  takeSnapshot,
+} from "./snapshots.js";
 
 function repo() {
   const dir = mkdtempSync(join(tmpdir(), "pi-web-snap-"));
@@ -99,6 +106,46 @@ test("diffSinceSnapshot is this turn only, not leftover dirty files", async () =
   // the original committed text must not appear as this turn's change.
   assert.doesNotMatch(isolated.diff, /^-original/m);
   rmSync(dir, { recursive: true, force: true });
+});
+
+test("commitForFork uses the next snapshot, else a fresh tree", async () => {
+  const { dir } = repo();
+  const first = await takeSnapshot(dir, "turn one");
+  writeFileSync(join(dir, "kept.txt"), "after turn one\n");
+  const second = await takeSnapshot(dir, "turn two");
+  writeFileSync(join(dir, "kept.txt"), "after turn two\n");
+
+  // Forking the first reply: the next prompt's snapshot is the tree after
+  // that turn, not the pre-prompt snapshot and not the later dirty files.
+  const historical = await commitForFork(dir, first.at + 10);
+  assert.equal(historical.ok, true);
+  assert.equal(historical.commit, second.commit);
+
+  const latest = await commitForFork(dir, second.at + 10);
+  assert.equal(latest.ok, true);
+  assert.notEqual(latest.commit, second.commit);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("snapshotAfterFork skips a skewed pre-prompt snapshot when a later one exists", () => {
+  const snaps = [
+    { at: 1000, commit: "before" },
+    { at: 4500, commit: "this-turn" },
+    { at: 9000, commit: "next-turn" },
+  ];
+  // Reply is stamped 3500; this turn's snapshot landed 1s later (clock skew).
+  assert.equal(snapshotAfterFork(snaps, 3500).commit, "next-turn");
+  // A quick next turn, with nothing past the skew window, stays the cut.
+  assert.equal(
+    snapshotAfterFork(
+      [
+        { at: 1000, commit: "turn-one" },
+        { at: 1060, commit: "turn-two" },
+      ],
+      1010,
+    ).commit,
+    "turn-two",
+  );
 });
 
 test("a directory that is not a repo fails without throwing", async () => {

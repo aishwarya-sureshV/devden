@@ -1,6 +1,6 @@
 /** Tool card derivation: summaries, diffs, and full-file views (ported from AgentDeck). */
-import type { TimelineItem } from "./timeline";
-import { asRecord } from "./timeline";
+import type { TimelineItem } from "./timeline.ts";
+import { asRecord } from "./timeline.ts";
 
 export interface DiffLine {
   kind: "add" | "remove" | "context" | "meta";
@@ -27,20 +27,41 @@ type ToolItem = Extract<TimelineItem, { kind: "tool" }>;
 const TOOL_CANONICAL: Record<string, string> = {
   search_replace: "edit",
   str_replace: "edit",
+  strreplace: "edit",
   replace: "edit",
   edit_file: "edit",
   apply_patch: "edit",
   apply_diff: "edit",
   replace_in_file: "edit",
+  multi_edit: "edit",
+  notebook_edit: "edit",
+  notebookedit: "edit",
   create_file: "write",
   write_file: "write",
   read_file: "read",
+  view: "read",
+  view_file: "read",
+  open_file: "read",
+  get_file: "read",
+  get_file_contents: "read",
+  notebook_read: "read",
   list_dir: "ls",
   listdir: "ls",
   glob_file_search: "ls",
+  glob_search: "ls",
   glob: "ls",
   run_terminal_command: "bash",
   shell: "bash",
+  local_shell: "bash",
+  exec: "bash",
+  execute: "bash",
+  run_command: "bash",
+  terminal: "bash",
+  powershell: "bash",
+  grep_files: "grep",
+  grepfiles: "grep",
+  codebase_search: "search",
+  semantic_search: "search",
 };
 
 export function canonicalizeToolName(name: string): string {
@@ -106,7 +127,9 @@ export function summarizeTool(
     "file_path",
     "target_file",
     "command",
+    "pattern",
     "query",
+    "glob",
     "url",
   ]) {
     if (typeof args[key] === "string") return truncate(String(args[key]), 86);

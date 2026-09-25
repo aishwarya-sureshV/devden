@@ -283,7 +283,7 @@ export function DeployButton({
         onClick={() => void startDeploy(primaryVariant)}
         disabled={deploying}
         title={primaryTitle}
-        aria-label={`Deploy (${primaryVariant})${deploying ? " in progress" : ""}`}
+        aria-label={label}
       >
         <span className="conversation-header__deploy-icon">
           {primaryVariant === "cloud" ? (
@@ -292,9 +292,6 @@ export function DeployButton({
             <IconLaptop size={14} />
           )}
         </span>
-        {!compact && (
-          <span className="conversation-header__deploy-label">{label}</span>
-        )}
         {failedOnPrimary && message && (
           <span className="conversation-header__deploy-error" role="status">
             {message}

@@ -14,6 +14,7 @@ import { Sidebar } from "./components/Sidebar";
 import { Conversation } from "./components/Conversation";
 import { WorkbenchPage } from "./components/WorkbenchPage";
 import { NotesPage } from "./components/NotesPage";
+import { BattlePage } from "./components/BattlePage";
 import { FleetPage } from "./components/FleetPage";
 import { TerminalPage } from "./components/TerminalPage";
 import { FishLogo } from "./components/icons";
@@ -52,8 +53,14 @@ function OfflineBanner() {
 }
 
 function Frame() {
-  const { tabs, active, activeKey, setActiveKey, closeConversation } =
-    useStore();
+  const {
+    tabs,
+    active,
+    activeKey,
+    setActiveKey,
+    closeConversation,
+    setVisibleSessionKeys,
+  } = useStore();
   const [view, setView] = useState<WorkbenchView>("sessions");
   const [sidebarCollapsed, setSidebarCollapsed] = useState(
     () => localStorage.getItem("pi-web.sidebar") === "collapsed",
@@ -198,6 +205,13 @@ function Frame() {
       ? [active]
       : [];
 
+  // The store persists which panes were on screen so a refresh restores the
+  // whole split layout instead of collapsing to the active session.
+  const visibleKeyList = visibleTabs.map((tab) => tab.key).join(",");
+  useEffect(() => {
+    setVisibleSessionKeys(visibleKeyList ? visibleKeyList.split(",") : []);
+  }, [visibleKeyList, setVisibleSessionKeys]);
+
   // Closing a tab leaves its key in splitSessionKeys, and a key with no tab
   // behind it filters visibleTabs down to nothing: every pane renders hidden
   // and the sidebar's "Open" card disappears while a session is still open.
@@ -323,6 +337,14 @@ function Frame() {
                 onFocusSession={(key) => {
                   // Focusing alone left Fleet on screen, so the card click looked
                   // dead — the session it selected was behind this view.
+                  focusSession(key);
+                  setView("sessions");
+                }}
+              />
+            ) : view === "battle" ? (
+              <BattlePage
+                showThinking={showThinking}
+                onFocusSession={(key) => {
                   focusSession(key);
                   setView("sessions");
                 }}

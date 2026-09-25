@@ -87,6 +87,46 @@ export async function takeSnapshot(cwd, label = "") {
   return { ok: true, at, ref, commit: commit.out };
 }
 
+/**
+ * The next turn's snapshot after a forked reply. A snapshot taken just
+ * before this reply can land up to SLACK_MS after the reply's timestamp
+ * (server clock vs agent log). When a later snapshot exists past that
+ * window, the in-window one is this turn's own pre-prompt tree — skip it.
+ * A lone snapshot inside the window is the next turn happening quickly.
+ * ponytail: a skewed pre-prompt snapshot with no later turn is still chosen;
+ * distinguishing it needs the snapshot to store which message it belongs to.
+ */
+export function snapshotAfterFork(snaps, timestamp) {
+  const target = Number(timestamp);
+  const after = (Array.isArray(snaps) ? snaps : [])
+    .filter((entry) => Number.isFinite(entry?.at) && entry.at > target)
+    .sort((left, right) => left.at - right.at);
+  if (!Number.isFinite(target) || after.length === 0) return undefined;
+  const beyond = after.find((entry) => entry.at > target + SLACK_MS);
+  return beyond ?? after[0];
+}
+
+/**
+ * The tree as of a forked reply: the next turn's pre-prompt snapshot if one
+ * exists (that is the working tree after this turn finished), otherwise a
+ * fresh snapshot of the tree right now. Forks branch from this commit so the
+ * child checkout matches the parent at that point, dirty files included.
+ */
+export async function commitForFork(cwd, timestamp) {
+  const snaps = await listSnapshots(cwd);
+  const next = snapshotAfterFork(snaps, timestamp);
+  if (next)
+    return { ok: true, commit: next.commit, at: next.at, ref: next.ref };
+  const fresh = await takeSnapshot(cwd, "fork");
+  if (!fresh.ok) return { ok: false, error: fresh.error };
+  return {
+    ok: true,
+    commit: fresh.commit,
+    at: fresh.at,
+    ref: fresh.ref,
+  };
+}
+
 /** Newest first. */
 export async function listSnapshots(cwd) {
   if (!cwd) return [];

@@ -2,9 +2,13 @@ import { useState } from 'react'
 import { IconCheck, IconCopy } from './icons'
 
 export async function copyText(text: string) {
-  if (navigator.clipboard?.writeText) {
-    await navigator.clipboard.writeText(text)
-    return
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text)
+      return
+    }
+  } catch {
+    /* fall through to the execCommand path */
   }
   const textarea = document.createElement('textarea')
   textarea.value = text
@@ -35,10 +39,14 @@ export function CopyButton({
       aria-label={label}
       title={copied ? 'Copied' : label}
       onClick={() => {
-        void copyText(text).then(() => {
-          setCopied(true)
-          window.setTimeout(() => setCopied(false), 1400)
-        })
+        void copyText(text)
+          .then(() => {
+            setCopied(true)
+            window.setTimeout(() => setCopied(false), 1400)
+          })
+          .catch(() => {
+            /* clipboard blocked; the title stays "Copy" */
+          })
       }}
     >
       {copied ? <IconCheck /> : <IconCopy />}

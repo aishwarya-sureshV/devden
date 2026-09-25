@@ -7,8 +7,10 @@
  * and `switch_session` rebind the process to a fresh conversation.
  */
 import { spawn } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
+import { join } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { fileURLToPath } from "node:url";
 import { AgentPool } from "./agent-pool.js";
@@ -24,6 +26,7 @@ import { loadGrokUsage } from "./grok-usage.js";
 import { ollamaResets } from "./ollama-resets.js";
 import { readResumeSession } from "./sessions.js";
 import { logFault } from "./log-fault.js";
+import { buildReassertion, findDroppedInstructions } from "./context-guard.js";
 import {
   CO_PARTNER_PROMPT,
   CO_PARTNER_PROMPT_MANUAL,
@@ -41,6 +44,11 @@ const MANUAL_APPROVE_EXTENSION_URL = new URL(
   "./pi-extensions/manual-approve.ts",
   import.meta.url,
 );
+const BACKGROUND_TASKS_EXTENSION_URL = new URL(
+  "./pi-extensions/background-tasks.ts",
+  import.meta.url,
+);
+const TERMINAL_TABS_PORT = process.env.PI_WEB_PORT || "4319";
 
 const PLAN_MODE_PROMPT = [
   "You are in plan mode, a strictly read-only exploration phase.",
@@ -217,6 +225,23 @@ function parsePiModelListing(text) {
   });
 }
 
+function assistantEntryTime(entry) {
+  const direct = Number(entry?.message?.timestamp);
+  if (Number.isFinite(direct)) return direct;
+  const parsed = Date.parse(entry?.timestamp ?? "");
+  return Number.isFinite(parsed) ? parsed : NaN;
+}
+
+function closerAssistant(requested, closest, candidate) {
+  const candidateTime = assistantEntryTime(candidate);
+  const closestTime = assistantEntryTime(closest);
+  if (!Number.isFinite(candidateTime)) return closest;
+  if (!Number.isFinite(closestTime)) return candidate;
+  return Math.abs(candidateTime - requested) < Math.abs(closestTime - requested)
+    ? candidate
+    : closest;
+}
+
 export class PiAgentProcess {
   constructor(sessionKey) {
     this.sessionKey = sessionKey;
@@ -336,9 +361,10 @@ export class PiAgentProcess {
     // queue_updated event just cleared.
     this.sendNextQueued();
     void this.getState()
-      .then((state) =>
-        this.emit({ type: "state", sessionKey: this.sessionKey, state }),
-      )
+      .then((state) => {
+        if (this.suppressForkState) return;
+        this.emit({ type: "state", sessionKey: this.sessionKey, state });
+      })
       .catch(() => {});
   }
 
@@ -469,6 +495,15 @@ export class PiAgentProcess {
     if (options.accessMode === "read-only" || options.agentMode === "plan") {
       args.push("--tools", "read,grep,find,ls");
     }
+    // Always on: background tasks + terminal tabs (Claude Code parity for
+    // long-running work). Tools no-op gracefully when their bridge is absent.
+    args.push("-e", fileURLToPath(BACKGROUND_TASKS_EXTENSION_URL));
+    // Per-project MCP servers: pi natively reads a config file path; when
+    // the workspace ships .mcp.json, wire it so MCP tools work without
+    // anything in the user's global ~/.pi settings.
+    if (existsSync(join(cwd, ".mcp.json"))) {
+      args.push("--mcp-config", join(cwd, ".mcp.json"));
+    }
     if (this.agentMode === "manual") {
       // pi's RPC protocol has no built-in tool approval; the extension
       // provides it by blocking tool_call and asking over ctx.ui.select,
@@ -488,6 +523,10 @@ export class PiAgentProcess {
       cwd,
       env: withHostGuardEnv({
         ...process.env,
+        // Bridge for the terminal-tab tools in background-tasks.ts: they
+        // call back into this server to run/read user-visible tabs.
+        PI_WEB_PORT: TERMINAL_TABS_PORT,
+        PI_WEB_SESSION_KEY: this.sessionKey,
         FORCE_COLOR: "0",
         NO_COLOR: "1",
       }),
@@ -654,6 +693,42 @@ export class PiAgentProcess {
       return result;
     }
   }
+
+  /**
+   * Context guard: after every compaction, check the dead zone for standing
+   * instructions the summary no longer mentions and re-assert them so they
+   * survive. Emits `context_guard` so the X-ray panel can show what was
+   * restored. Runs on both auto and manual compactions — a manual compact
+   * whose custom instructions already pin the constraints finds nothing
+   * dropped and sends nothing.
+   */
+  async guardCompaction(event) {
+    const result = event?.result;
+    if (!result?.summary || !result?.firstKeptEntryId) return;
+    const entries = await this.getEntries();
+    const cutIndex = entries.findIndex(
+      (entry) => entry?.id === result.firstKeptEntryId,
+    );
+    if (cutIndex <= 0) return;
+    const deadUsers = entries
+      .slice(0, cutIndex)
+      .map((entry) => entry?.message)
+      .filter((message) => message?.role === "user");
+    const live = await this.getMessages(10_000);
+    const dropped = findDroppedInstructions({
+      summary: result.summary,
+      liveText: JSON.stringify(live ?? []),
+      userMessages: deadUsers,
+    });
+    if (dropped.length === 0) return;
+    this.emit({
+      type: "context_guard",
+      sessionKey: this.sessionKey,
+      reason: String(event.reason ?? "manual"),
+      dropped: dropped.map((instruction) => instruction.text),
+    });
+    await this.prompt(buildReassertion(dropped));
+  }
   async setModel(provider, modelId) {
     if (provider === "ollama") {
       try {
@@ -712,11 +787,14 @@ export class PiAgentProcess {
     const response = await this.send({ type: "get_state" }, timeoutMs);
     if (response.success === false)
       throw new Error(response.error ?? "get_state failed");
-    this.lastState = {
+    const state = {
       ...response.data,
       queuedMessages: this.queueSnapshot(),
     };
-    return this.lastState;
+    // Fork rebinds this process onto the branch for one command. Writing
+    // that file into lastState makes the parent tab's next call target it.
+    if (!this.suppressForkState) this.lastState = state;
+    return state;
   }
 
   async getMessages(timeoutMs) {
@@ -735,8 +813,38 @@ export class PiAgentProcess {
     return Array.isArray(data) ? data : (data?.entries ?? []);
   }
 
-  async forkAt(timestamp) {
-    const entries = await this.getEntries();
+  async forkAt(timestamp, context = {}) {
+    // ponytail: rejecting is the whole fix. Pi's fork RPC rebinds this
+    // process, and switchSession then abort()s whatever isStreaming it
+    // finds — including the user's live turn. A side-channel file copy
+    // could fork during a turn; add that only if fork-while-streaming matters.
+    if (this.process && this.status === "working") {
+      return {
+        ok: false,
+        error: "Wait for the current reply to finish before forking.",
+      };
+    }
+    if (!this.process) {
+      const cwd = context.cwd || this.cwd;
+      const sessionPath = context.sessionPath || this.lastState?.sessionFile;
+      if (!cwd) return { ok: false, error: "Pi process is not running" };
+      const started = await this.start(cwd, {
+        ...(sessionPath ? { sessionPath } : {}),
+        ...(context.model ? { model: context.model } : {}),
+        ...(context.thinkingLevel
+          ? { thinkingLevel: context.thinkingLevel }
+          : {}),
+        ...(context.accessMode ? { accessMode: context.accessMode } : {}),
+        ...(context.agentMode ? { agentMode: context.agentMode } : {}),
+      });
+      if (!started.ok) return started;
+    }
+    let entries;
+    try {
+      entries = await this.getEntries();
+    } catch (error) {
+      return { ok: false, error: String(error?.message ?? error) };
+    }
     const assistantEntries = entries.filter(
       (entry) =>
         entry?.type === "message" &&
@@ -749,20 +857,14 @@ export class PiAgentProcess {
         error: "No assistant response is available to fork.",
       };
     const requested = Number(timestamp);
+    const timed = assistantEntries.filter((entry) =>
+      Number.isFinite(assistantEntryTime(entry)),
+    );
+    const pool = timed.length > 0 ? timed : assistantEntries;
     const entry = Number.isFinite(requested)
-      ? assistantEntries.reduce((closest, candidate) => {
-          const closestTime = Number(
-            closest?.message?.timestamp ?? Date.parse(closest?.timestamp ?? ""),
-          );
-          const candidateTime = Number(
-            candidate?.message?.timestamp ??
-              Date.parse(candidate?.timestamp ?? ""),
-          );
-          return Math.abs(candidateTime - requested) <
-            Math.abs(closestTime - requested)
-            ? candidate
-            : closest;
-        })
+      ? pool.reduce((closest, candidate) =>
+          closerAssistant(requested, closest, candidate),
+        )
       : assistantEntries.at(-1);
     const entryIndex = entries.findIndex(
       (candidate) => candidate?.id === entry?.id,
@@ -780,9 +882,15 @@ export class PiAgentProcess {
     // put the live conversation back where it was, so a forked session runs
     // independently instead of stealing this agent.
     const originalFile = this.lastState?.sessionFile;
-    const result = nextUser
-      ? await this.runSessionCommand({ type: "fork", entryId: nextUser.id })
-      : await this.runSessionCommand({ type: "clone" });
+    this.suppressForkState = true;
+    let result;
+    try {
+      result = nextUser
+        ? await this.runSessionCommand({ type: "fork", entryId: nextUser.id })
+        : await this.runSessionCommand({ type: "clone" });
+    } finally {
+      this.suppressForkState = false;
+    }
     if (!result.ok) return result;
     if (result.data?.cancelled)
       return { ok: false, error: "The fork was cancelled by an extension." };
@@ -792,17 +900,33 @@ export class PiAgentProcess {
       if (!restore.ok)
         return {
           ok: false,
-          error:
-            restore.error ??
-            "Could not restore the original session after forking.",
+          keepWorktree: true,
+          error: `Fork was created at ${forkFile} but the original session could not be restored (${restore.error ?? "switch failed"}).`,
         };
+    }
+    // Rewrite the branch header only after the process is back on the
+    // original file. Doing it while pi still has the branch open races
+    // the next append.
+    if (forkFile && context.forkCwd) {
+      try {
+        // ponytail: whole-file read. Stream line 0 only if transcripts get huge.
+        const raw = await readFile(forkFile, "utf8");
+        const lines = raw.split("\n");
+        const header = JSON.parse(lines[0]);
+        if (header?.type === "session" && header.cwd !== context.forkCwd) {
+          lines[0] = JSON.stringify({ ...header, cwd: context.forkCwd });
+          await writeFile(forkFile, lines.join("\n"));
+        }
+      } catch {
+        /* best effort: without this the child shares the parent tree */
+      }
     }
     return {
       ok: true,
       restored: true,
       state: result.state,
       messages: result.messages,
-      forkCwd: this.cwd,
+      forkCwd: context.forkCwd || this.cwd,
     };
   }
 
@@ -1107,9 +1231,13 @@ export class PiAgentProcess {
       // Responses are part of the RPC lifecycle too. Keep them on the shared
       // event stream so the backend log can show the command boundary and its
       // raw acknowledgement, not only the agent's streamed events.
-      this.emit({ ...event, sessionKey: this.sessionKey });
+      if (!this.suppressForkState)
+        this.emit({ ...event, sessionKey: this.sessionKey });
       return;
     }
+    // While fork has the process bound to the branch, its events are the
+    // branch's, not the parent tab's. Drop them until we switch back.
+    if (this.suppressForkState) return;
     if (event.type === "agent_start") this.setStatus("working");
     if (
       event.type === "tool_execution_start" ||
@@ -1119,6 +1247,11 @@ export class PiAgentProcess {
       if (holdEnd) return;
     }
     if (event.type === "agent_settled") this.settleTurn();
+    if (event.type === "compaction_end") {
+      void this.guardCompaction(event).catch(() => {
+        /* a failed guard lookup must never break the event stream */
+      });
+    }
     if (
       event.type === "extension_ui_request" &&
       event.method === "select" &&
@@ -1139,11 +1272,11 @@ export class PiAgentProcess {
       void this.approvalGate
         .request({ toolName, title: toolName, detail })
         .then(({ allow, choice }) => {
-          const value = !allow
-            ? "Deny"
-            : choice === "allow_always"
+          const value = allow
+            ? choice === "allow_always"
               ? "Always allow"
-              : "Allow once";
+              : "Allow once"
+            : "Deny";
           // A response to pi's request: the id must match the request's,
           // so this cannot go through send() (it stamps its own id).
           this.process?.stdin.write(

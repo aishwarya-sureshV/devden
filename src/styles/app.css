@@ -159,12 +159,14 @@
  flex: none;
  color: var(--dsw-alias-label-tertiary);
 }
-.sidebar__backend-popover {
+.sidebar__session-popover.sidebar__backend-popover {
  top: calc(100% + 4px);
  left: 8px;
  right: auto;
- width: calc(100% - 16px);
- min-width: 280px;
+ /* Span the whole side panel. The menu's own container stops short of the
+ collapse toggle, and the shared popover width (174px) is fixed, so the
+ picker used to stay narrow while a widened sidebar grew around it. */
+ width: calc(var(--pw-sidebar-width, 264px) - 28px);
  padding: 6px;
 }
 .sidebar__backend-popover button[role="menuitem"] {
@@ -203,14 +205,6 @@
  border-color: var(--pw-accent-line);
  background: var(--pw-accent-tint-2);
  color: var(--pw-accent);
-}
-.sidebar__backend-hint {
- margin: 6px 3px 2px;
- padding: 8px 9px 5px;
- border-top: 1px solid var(--dsw-alias-border-l2);
- font-size: 10px;
- line-height: 1.6;
- color: var(--dsw-alias-label-dimmed);
 }
 .sidebar__backend-heading {
  padding: 7px 10px 6px;
@@ -650,7 +644,7 @@
 }
 
 .sidebar__open-card {
- margin: 8px 0 4px;
+ margin: 2px 0 2px;
  padding: 0;
  border: 0;
  border-radius: 0;
@@ -660,8 +654,8 @@
  display: flex;
  align-items: center;
  gap: 8px;
- margin: 0 4px 5px;
- padding: 8px 4px 0;
+ margin: 0 4px 3px;
+ padding: 4px 4px 0;
 }
 .sidebar__open-rule {
  flex: 1;
@@ -697,7 +691,7 @@
  display: flex;
  flex-direction: column;
  /* Session title -> model line. 1px read as one cramped block. */
- gap: 4px;
+ gap: 2px;
 }
 .sidebar__item-sub {
  display: flex;
@@ -934,7 +928,13 @@
 }
 .sidebar__item--open {
  align-items: center;
- padding: 7px 9px;
+ padding: 5px 9px;
+ /* width:100% plus these margins overflowed the row by 9px each side,
+    which is what let the title slide under the absolutely-placed row
+    buttons. */
+ width: auto;
+ flex: 1;
+ min-width: 0;
  min-height: 0;
  margin: 0 9px;
  border-radius: 7px;
@@ -1088,9 +1088,13 @@
  min-width: 0;
 }
 .sidebar__item-row > .sidebar__item {
- padding-right: 34px;
+ padding-right: 84px;
 }
+/* Row buttons are absolutely placed from the row edge while the item is
+   inset 9px; 84px keeps the title clear of the outermost button (57–81px
+   zone) on every row, split button or not. */
 .sidebar__item-split,
+.sidebar__item-new,
 .sidebar__item-close {
  position: absolute;
  top: 50%;
@@ -1108,15 +1112,23 @@
  font-size: 14px;
 }
 .sidebar__item-split {
- right: 31px;
+ right: 57px;
  color: var(--dsw-alias-label-caption);
  opacity: 0;
+}
+/* Always visible, always in the same slot on every row: opening a second
+   session on the same agent is the whole point of the button, and a
+   hover-only or misaligned one reads as broken. */
+.sidebar__item-new {
+ right: 31px;
+ color: var(--dsw-alias-label-caption);
 }
 .sidebar__item-row:hover .sidebar__item-split,
 .sidebar__item-split:focus-visible {
  opacity: 1;
 }
 .sidebar__item-split:hover,
+.sidebar__item-new:hover,
 .sidebar__item-close:hover {
  background: var(--dsw-alias-interactive-bg-hover);
  color: var(--dsw-alias-label-primary);
@@ -2605,4 +2617,492 @@
  max-width: 100%;
  max-height: 100%;
  border-radius: 6px;
+}
+
+/* Battle mode: one task racing across backends in isolated worktrees. */
+.battle-page {
+ display: flex;
+ flex-direction: column;
+ min-height: 0;
+ height: 100%;
+}
+.battle-board {
+ display: flex;
+ flex-direction: column;
+ min-height: 0;
+ flex: 1;
+ padding: 14px 16px;
+ gap: 10px;
+}
+.battle-board__head {
+ display: flex;
+ align-items: flex-start;
+ gap: 12px;
+}
+.battle-board__task {
+ flex: 1;
+ min-width: 0;
+}
+.battle-board__task h1 {
+ margin: 0;
+ font-size: 15px;
+ color: var(--dsw-alias-label-primary);
+ overflow: hidden;
+ text-overflow: ellipsis;
+ white-space: nowrap;
+}
+.battle-board__task p {
+ margin: 2px 0 0;
+ font-size: 12px;
+ color: var(--dsw-alias-label-caption);
+}
+.battle-stop {
+ flex: none;
+ padding: 5px 11px;
+ border-radius: 7px;
+ border: 1px solid var(--dsw-alias-border-l2);
+ background: var(--dsw-alias-bg-layer-2);
+ color: var(--dsw-alias-label-primary);
+ font-size: 12px;
+ cursor: pointer;
+}
+.battle-stop:hover {
+ border-color: rgba(248, 113, 113, 0.45);
+ color: var(--ds-status-error);
+}
+.battle-grid {
+ display: grid;
+ gap: 12px;
+ min-height: 0;
+ flex: 1;
+ overflow-x: auto;
+ overflow-y: hidden;
+ padding-bottom: 4px;
+}
+.battle-col {
+ display: flex;
+ flex-direction: column;
+ min-width: 0;
+ min-height: 0;
+ border: 1px solid var(--dsw-alias-border-l2);
+ border-radius: 11px;
+ background: var(--dsw-alias-bg-layer-1);
+ overflow: hidden;
+}
+.battle-col__head {
+ display: flex;
+ align-items: center;
+ gap: 7px;
+ padding: 9px 11px 0;
+ font-size: 12.5px;
+ color: var(--dsw-alias-label-primary);
+}
+.battle-col__head strong {
+ font-size: 12.5px;
+}
+.battle-col__head em {
+ font-style: normal;
+ font-size: 10.5px;
+ color: var(--dsw-alias-label-caption);
+ margin-left: auto;
+}
+.battle-col__model {
+ min-width: 0;
+ overflow: hidden;
+ text-overflow: ellipsis;
+ white-space: nowrap;
+ font-size: 10.5px;
+ color: var(--dsw-alias-label-caption);
+}
+.battle-col__mark {
+ flex: none;
+}
+.battle-col__dot {
+ flex: none;
+ width: 7px;
+ height: 7px;
+ border-radius: 999px;
+ background: var(--dsw-alias-border-l3);
+}
+.battle-col__dot--working {
+ background: var(--pw-teal, #3aa6a0);
+ animation: fleet-pulse 1.6s ease-in-out infinite;
+}
+.battle-col__dot--awaiting {
+ background: var(--pw-accent);
+}
+.battle-col__dot--done {
+ background: var(--pw-green, #4ade80);
+}
+.battle-col__focus {
+ flex: none;
+ padding: 1px 5px;
+ border: none;
+ background: none;
+ color: var(--dsw-alias-label-caption);
+ font-size: 12px;
+ cursor: pointer;
+ border-radius: 5px;
+}
+.battle-col__focus:hover {
+ color: var(--dsw-alias-label-primary);
+ background: var(--dsw-alias-bg-layer-2);
+}
+.battle-col__score {
+ display: flex;
+ gap: 10px;
+ padding: 5px 11px 9px;
+ font-family: var(--ds-font-family-code);
+ font-size: 11px;
+ color: var(--dsw-alias-label-secondary);
+ border-bottom: 1px solid var(--dsw-alias-border-l2);
+}
+.battle-col__score span:first-child {
+ color: var(--dsw-alias-label-primary);
+}
+.battle-col__pane {
+ flex: 1;
+ min-height: 0;
+ display: flex;
+ flex-direction: column;
+}
+.battle-col--closed {
+ padding: 13px;
+ font-size: 12px;
+ color: var(--dsw-alias-label-secondary);
+ justify-content: center;
+}
+.battle-setup {
+ display: flex;
+ flex-direction: column;
+ gap: 22px;
+ max-width: 940px;
+}
+.battle-setup__head {
+ display: flex;
+ align-items: flex-end;
+ gap: 18px;
+ flex-wrap: wrap;
+ padding-bottom: 18px;
+ border-bottom: 1px solid var(--dsw-alias-border-l2);
+}
+.battle-setup__intro {
+ display: flex;
+ flex-direction: column;
+ gap: 7px;
+ flex: 1;
+ min-width: 260px;
+}
+.battle-setup__eyebrow {
+ display: flex;
+ align-items: center;
+ gap: 10px;
+ font-size: 10px;
+ letter-spacing: 0.22em;
+ text-transform: uppercase;
+ color: var(--dsw-alias-label-secondary);
+}
+.battle-setup__pulse {
+ width: 7px;
+ height: 7px;
+ border-radius: 50%;
+ background: var(--pw-accent);
+ animation: battle-pulse 2.4s ease-in-out infinite;
+}
+@keyframes battle-pulse {
+ 0%,
+ 100% {
+  opacity: 0.35;
+ }
+ 50% {
+  opacity: 1;
+ }
+}
+.battle-setup__intro h1 {
+ margin: 0;
+ font-size: 25px;
+ font-weight: 700;
+ letter-spacing: -0.01em;
+ color: var(--dsw-alias-label-primary);
+}
+.battle-setup__intro p {
+ margin: 0;
+ font-size: 12px;
+ line-height: 1.65;
+ color: var(--dsw-alias-label-secondary);
+ max-width: 540px;
+}
+.battle-setup__root {
+ display: flex;
+ flex-direction: column;
+ gap: 5px;
+ align-items: flex-start;
+}
+.battle-setup__root span {
+ font-size: 9px;
+ letter-spacing: 0.18em;
+ text-transform: uppercase;
+ color: var(--dsw-alias-label-caption);
+}
+.battle-setup__root-chip {
+ display: inline-flex;
+ align-items: center;
+ gap: 6px;
+ font-family: inherit;
+ font-size: 11.5px;
+ color: var(--dsw-alias-label-primary);
+ padding: 5px 9px;
+ border-radius: 5px;
+ background: var(--dsw-alias-bg-layer-2);
+ border: 1px solid var(--dsw-alias-border-l2);
+ cursor: pointer;
+ max-width: 320px;
+}
+.battle-setup__root-chip span {
+ overflow: hidden;
+ text-overflow: ellipsis;
+ white-space: nowrap;
+}
+.battle-setup__root-chip:hover:not(:disabled) {
+ border-color: var(--pw-accent-line);
+ color: var(--pw-accent);
+}
+.battle-setup__root-chip:disabled {
+ cursor: default;
+ opacity: 0.6;
+}
+/* The task box reuses the session composer's classes (composer__card, etc.);
+ only the width cap differs — battle runs wider than the chat column. */
+.battle-setup .composer__card {
+ max-width: none;
+}
+.battle-setup__count {
+ font-size: 11px;
+ color: var(--dsw-alias-label-secondary);
+ white-space: nowrap;
+}
+.battle-setup__divider {
+ display: flex;
+ align-items: center;
+ gap: 12px;
+ padding-top: 4px;
+}
+.battle-setup__divider > span:first-child {
+ font-size: 9.5px;
+ letter-spacing: 0.2em;
+ text-transform: uppercase;
+ color: var(--dsw-alias-label-secondary);
+}
+.battle-setup__rule {
+ flex: 1;
+ height: 1px;
+ background: var(--dsw-alias-border-l2);
+}
+.battle-setup__all {
+ border: none;
+ background: none;
+ padding: 0;
+ font-family: inherit;
+ font-size: 10.5px;
+ color: var(--pw-accent);
+ cursor: pointer;
+ letter-spacing: 0.04em;
+}
+.battle-setup__all:hover {
+ color: var(--dsw-alias-label-primary);
+}
+.battle-setup__rows {
+ border: 1px solid var(--dsw-alias-border-l3);
+ border-radius: 12px;
+ background: var(--dsw-alias-bg-layer-1);
+ /* The list scrolls past ~6 rows instead of growing the whole page —
+    otherwise every +/- click reflows the footnote and history under it. */
+ max-height: min(45vh, 340px);
+ overflow-x: hidden;
+ overflow-y: auto;
+}
+.battle-row {
+ display: grid;
+ grid-template-columns: 26px minmax(120px, 1fr) minmax(0, 1.5fr) minmax(
+   0,
+   0.9fr
+  ) auto 74px;
+ align-items: center;
+ gap: 14px;
+ padding: 13px 16px;
+ transition: background 0.14s;
+}
+.battle-row + .battle-row {
+ border-top: 1px solid var(--dsw-alias-border-l2);
+}
+.battle-row:hover {
+ background: var(--dsw-alias-bg-layer-2);
+}
+.battle-row.is-off {
+ background: color-mix(in srgb, var(--dsw-alias-bg-layer-2) 60%, transparent);
+}
+.battle-row__box {
+ width: 17px;
+ height: 17px;
+ border-radius: 4px;
+ border: 1.5px solid var(--dsw-alias-border-l4);
+ background: transparent;
+ display: grid;
+ place-items: center;
+ font-size: 10px;
+ color: #fff;
+ cursor: pointer;
+ padding: 0;
+}
+.battle-row__box:focus-visible {
+ outline: 2px solid var(--pw-accent-line);
+ outline-offset: 1px;
+}
+.battle-row__id {
+ display: flex;
+ align-items: center;
+ gap: 9px;
+ min-width: 0;
+}
+.battle-row__glyph {
+ flex: none;
+ font-size: 11px;
+}
+.battle-row.is-off .battle-row__glyph {
+ color: var(--dsw-alias-label-dimmed);
+}
+.battle-row__name {
+ font-size: 13px;
+ font-weight: 700;
+ color: var(--dsw-alias-label-primary);
+ overflow: hidden;
+ text-overflow: ellipsis;
+ white-space: nowrap;
+}
+.battle-row.is-off .battle-row__name {
+ color: var(--dsw-alias-label-secondary);
+}
+.battle-row select {
+ width: 100%;
+ min-width: 0;
+ font-family: var(--ds-font-family-code);
+ font-size: 12px;
+ color: var(--dsw-alias-label-primary);
+ padding: 7px 26px 7px 10px;
+ border-radius: 6px;
+ border: 1px solid var(--dsw-alias-border-l3);
+ background: var(--pw-card-strong)
+  url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="10" height="6"><path d="M1 1l4 4 4-4" fill="none" stroke="%23756957" stroke-width="1.4"/></svg>')
+  no-repeat right 9px center;
+ appearance: none;
+ cursor: pointer;
+}
+.battle-row.is-off select {
+ color: var(--dsw-alias-label-secondary);
+ background-color: var(--dsw-alias-bg-layer-2);
+}
+.battle-row__actions {
+ display: flex;
+ gap: 2px;
+ justify-self: end;
+}
+.battle-row__act {
+ border: none;
+ background: none;
+ padding: 2px 6px;
+ border-radius: 5px;
+ color: var(--dsw-alias-label-caption);
+ font-size: 13px;
+ line-height: 1;
+ cursor: pointer;
+}
+.battle-row__act:hover {
+ background: var(--pw-accent-tint);
+ color: var(--pw-accent);
+}
+.battle-row__act:focus-visible {
+ outline: 2px solid var(--pw-accent-line);
+ outline-offset: 1px;
+}
+.battle-row__state {
+ justify-self: end;
+ font-size: 9px;
+ letter-spacing: 0.16em;
+ text-transform: uppercase;
+ color: var(--dsw-alias-label-caption);
+}
+.battle-setup__foot {
+ margin: 0;
+ font-size: 10.5px;
+ color: var(--dsw-alias-label-caption);
+}
+.battle-setup__error {
+ margin: 0;
+ font-size: 12px;
+ color: var(--ds-status-error);
+}
+.battle-history {
+ margin-top: 28px;
+}
+.battle-history h2 {
+ font-size: 13px;
+ color: var(--dsw-alias-label-secondary);
+}
+.battle-history table {
+ width: 100%;
+ border-collapse: collapse;
+ font-size: 12px;
+}
+.battle-history th,
+.battle-history td {
+ text-align: left;
+ padding: 6px 10px 6px 0;
+ border-bottom: 1px solid var(--dsw-alias-border-l1);
+ color: var(--dsw-alias-label-secondary);
+ vertical-align: top;
+}
+.battle-history__task {
+ max-width: 320px;
+ overflow: hidden;
+ text-overflow: ellipsis;
+ white-space: nowrap;
+ color: var(--dsw-alias-label-primary);
+}
+.battle-history__results {
+ display: flex;
+ gap: 6px;
+ flex-wrap: wrap;
+}
+.battle-history__result {
+ padding: 3px 9px;
+ border-radius: 7px;
+ border: 1px solid var(--dsw-alias-border-l2);
+ background: var(--dsw-alias-bg-layer-1);
+ font-size: 11.5px;
+ color: var(--dsw-alias-label-secondary);
+ cursor: pointer;
+}
+.battle-history__clean {
+ display: block;
+ margin: 4px 0 0;
+ padding: 2px 8px;
+ border-radius: 6px;
+ border: 1px solid var(--dsw-alias-border-l2);
+ background: none;
+ font-size: 11px;
+ color: var(--dsw-alias-label-caption);
+ cursor: pointer;
+}
+.battle-history__clean:hover:not(:disabled) {
+ color: var(--dsw-alias-label-secondary);
+ border-color: var(--dsw-alias-label-caption);
+}
+.battle-history__clean:disabled {
+ cursor: default;
+ opacity: 0.6;
+}
+.battle-board__benched {
+ margin: 4px 0 0;
+ font-size: 12px;
+ color: var(--dsw-semantic-warn, #b8741a);
 }

@@ -148,6 +148,25 @@ test("turnSummaryItems keeps trailing prose and drops the tool log", () => {
   );
 });
 
+test("turnSummaryItems keeps trailing notices so fork errors stay visible", () => {
+  const turn: TimelineItem[] = [
+    user("u", "go", 1),
+    tool("t", "edit", "src/a.ts", 2),
+    assistant("final", "done", 3),
+    {
+      id: "n",
+      kind: "notice",
+      text: "Pi process is not running",
+      tone: "error",
+      timestamp: 4,
+    },
+  ];
+  assert.deepEqual(
+    turnSummaryItems(turn).map((item) => item.id),
+    ["final", "n"],
+  );
+});
+
 test("a turn with no tools keeps every assistant message as the summary", () => {
   const turn: TimelineItem[] = [
     user("u", "what is this", 1),

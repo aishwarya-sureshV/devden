@@ -13,7 +13,11 @@ import { attachQueue } from "./agent-queue.js";
 import {
   agentIsAlive,
   callAgentMethod,
+  claimFork,
   hasMethod,
+  releaseFork,
+  shouldAdoptLiveAgent,
+  startOptionsFromBody,
   unsupported,
 } from "./agent-methods.js";
 import {
@@ -201,6 +205,38 @@ describe("agent-methods", () => {
     assert.equal(agentIsAlive(agent), false);
     assert.equal(agentIsAlive({ process: {} }), true);
     assert.equal(unsupported("steer", "nope").capability, "steer");
+  });
+
+  it("does not adopt a live agent onto a fork tab", () => {
+    assert.equal(shouldAdoptLiveAgent({}), true);
+    assert.equal(shouldAdoptLiveAgent({ independent: true }), false);
+    assert.equal(shouldAdoptLiveAgent({ forkResume: true }), true);
+  });
+
+  it("keeps model and mode on a cold fork start, and refuses a busy fork", () => {
+    const options = startOptionsFromBody({
+      sessionPath: "/tmp/s.jsonl",
+      model: { provider: "pi", id: "x" },
+      thinkingLevel: "high",
+      accessMode: "read-only",
+      agentMode: "plan",
+    });
+    assert.equal(options.sessionPath, "/tmp/s.jsonl");
+    assert.deepEqual(options.model, { provider: "pi", id: "x" });
+    assert.equal(options.thinkingLevel, "high");
+    assert.equal(options.accessMode, "read-only");
+    assert.equal(options.agentMode, "plan");
+    assert.equal(startOptionsFromBody({ agentMode: "routed" }).agentMode, undefined);
+
+    const agent = { status: "working", queuedMessages: [] };
+    assert.equal(claimFork(agent).ok, false);
+    agent.status = "ready";
+    assert.equal(claimFork(agent).ok, true);
+    assert.equal(claimFork(agent).ok, false);
+    releaseFork(agent);
+    agent.queuedMessages = [{ id: "q" }];
+    assert.match(claimFork(agent).error, /queued/);
+    releaseFork(agent);
   });
 });
 

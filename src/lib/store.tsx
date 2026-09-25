@@ -48,6 +48,8 @@ export interface ConversationTab {
   isFresh: boolean;
   /** Guest tabs (cross-backend review) stay off the grid until opened. */
   guest?: boolean;
+  accessMode?: "workspace-write" | "read-only";
+  agentMode?: "standard" | "plan" | "routed" | "manual";
   timeline: Timeline;
 }
 
@@ -56,6 +58,14 @@ export interface OpenConversationOptions {
   activate?: boolean;
   /** Hidden from split/focus until revealConversation. */
   guest?: boolean;
+  /** Skip the sessionPath reuse check. Forks must mint a new tab. */
+  forceNew?: boolean;
+  accessMode?: "workspace-write" | "read-only";
+  agentMode?: "standard" | "plan" | "routed" | "manual";
+  /** Explicit model/effort for the new session (battle races pick these per
+   *  backend); left undefined they fall back to the preferred/default pick. */
+  model?: ModelInfo;
+  thinkingLevel?: string;
 }
 
 /** How long a "working" conversation may stay silent before the page stops
@@ -102,11 +112,13 @@ interface StoreValue {
     state?: SessionState | null;
     label?: string;
     backend?: AgentBackend;
-    /** Claude: resume the source session with --fork-session in the new tab. */
-    forkResume?: boolean;
+    accessMode?: "workspace-write" | "read-only";
+    agentMode?: "standard" | "plan" | "routed" | "manual";
   }) => string;
   closeConversation: (key: string) => void;
   setActiveKey: (key: string) => void;
+  /** Panes on screen right now (App owns the split set); persisted per reload. */
+  setVisibleSessionKeys: (keys: string[]) => void;
   setConversationSessionPath: (key: string, path?: string) => void;
   setConversationLabel: (key: string, label: string) => void;
   setConversationWorkspace: (key: string, cwd: string) => void;
@@ -138,6 +150,29 @@ interface StoreValue {
    *  Skills view to open it in its editor for review before save. */
   skillDraft: SkillDraftSeed | null;
   setSkillDraft: (draft: SkillDraftSeed | null) => void;
+  /** First messages for tabs opened by something other than a person typing
+   *  (a board card, a race candidate) — several can be pending at once, so
+   *  one keyed map rather than a single slot. Consumed once, then cleared. */
+  taskSeeds: Record<string, TaskSeed>;
+  seedTask: (key: string, seed: TaskSeed) => void;
+  clearTaskSeed: (key: string) => void;
+}
+
+/** A composer attachment: uploaded to the server, referenced by path in prompts. */
+export type Attachment = {
+  id: string;
+  name: string;
+  mimeType: string;
+  size: number;
+  path: string;
+  /** Base64 inline data, image attachments only (models see it in-context). */
+  imageData?: string;
+};
+
+/** The first message for a seeded tab (board card, race candidate). */
+export interface TaskSeed {
+  prompt: string;
+  attachments?: Attachment[];
 }
 
 const StoreContext = createContext<StoreValue | null>(null);
@@ -153,6 +188,8 @@ interface PersistedOpenSession {
   model?: ModelInfo | null;
   thinkingLevel?: string;
   active?: boolean;
+  /** This pane was on screen (in the split set) when the page last unloaded. */
+  onScreen?: boolean;
 }
 
 // One list for every agent, not one per backend: a split view holding a pi
@@ -283,6 +320,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     nonce: number;
   } | null>(null);
   const [skillDraft, setSkillDraft] = useState<SkillDraftSeed | null>(null);
+  const [taskSeeds, setTaskSeeds] = useState<Record<string, TaskSeed>>({});
   const defaultCwd = useRef("");
   // The backend NEW sessions use. It is no longer the identity of the whole
   // page: switching it used to reload with ?backend=, which is what made
@@ -311,11 +349,26 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   }, []);
   const didOpenInitialSession = useRef(false);
   const didRenderRestoredSessions = useRef(false);
+  /** Bumped when the page becomes visible, so the snapshot persist effect
+   *  re-runs after hidden-page writes were skipped. */
+  const [visibleTick, setVisibleTick] = useState(0);
   const tabsRef = useRef<ConversationTab[]>([]);
   const firstStreamConnect = useRef(true);
   /** Per key, when this page last heard anything about it. */
   const lastEventAt = useRef(new Map<string, number>());
   const preferredModels = useRef(new Map<string, ModelInfo>());
+  /** Keys of the panes on screen, fed by App (it owns the split set). Held in
+   *  state, not a ref, so the persisted snapshot picks the change up: toggling
+   *  the split layout leaves `tabs` and `activeKey` alone. */
+  const [visibleSessionKeys, setVisibleKeys] = useState<string[]>([]);
+  const setVisibleSessionKeys = useCallback((keys: string[]) => {
+    setVisibleKeys((current) =>
+      current.length === keys.length &&
+      current.every((key, index) => key === keys[index])
+        ? current
+        : keys,
+    );
+  }, []);
   const persistedOpenSessions = useRef(
     (() => {
       const stored = readOpenSessions();
@@ -351,6 +404,14 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       document.removeEventListener("visibilitychange", onVisible);
       window.removeEventListener("focus", onVisible);
     };
+  }, []);
+
+  useEffect(() => {
+    const onVisible = () => {
+      if (document.visibilityState === "visible") setVisibleTick((t) => t + 1);
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => document.removeEventListener("visibilitychange", onVisible);
   }, []);
 
   const refreshSessions = useCallback(() => {
@@ -676,7 +737,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     ): ConversationTab => {
       // Include a page-scoped UUID so separate browser windows never bind to the
       // same Pi RPC process (each page's local counter otherwise starts at 1).
-      if (sessionPath) {
+      if (sessionPath && !options?.forceNew) {
         const existing = tabsRef.current.find(
           (tab) =>
             tab.sessionPath === sessionPath ||
@@ -696,6 +757,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         backend,
         isFresh: sessionPath === undefined,
         guest: options?.guest === true,
+        accessMode: options?.accessMode,
+        agentMode: options?.agentMode,
         timeline: timelineFor(key),
       };
       // Keep the ref in sync immediately. This prevents two quick clicks on
@@ -715,22 +778,21 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       backend = defaultBackendRef.current,
       options?: OpenConversationOptions,
     ): string => {
-      const freshTab =
-        options?.guest
-          ? undefined
-          : tabsRef.current.find(
-              (candidate) =>
-                candidate.backend === backend &&
-                candidate.cwd === cwd &&
-                candidate.isFresh &&
-                !candidate.guest &&
-                !candidate.timeline.items.some(
-                  (item) =>
-                    item.kind === "user" ||
-                    item.kind === "assistant" ||
-                    item.kind === "tool",
-                ),
-            );
+      const freshTab = options?.guest
+        ? undefined
+        : tabsRef.current.find(
+            (candidate) =>
+              candidate.backend === backend &&
+              candidate.cwd === cwd &&
+              candidate.isFresh &&
+              !candidate.guest &&
+              !candidate.timeline.items.some(
+                (item) =>
+                  item.kind === "user" ||
+                  item.kind === "assistant" ||
+                  item.kind === "tool",
+              ),
+          );
       if (freshTab) {
         if (options?.activate !== false) setActiveKey(freshTab.key);
         return freshTab.key;
@@ -743,11 +805,14 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         options,
       );
       const preferredModel =
-        preferredModels.current.get(modelPreferenceKey(backend, cwd)) ??
-        BACKEND_DEFAULT_MODEL[backend];
+        options?.model === undefined
+          ? (preferredModels.current.get(modelPreferenceKey(backend, cwd)) ??
+            BACKEND_DEFAULT_MODEL[backend])
+          : options.model;
+      const effort = options?.thinkingLevel ?? BACKEND_DEFAULT_EFFORT[backend];
       tab.timeline.setState({
         model: preferredModel ?? null,
-        thinkingLevel: BACKEND_DEFAULT_EFFORT[backend],
+        thinkingLevel: effort,
         isStreaming: false,
         sessionId: "",
         messageCount: 0,
@@ -772,7 +837,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
               backend,
               preferredModel,
               undefined,
-              BACKEND_DEFAULT_EFFORT[backend],
+              effort,
               false,
               true,
             )
@@ -787,7 +852,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           backend,
           preferredModel,
           undefined,
-          backend === "claude" ? CLAUDE_DEFAULT_EFFORT : undefined,
+          options?.thinkingLevel ??
+            (backend === "claude" ? CLAUDE_DEFAULT_EFFORT : undefined),
         )
         .then((result) => {
           if (result.ok && result.state) tab.timeline.setState(result.state);
@@ -897,13 +963,13 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         session.backend ?? "pi",
       );
       const timeline = tab.timeline;
-      const restoredModel = !session.lastModel
-        ? undefined
-        : tab.backend === "claude"
+      const restoredModel = session.lastModel
+        ? tab.backend === "claude"
           ? claudeModelInfo(session.lastModel)
           : session.lastModelProvider
             ? { provider: session.lastModelProvider, id: session.lastModel }
-            : undefined;
+            : undefined
+        : undefined;
       const placeholderState = {
         model: restoredModel ?? null,
         thinkingLevel:
@@ -1100,7 +1166,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       state,
       label,
       backend,
-      forkResume,
+      accessMode,
+      agentMode,
     }: {
       cwd: string;
       sessionPath: string;
@@ -1108,7 +1175,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       state?: SessionState | null;
       label?: string;
       backend?: AgentBackend;
-      forkResume?: boolean;
+      accessMode?: "workspace-write" | "read-only";
+      agentMode?: "standard" | "plan" | "routed" | "manual";
     }): string => {
       const forkBackend = backend ?? defaultBackendRef.current;
       const tab = createConversationTab(
@@ -1116,6 +1184,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         label ?? `${cwd.split("/").filter(Boolean).at(-1) ?? cwd} · fork`,
         sessionPath,
         forkBackend,
+        { forceNew: true, accessMode, agentMode },
       );
       const timeline = tab.timeline;
       timeline.setState({
@@ -1131,6 +1200,27 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       });
       if (Array.isArray(messages) && messages.length > 0 && timeline.state) {
         timeline.hydrate(messages, timeline.state);
+      } else if (sessionPath) {
+        // Grok ACP fork can return an empty messages array while the
+        // journal still has the source turns (or after we copy them).
+        void api.sessionMessages(sessionPath).then((result) => {
+          if (timeline.items.length > 0) return;
+          if (
+            result.ok &&
+            Array.isArray(result.messages) &&
+            result.messages.length > 0 &&
+            timeline.state
+          ) {
+            timeline.hydrate(result.messages, timeline.state);
+            return;
+          }
+          timeline.appendNotice(
+            result.ok
+              ? "No readable turns in this session's log."
+              : (result.error ?? "This session's log could not be read."),
+            "error",
+          );
+        });
       }
       void api
         .start(
@@ -1142,7 +1232,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           state?.thinkingLevel,
           undefined,
           undefined,
-          forkResume,
+          true,
+          accessMode,
+          agentMode,
         )
         .then((startResult) => {
           if (!startResult.ok) {
@@ -1160,7 +1252,16 @@ export function StoreProvider({ children }: { children: ReactNode }) {
               Array.isArray(startResult.messages) &&
               startResult.messages.length > 0
             ) {
-              timeline.hydrate(startResult.messages, resumedState);
+              // Grok's loadSession replays the whole copied journal. If the
+              // fork already seeded a shorter cut, keep that cut.
+              const incoming = startResult.messages;
+              const seeded = Array.isArray(messages) ? messages : [];
+              timeline.hydrate(
+                seeded.length > 0 && incoming.length > seeded.length
+                  ? seeded
+                  : incoming,
+                resumedState,
+              );
             } else {
               timeline.setState(resumedState);
             }
@@ -1201,9 +1302,18 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     // The split *layout* preference is untouched (App.tsx still reads it) —
     // panes opened during the session tile as before.
     const stored = dedupeOpenSessions(persistedOpenSessions.current);
-    const sessionsToRestore = [
+    // Every pane that was on screen comes back, split view included: reopening
+    // just the active one silently dropped a three-pane workbench down to one
+    // session on every refresh. Background tabs (opened earlier, then pushed
+    // out of the split set) stay closed — the sidebar still lists them, so a
+    // reload cannot spawn panes the user had already put away.
+    const onScreen = stored.filter((session) => session.onScreen);
+    const fallback = [
       stored.find((session) => session.active) ?? stored.at(-1),
-    ].filter(Boolean) as PersistedOpenSession[];
+    ];
+    const sessionsToRestore = (
+      onScreen.length > 0 ? onScreen : fallback
+    ).filter(Boolean) as PersistedOpenSession[];
     if (sessionsToRestore.length === 0) {
       void openDefaultConversation();
       return;
@@ -1238,6 +1348,13 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       if (tabs.length === 0) return;
       didRenderRestoredSessions.current = true;
     }
+    // A second browser tab of the workbench keeps rewriting this snapshot from
+    // its own (stale) tab state — SSE-driven rebinds call setTabs even when the
+    // page is hidden — so a refresh in the active tab restored conversations
+    // the user had closed hours ago. Only the visible page may write; the
+    // stale tab's writes stop the moment it loses visibility, and whichever
+    // page the user is actually looking at owns the snapshot.
+    if (document.visibilityState !== "visible") return;
     const snapshot: PersistedOpenSession[] = dedupeOpenSessions(
       tabs
         .filter((tab) => !tab.guest)
@@ -1249,10 +1366,14 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           model: tab.timeline.state?.model,
           thinkingLevel: tab.timeline.state?.thinkingLevel,
           active: tab.key === activeKey,
+          onScreen: visibleSessionKeys.includes(tab.key),
         })),
     );
     localStorage.setItem(OPEN_SESSIONS_KEY, JSON.stringify(snapshot));
-  }, [activeKey, tabs]);
+  }, [activeKey, tabs, visibleSessionKeys, visibleTick]);
+  // While hidden, the guard above skips writes, so a state change made in a
+  // hidden page (an SSE rebind) leaves the snapshot stale. Bumping a dep on
+  // refocus re-runs the effect so the first visible render catches up.
 
   const revealConversation = useCallback((key: string) => {
     setTabs((current) => {
@@ -1432,7 +1553,6 @@ export function StoreProvider({ children }: { children: ReactNode }) {
               ...tab,
               cwd,
               label: cwd.split("/").filter(Boolean).at(-1) ?? cwd,
-              sessionPath: undefined,
             }
           : tab,
       ),
@@ -1499,6 +1619,19 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     revealWorkspace,
     skillDraft,
     setSkillDraft,
+    taskSeeds,
+    seedTask: useCallback((key: string, seed: TaskSeed) => {
+      setTaskSeeds((current) => ({ ...current, [key]: seed }));
+    }, []),
+    clearTaskSeed: useCallback((key: string) => {
+      setTaskSeeds((current) => {
+        if (!(key in current)) return current;
+        const next = { ...current };
+        delete next[key];
+        return next;
+      });
+    }, []),
+    setVisibleSessionKeys,
   };
 
   return (

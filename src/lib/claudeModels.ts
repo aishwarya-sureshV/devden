@@ -26,6 +26,8 @@ export function formatClaudeModelName(value: string | undefined): string {
 }
 
 export const CLAUDE_MODELS: ModelInfo[] = [
+  "claude-opus-5-5",
+  "claude-fable-5-1",
   "claude-opus-5",
   "claude-fable-5",
   "claude-sonnet-5",
@@ -39,11 +41,21 @@ export const CLAUDE_MODELS: ModelInfo[] = [
 ].map((id) => ({ provider: "anthropic", id, name: formatClaudeModelName(id) }));
 
 const CLAUDE_ALIASES: Record<string, string> = {
-  fable: "claude-fable-5",
-  opus: "claude-opus-5",
+  fable: "claude-fable-5-1",
+  opus: "claude-opus-5-5",
   sonnet: "claude-sonnet-5",
   haiku: "claude-haiku-4-5",
 };
+
+/** Real Claude ids only — a stored id from another provider is not one. */
+export function isClaudeModel(value: string | undefined): boolean {
+  const raw = String(value || "")
+    .trim()
+    .toLowerCase();
+  if (!raw) return false;
+  if (raw.startsWith("claude")) return true;
+  return Boolean(CLAUDE_ALIASES[raw]);
+}
 
 export function claudeModelInfo(modelId: string | undefined): ModelInfo | null {
   const raw = String(modelId || "").trim();

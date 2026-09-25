@@ -91,6 +91,26 @@ test("a placeholder error on its own is still reported", () => {
   );
 });
 
+const grokToolOutputLog =
+  '2026-09-19T13:18:19.735953Z ERROR tool_error: tool_output_error session_id=01a0b9d0-f884-7580-ae47-4e0c2af475e0 tool_name="read_file" effective_tool_name="read_file" model_id="grok-4.6" error_kind="tool_output_error"';
+
+test("Grok tool_output_error stderr is dropped — the tool card already shows the failure", () => {
+  assert.equal(readableAgentError(grokToolOutputLog), "");
+  const timeline = new Timeline("tool-out-err");
+  timeline.handle(event({ type: "stderr", message: grokToolOutputLog }));
+  assert.equal(
+    timeline.items.filter((item) => item.kind === "notice").length,
+    0,
+  );
+});
+
+test("a real Grok API error still shows when mixed with tool_output_error noise", () => {
+  assert.equal(
+    readableAgentError(`${grokToolOutputLog}\n${grokLog}`),
+    "Grok Build usage balance exhausted",
+  );
+});
+
 test("the same failure in a later turn is not swallowed", () => {
   const timeline = new Timeline("err-4");
   timeline.appendUser("do it");

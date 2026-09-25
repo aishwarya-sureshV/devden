@@ -142,6 +142,26 @@ function toolCallOf(item) {
   }
 }
 
+function turnStamp(turn) {
+  const candidates = [
+    turn?.timestamp,
+    turn?.completedAt,
+    turn?.startedAt,
+    turn?.createdAt,
+  ];
+  for (const value of candidates) {
+    const n = typeof value === "number" ? value : Date.parse(value ?? "");
+    if (Number.isFinite(n) && n > 0) return n;
+  }
+  const items = Array.isArray(turn?.items) ? turn.items : [];
+  for (let i = items.length - 1; i >= 0; i--) {
+    const value = items[i]?.timestamp;
+    const n = typeof value === "number" ? value : Date.parse(value ?? "");
+    if (Number.isFinite(n) && n > 0) return n;
+  }
+  return NaN;
+}
+
 class CodexAgentProcess {
   constructor(sessionKey) {
     this.sessionKey = sessionKey;
@@ -318,13 +338,24 @@ class CodexAgentProcess {
    * Restores this.turn/the replay-suppression flag so a fork read cannot
    * corrupt an in-flight turn.
    */
-  buildTurnMessages(turns) {
+  buildTurnMessages(turns, options = {}) {
+    const record = options.record !== false;
     const replayed = [];
     const savedTurn = this.turn;
     const savedSuppress = this.suppressReplayEvents;
     this.suppressReplayEvents = true;
+    // A tight replay loop can stamp several turns with the same millisecond,
+    // and forkAt's closest-timestamp match would then bind a mid-history
+    // fork to the wrong turn boundary. Keep replayed timestamps strictly
+    // increasing. Prefer the turn's own time when the app-server sent one;
+    // a clock stamped at replay time cuts differently after every resume.
+    let replayClock = 0;
     try {
       for (const turn of turns) {
+        const stamped = turnStamp(turn);
+        replayClock = Number.isFinite(stamped)
+          ? Math.max(stamped, replayClock + 1)
+          : Math.max(Date.now(), replayClock + 1);
         const userItem = (turn.items ?? []).find(
           (item) => item.type === "userMessage",
         );
@@ -336,9 +367,10 @@ class CodexAgentProcess {
               text: stripClarifyPrefix(textOfUserInput(userItem?.content)),
             },
           ],
-          timestamp: Date.now(),
+          timestamp: replayClock,
         };
         const assistantMessage = this.newAssistantMessage();
+        assistantMessage.timestamp = replayClock;
         this.turn = {
           content: assistantMessage.content,
           message: assistantMessage,
@@ -356,7 +388,7 @@ class CodexAgentProcess {
           turn.status === "completed"
             ? "end_turn"
             : (turn.status ?? "end_turn");
-        if (turn.id)
+        if (record && turn.id)
           this.turnRecords.push({
             id: turn.id,
             timestamp: assistantMessage.timestamp,
@@ -862,7 +894,7 @@ class CodexAgentProcess {
     }
   }
 
-  async forkAt(timestamp) {
+  async forkAt(timestamp, context = {}) {
     if (!this.connection?.running || !this.threadId)
       return { ok: false, error: "No Codex session is available to fork." };
     // thread/fork copies stored history into a new thread, optionally cut
@@ -887,18 +919,23 @@ class CodexAgentProcess {
       });
       const thread = forked?.thread;
       if (!thread?.id) throw new Error("thread/fork returned no thread");
-      const messages = this.buildTurnMessages(thread.turns ?? []);
+      // Never fall back to the parent's file: the fork tab would resume it
+      // and both processes would append to one transcript.
+      if (!thread.path) throw new Error("thread/fork returned no session file");
+      const messages = this.buildTurnMessages(thread.turns ?? [], {
+        record: false,
+      });
       const state = {
         ...(await this.getState()),
         sessionId: thread.id,
-        sessionFile: thread.path ?? this.sessionFile,
+        sessionFile: thread.path,
       };
       return {
         ok: true,
         restored: true,
         state,
         messages,
-        forkCwd: this.cwd,
+        forkCwd: context.forkCwd || this.cwd,
       };
     } catch (error) {
       return { ok: false, error: String(error?.message ?? error) };

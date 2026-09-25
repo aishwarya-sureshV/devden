@@ -72,7 +72,7 @@
  display: flex;
  flex-direction: column;
  gap: 2px;
- margin-bottom: 22px;
+ margin-bottom: 14px;
 }
 .chat-turn:last-child {
  margin-bottom: 0;
@@ -139,6 +139,10 @@
  text-decoration: none;
  white-space: nowrap;
 }
+.conversation-header__download.conversation-header__icon-only {
+ width: 30px;
+ padding: 0;
+}
 .conversation-header__download:hover,
 .conversation-header__close:hover {
  background: var(--dsw-alias-interactive-bg-hover);
@@ -150,7 +154,8 @@
  color: var(--dsw-alias-label-caption);
  font-size: 18px;
 }
-.conversation-header__download.is-disabled {
+.conversation-header__download.is-disabled,
+.conversation-header__download:disabled {
  opacity: 0.45;
  cursor: default;
 }
@@ -165,9 +170,11 @@
  display: inline-flex;
  flex-wrap: nowrap;
  align-items: center;
+ justify-content: center;
  gap: 5px;
+ width: 32px;
  min-height: 30px;
- padding: 4px 10px;
+ padding: 0;
  border: 1px solid var(--dsw-alias-border-l2);
  border-radius: 999px 0 0 999px;
  background: transparent;
@@ -359,6 +366,46 @@
  white-space: nowrap;
  font-size: 11.5px;
  color: var(--dsw-alias-label-primary);
+ display: flex;
+ align-items: center;
+ gap: 6px;
+}
+.conversation-header__agent-logo {
+ flex: none;
+ display: inline-flex;
+}
+.conversation-header__agent-title {
+ overflow: hidden;
+ text-overflow: ellipsis;
+ white-space: nowrap;
+}
+.conversation-header__spacer {
+ flex: 1;
+}
+/* usage lives up here in split/tight panes; the composer one is hidden */
+.conversation-header__identity .usage-summary {
+ flex: none;
+ gap: 4px;
+ font-size: 10.5px;
+}
+.conversation-header__identity .conversation-header__agent {
+ flex: 0 1 auto;
+}
+/* Split-pane title is a button (click to rename) — reset it to the old
+   plain-text look. Scoped to button so the non-split span is untouched. */
+.conversation-header__identity button.conversation-header__agent {
+ padding: 0;
+ border: 0;
+ background: transparent;
+ font-family: inherit;
+ text-align: left;
+ cursor: pointer;
+}
+.conversation-header__identity
+ button.conversation-header__agent:hover
+ .conversation-header__agent-title {
+ text-decoration: underline;
+ text-decoration-color: var(--dsw-alias-border-l2);
 }
 .conversation-header__count {
  font-size: 8.5px;
@@ -503,7 +550,6 @@
  min-height: 22px;
  max-width: 100%;
  padding: 2px 7px;
- border: 1px solid var(--dsw-alias-border-l2);
  border-radius: 5px;
  font-size: 10.5px;
  color: var(--dsw-alias-label-caption);
@@ -512,7 +558,6 @@
 .workspace-picker--chip .workspace-picker__trigger:hover,
 .workspace-picker--chip .workspace-picker__trigger[aria-expanded="true"] {
  color: var(--dsw-alias-label-primary);
- border-color: var(--pw-accent-line);
 }
 .conversation-header.is-dense .workspace-picker--chip {
  max-width: 110px;
@@ -522,28 +567,6 @@
  .workspace-picker__trigger {
  padding: 1px 6px;
  font-size: 9.5px;
-}
-.context-fill {
- /* Pinned to the header's bottom edge. As a flex item in this row it had no
-    definite width for the fill's percentage to resolve against, so it
-    collapsed to the 2px min-width of its own span and read as a dot wedged
-    between the tabs and the action buttons. */
- position: absolute;
- right: 0;
- bottom: 0;
- left: 0;
- height: 3px;
- overflow: hidden;
- border-radius: 999px;
- background: color-mix(in srgb, var(--dsw-alias-border-l2) 72%, transparent);
-}
-.context-fill > span {
- display: block;
- height: 100%;
- min-width: 2px;
- border-radius: inherit;
- background: linear-gradient(90deg, var(--pw-teal), var(--pw-accent));
- transition: width 240ms ease;
 }
 .conversation__scroll--trajectory {
  background: var(--dsw-alias-bg-base);
@@ -1086,8 +1109,7 @@
  padding-left: 8px;
  min-width: 0;
 }
-.native-select,
-.add-disclosure {
+.native-select {
  position: relative;
  display: inline-flex;
  min-width: 0;
@@ -1219,9 +1241,9 @@
 .workspace-picker__nofolder {
  display: block;
  width: 100%;
- min-height: 32px;
- margin-bottom: 4px;
- padding: 6px 9px;
+ min-height: 28px;
+ margin-bottom: 2px;
+ padding: 4px 9px;
  border: 0;
  border-bottom: 1px solid var(--dsw-alias-border-l2);
  border-radius: 8px 8px 0 0;
@@ -1247,8 +1269,8 @@
  align-items: center;
  gap: 9px;
  width: 100%;
- min-height: 36px;
- padding: 7px 9px;
+ min-height: 28px;
+ padding: 4px 9px;
  border: 0;
  border-radius: 8px;
  background: transparent;
@@ -1270,7 +1292,7 @@
  font-size: 14px;
 }
 .workspace-picker__heading {
- padding: 4px 9px 6px;
+ padding: 2px 9px 4px;
  font-size: 13px;
  color: var(--dsw-alias-label-caption);
 }
@@ -1470,7 +1492,7 @@
  /* Tight transcript rhythm: rows carry only a small margin on top of the
      column gap. The grok work reverted this to 10px, which left a ~24px
      air pocket between tool cards and surrounding prose. */
- margin: 4px 0;
+ margin: 2px 0;
 }
 .tl__node {
  position: absolute;
@@ -1653,7 +1675,7 @@
    9px = -1px between tools, per design feedback. */
 .tl--tool + .tl--tool,
 .tl--tool + .tool-summary {
- margin-top: 6px;
+ margin-top: 4px;
 }
 .rich-text strong {
  color: var(--dsw-alias-state-business-primary);
@@ -2231,14 +2253,11 @@
  display: flex;
  align-items: center;
  gap: 3px;
- min-height: 25px;
- margin-top: 2px;
- opacity: 0;
- transition: opacity var(--ds-transition-duration-fast) var(--ds-ease-in-out);
-}
-.tl--assistant:hover .response-actions,
-.response-actions:focus-within {
- opacity: 1;
+ position: relative;
+ z-index: 1;
+ min-height: 26px;
+ margin-top: 6px;
+ pointer-events: auto;
 }
 .response-actions button {
  display: inline-flex;
@@ -2252,6 +2271,7 @@
  background: transparent;
  color: var(--dsw-alias-label-caption);
  font-size: 10.5px;
+ cursor: pointer;
 }
 .response-actions button:hover {
  background: var(--dsw-alias-interactive-bg-hover);
@@ -2448,12 +2468,15 @@
  color: var(--dsw-alias-label-caption);
 }
 /* Warnings and errors stay blocks — agent stderr and failed turns are
-   actionable, so they keep their weight instead of shrinking to a chip. */
+   actionable, so they keep their weight instead of shrinking to a chip.
+   No left inset: blocks span the full transcript column, the same width as
+   tool cards and the Changes/input pills above the composer. Anything new
+   that appears inside the conversation must respect this same width. */
 .notice--warning,
 .notice--error {
  display: block;
  width: auto;
- margin: 8px 0 8px 22px;
+ margin: 8px 0;
  padding: 8px 12px;
  border-radius: 8px;
  font-size: 12.5px;
@@ -2530,7 +2553,7 @@
  flex: none;
  /* Breathing room between the last transcript block and the card —
      previously 0, so the input box hugged the last message. */
- padding: 2px var(--pw-gutter, var(--pw-composer-side-clearance)) 16px;
+ padding: 2px var(--pw-gutter, var(--pw-composer-side-clearance)) 8px;
  position: relative;
 }
 .composer.is-picking-route {
@@ -2749,6 +2772,18 @@
  font-weight: 400;
  letter-spacing: -0.01em;
  color: var(--pw-fg-strong);
+ /* The title is the rename affordance (the pencil button is gone): a
+    button reset to look like plain text, pointer on hover. */
+ padding: 0;
+ border: 0;
+ background: transparent;
+ font-family: inherit;
+ text-align: left;
+ cursor: pointer;
+}
+.conversation-header__session-title:hover {
+ text-decoration: underline;
+ text-decoration-color: var(--dsw-alias-border-l2);
 }
 .conversation-header__workspace .workspace-picker__trigger {
  min-height: 22px;
@@ -3032,8 +3067,7 @@
 }
 .composer--tight .composer__handoff,
 .composer--tight .usage-summary,
-.composer--tight .usage-summary__rule,
-.composer--tight .native-model-controls__field--effort {
+.composer--tight .usage-summary__rule {
  display: none;
 }
 .composer--tight .native-model-controls {
@@ -3098,56 +3132,6 @@
 }
 .composer__add:hover:not(:disabled) {
  background: var(--dsw-alias-button-ghost-active-hover);
-}
-
-.add-disclosure > summary {
- list-style: none;
-}
-.add-disclosure > summary::-webkit-details-marker {
- display: none;
-}
-.add-disclosure[open] > summary {
- background: var(--dsw-alias-button-ghost-active-hover);
-}
-.native-add-menu {
- position: absolute;
- bottom: calc(100% + 8px);
- left: 0;
- z-index: 50;
- width: 280px;
- padding: 6px;
- border: 1px solid var(--dsw-alias-border-l2);
- border-radius: 14px;
- background: var(--dsw-alias-bg-overlay);
- box-shadow: 0 8px 28px rgba(0, 0, 0, 0.12);
-}
-.native-add-menu button {
- display: flex;
- align-items: center;
- gap: 8px;
- width: 100%;
- padding: 8px 10px;
- border: 0;
- border-radius: 8px;
- background: transparent;
- color: var(--dsw-alias-label-primary);
- font: inherit;
- font-size: 13px;
- text-align: left;
- cursor: pointer;
-}
-.native-add-menu button:hover {
- background: var(--dsw-alias-interactive-bg-hover);
-}
-.native-add-menu button em {
- margin-left: auto;
- color: var(--dsw-alias-label-caption);
- font-size: 11px;
- font-style: normal;
-}
-.native-add-menu__icon {
- display: inline-flex;
- color: var(--dsw-alias-label-secondary);
 }
 
 /* browser-native model + effort selectors in one DeepSeek-style pill */
@@ -3719,6 +3703,22 @@
  font-weight: 600;
  text-overflow: ellipsis;
  white-space: nowrap;
+}
+.workspace-explorer__worktree {
+ max-width: 100%;
+ overflow: hidden;
+ color: var(--dsw-alias-label-primary);
+ font: inherit;
+ font-size: 13px;
+ font-weight: 600;
+ text-overflow: ellipsis;
+ background: none;
+ border: none;
+ border-radius: 6px;
+ cursor: pointer;
+}
+.workspace-explorer__worktree:hover {
+ background: var(--dsw-alias-interactive-bg-hover);
 }
 .workspace-explorer__identity span {
  color: var(--dsw-alias-label-caption);
@@ -4422,6 +4422,18 @@ body[data-ds-dark-theme] .conversation-stage .rich-text :not(pre) > code {
  max-width: none;
  margin: 0;
 }
+/* The Changes pill and the Review pill sit in this one row and must read as a
+ single height. They are sized independently (the Review pill carries its own
+ min-height and different vertical padding), so a font stack that renders one
+ a couple of px taller left the pair ragged. Stretch both to the row instead
+ — guarded on the collapsed state so an expanded Changes card does not
+ inflate the Review pill with it. */
+.composer__turn-bar:has(.changes--collapsed) {
+ align-items: stretch;
+}
+.composer__turn-bar:has(.changes--collapsed) .turn-complete {
+ display: flex;
+}
 .composer--tight .composer__turn-bar {
  max-width: 100%;
  gap: 6px;
@@ -4469,6 +4481,7 @@ body[data-ds-dark-theme] .conversation-stage .rich-text :not(pre) > code {
  cursor: pointer;
 }
 .changes__pill strong {
+ flex: none;
  font-size: 12px;
  letter-spacing: 0.02em;
 }
@@ -5134,19 +5147,6 @@ body[data-ds-dark-theme] .conversation-stage .rich-text :not(pre) > code {
 .rewind__confirm:disabled {
  opacity: 0.5;
  cursor: default;
-}
-
-/* Context gauge: exact counts read slightly stronger than the estimate, and
-   the bar turns to the warning colour as auto-compact approaches. */
-.context-fill.is-exact {
- height: 4px;
-}
-.context-fill.is-near-limit > span {
- background: linear-gradient(
-  90deg,
-  var(--pw-accent),
-  var(--ds-status-warning, #d08a3a)
- );
 }
 
 /* "@" file picker reuses the slash-menu shell; paths need room to breathe. */
@@ -7375,4 +7375,166 @@ body[data-ds-dark-theme] .conversation-stage .rich-text :not(pre) > code {
  align-self: stretch;
  margin: 3px 1px;
  background: var(--dsw-alias-border-l2);
+}
+
+/* Agent-launched terminal tabs (run_in_terminal). One card per tab, output
+   streams in place; the server owns the process, so it survives the agent. */
+.terminal-card {
+ margin: 6px 0;
+ border: 1px solid var(--dsw-alias-border-l2);
+ border-radius: 10px;
+ background: var(--dsw-alias-bg-layer-1);
+ overflow: hidden;
+}
+.terminal-card__header {
+ display: flex;
+ align-items: center;
+ gap: 8px;
+ padding: 6px 10px;
+ font-size: 12px;
+ border-bottom: 1px solid var(--dsw-alias-border-l2);
+}
+.terminal-card__dot {
+ width: 8px;
+ height: 8px;
+ border-radius: 50%;
+ background: var(--dsw-alias-label-caption);
+ flex: none;
+}
+.terminal-card__dot.is-running {
+ background: var(--dsw-alias-fill-success, #2ea043);
+ animation: terminal-card-pulse 1.6s ease-in-out infinite;
+}
+@keyframes terminal-card-pulse {
+ 50% {
+  opacity: 0.35;
+ }
+}
+.terminal-card__title {
+ flex: 1;
+ min-width: 0;
+ overflow: hidden;
+ text-overflow: ellipsis;
+ white-space: nowrap;
+ font-weight: 500;
+}
+.terminal-card__status {
+ color: var(--dsw-alias-label-caption);
+ font-size: 11px;
+ flex: none;
+}
+.terminal-card__stop {
+ flex: none;
+ font-size: 11px;
+ padding: 2px 8px;
+ border-radius: 6px;
+ border: 1px solid var(--dsw-alias-border-l2);
+ background: transparent;
+ color: var(--dsw-alias-label-caption);
+ cursor: pointer;
+}
+.terminal-card__stop:hover {
+ color: var(--dsw-alias-label-strong, inherit);
+}
+.terminal-card__output {
+ margin: 0;
+ padding: 8px 10px;
+ max-height: 260px;
+ overflow: auto;
+ font-family: var(--dsw-alias-font-mono, ui-monospace, monospace);
+ font-size: 11px;
+ line-height: 1.5;
+ white-space: pre-wrap;
+ word-break: break-word;
+}
+
+/* Inline title editing: the input replaces the title button in place. */
+.conversation-header__title-input {
+ flex: 0 1 auto;
+ min-width: 0;
+ width: min(24em, 100%);
+ padding: 1px 6px;
+ border: 1px solid var(--pw-accent-line);
+ border-radius: 6px;
+ background: var(--dsw-alias-bg-layer-1);
+ color: var(--pw-fg-strong);
+ font-size: 14px;
+ font-weight: 400;
+ letter-spacing: -0.01em;
+}
+.conversation-header__identity .conversation-header__title-input {
+ width: min(14em, 100%);
+ font-size: 11.5px;
+}
+.conversation-header__title-input:focus {
+ outline: none;
+ border-color: var(--pw-accent);
+}
+
+/* Context fill: usage share of the context window, pinned to the header's
+   bottom edge. As a flex item in this row it had no definite width for the
+   fill's percentage to resolve against, so it collapsed to the 2px min-width
+   of its own span and read as a dot wedged between the tabs and the action
+   buttons. */
+.context-fill {
+ position: absolute;
+ right: 0;
+ bottom: 0;
+ left: 0;
+ height: 3px;
+ overflow: hidden;
+ border-radius: 999px;
+ background: color-mix(in srgb, var(--dsw-alias-border-l2) 72%, transparent);
+}
+.context-fill > span {
+ display: block;
+ height: 100%;
+ min-width: 2px;
+ border-radius: inherit;
+ background: linear-gradient(90deg, var(--pw-teal), var(--pw-accent));
+ transition: width 240ms ease;
+}
+/* Context gauge: exact counts read slightly stronger than the estimate, and
+   the bar turns to the warning colour as auto-compact approaches. */
+.context-fill.is-exact {
+ height: 4px;
+}
+.context-fill.is-near-limit > span {
+ background: linear-gradient(
+  90deg,
+  var(--pw-accent),
+  var(--ds-status-warning, #d08a3a)
+ );
+}
+
+/* Compaction notice: one compact line, click to expand the summary. */
+.notice__summary {
+ background: none;
+ border: 0;
+ padding: 0;
+ margin: 0;
+ font: inherit;
+ color: inherit;
+ cursor: pointer;
+ text-align: left;
+}
+.notice__summary:hover {
+ text-decoration: underline;
+ text-underline-offset: 2px;
+}
+.notice:has(> .notice__detail) {
+ display: block;
+ width: auto;
+}
+.notice__detail {
+ margin: 6px 0 0;
+ padding: 8px 10px;
+ border-radius: 6px;
+ background: var(--dsw-alias-bg-layer-1);
+ color: var(--dsw-alias-label-secondary);
+ font-size: 11.5px;
+ white-space: pre-wrap;
+ word-break: break-word;
+ max-height: 320px;
+ overflow: auto;
 }

@@ -45,6 +45,9 @@ export const WorkspacePicker = forwardRef<
     disabled: boolean;
     onPick: (path: string) => Promise<void>;
     onViewWorkspace?: () => void;
+    /** Cut an isolated checkout of `cwd` and move this session into it. The
+     *  server refuses outside a git repo, which surfaces as a notice. */
+    onIsolate?: () => Promise<void>;
     hideTrigger?: boolean;
     variant?: "default" | "chip";
   }
@@ -55,6 +58,7 @@ export const WorkspacePicker = forwardRef<
     disabled,
     onPick,
     onViewWorkspace,
+    onIsolate,
     hideTrigger = false,
     variant = "default",
   },
@@ -271,6 +275,20 @@ export const WorkspacePicker = forwardRef<
               <IconFolder size={16} />
               <span>New folder…</span>
             </button>
+            {onIsolate && (
+              <button
+                type="button"
+                role="menuitem"
+                title="Give this session its own checkout on its own branch, so other sessions cannot see or overwrite its files"
+                onClick={() => {
+                  setOpen(false);
+                  void onIsolate();
+                }}
+              >
+                <IconCode size={16} />
+                <span>Isolate in a worktree…</span>
+              </button>
+            )}
           </div>
         </div>
       )}

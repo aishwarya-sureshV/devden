@@ -36,7 +36,10 @@
  *                                          commit-push|stash|stash-apply|
  *                                          stash-pop|stash-drop|branch-create|
  *                                          branch-switch|undo-commit|continue|
- *                                          abort
+ *                                          abort|pr
+ *   GET  /api/:sessionKey/worktrees?cwd=    -> this repo's worktrees
+ *   POST /api/:sessionKey/worktree          { cwd, op: create|remove, name?,
+ *                                             path?, force? }
  *   GET  /api/:sessionKey/commands
  *   GET  /api/:sessionKey/models
  *   GET  /api/:sessionKey/thinking-levels
@@ -76,6 +79,7 @@ import { spawn, execFile, execSync } from "node:child_process";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import { logFault } from "./log-fault.js";
+import { createTerminalTabs } from "./terminal-tabs.js";
 import { leaseVerdict } from "./lease-sweep.js";
 import { WebSocketServer } from "ws";
 import pty from "node-pty";
@@ -99,7 +103,11 @@ import {
 import {
   agentIsAlive,
   callAgentMethod,
+  claimFork,
   hasMethod,
+  releaseFork,
+  shouldAdoptLiveAgent,
+  startOptionsFromBody,
   unsupported,
 } from "./agent-methods.js";
 import {
@@ -113,10 +121,18 @@ import {
 import { resumePrompt } from "./co-partner-prompt.js";
 import { isOneShotSseClient, SSE_ONESHOT_MS } from "./host-guard.js";
 import {
+  commitForFork,
   diffSinceSnapshot,
   restoreSnapshot,
   takeSnapshot,
 } from "./snapshots.js";
+import {
+  baseOf,
+  createWorktree,
+  listWorktrees,
+  removeWorktree,
+  toplevelOf,
+} from "./worktrees.js";
 import {
   archiveSession,
   deleteSession,
@@ -124,6 +140,7 @@ import {
   searchSessions,
   loadSessionLog,
   readSessionMessages,
+  readSessionXray,
   restoreSession,
 } from "./sessions.js";
 import { deleteSkill, loadCatalog, readSkill, writeSkill } from "./catalog.js";
@@ -726,6 +743,17 @@ function broadcast(event) {
 // when the beats stop. Carries no sessionKey, so the UI ignores it.
 setInterval(() => broadcast({ type: "__ping" }), 10_000).unref();
 
+// Server-owned terminal tabs for agent-launched long-running commands
+// (run_in_terminal / read_terminal tools). Lifecycle events go through the
+// runtime log so a refreshed page can see open tabs; output chunks stream
+// live but are not logged — they would evict real turn events from the log.
+const terminalTabs = createTerminalTabs({
+  onEvent: (event) => {
+    if (event.type === "terminal_output") broadcast(event);
+    else publishRuntimeEvent(event.sessionKey, "pi", event);
+  },
+});
+
 function logPayload(event) {
   if (event && typeof event === "object" && !Array.isArray(event)) return event;
   return { value: event };
@@ -1305,6 +1333,7 @@ const GIT_WRITE_OPS = new Set([
   "stash-drop",
   "branch-create",
   "branch-switch",
+  "pr",
   "undo-commit",
   "continue",
   "abort",
@@ -1810,6 +1839,39 @@ async function route(req, res) {
     return sendJson(res, 200, { ok: true, backends: listBackends() });
   }
 
+  /** The mac-native folder picker. A browser file input can never return an
+   *  absolute path, so the local server opens osascript's `choose folder`
+   *  and hands back the POSIX path. ponytail: darwin-only; add a zenity
+   *  branch when somebody races from a Linux host. */
+  if (pathname === "/api/pick-directory" && req.method === "POST") {
+    const body = await readBody(req);
+    const prompt = String(body.prompt || "Choose a folder").slice(0, 200);
+    if (process.platform !== "darwin")
+      return sendJson(res, 200, {
+        ok: false,
+        canceled: true,
+        error: "Native folder dialogs need macOS.",
+      });
+    try {
+      const { stdout } = await execFileAsync(
+        "osascript",
+        [
+          "-e",
+          `POSIX path of (choose folder with prompt ${JSON.stringify(prompt)})`,
+        ],
+        { timeout: 120_000 },
+      );
+      // POSIX path of a folder ends in a slash; cwd-style paths want it off.
+      const path = String(stdout).trim().replace(/\/+$/, "") || "/";
+      return sendJson(res, 200, { ok: true, path });
+    } catch (error) {
+      const message = String(error?.stderr || error?.message || error);
+      if (/cancel/i.test(message))
+        return sendJson(res, 200, { ok: false, canceled: true });
+      return sendJson(res, 200, { ok: false, error: message });
+    }
+  }
+
   if (pathname === "/api/auth" && req.method === "POST") {
     if (!ACCESS_TOKEN) return sendJson(res, 200, { ok: true, enabled: false });
     const body = await readBody(req);
@@ -2297,6 +2359,16 @@ async function route(req, res) {
     return sendJson(res, 200, result);
   }
 
+  if (pathname === "/api/xray" && req.method === "GET") {
+    // Context X-ray: compaction markers, dead zone, and dropped standing
+    // instructions, read straight from the session file (no agent needed).
+    return sendJson(
+      res,
+      200,
+      await readSessionXray(url.searchParams.get("path") ?? ""),
+    );
+  }
+
   if (pathname === "/api/sessions/search" && req.method === "GET") {
     return sendJson(
       res,
@@ -2399,10 +2471,9 @@ async function route(req, res) {
     // Reuse a process that is already running this session file (e.g. the
     // page was refreshed and the tab key changed) instead of spawning a
     // duplicate — its live state, including isStreaming, carries over.
-    // A forkResume claude start points at the ORIGINAL session file on
-    // purpose; adopting its live agent would hand the fork tab this
-    // conversation's process.
-    if (!body.forkResume)
+    // A fork tab must not steal the parent's process. independent covers
+    // every backend's fork start.
+    if (shouldAdoptLiveAgent(body))
       adoptLiveAgent(sessionKey, body.backend, body.sessionPath);
     const agent = watch(sessionKey, body.backend);
     // adoptOnly: attach to a live process but never spawn one. Grok stays
@@ -2420,22 +2491,7 @@ async function route(req, res) {
     }
     const result = await runLoggedCommand(sessionKey, "start", body, () =>
       agent.start(body.cwd || process.cwd(), {
-        model:
-          body.model && typeof body.model === "object"
-            ? {
-                provider: String(body.model.provider || ""),
-                id: String(body.model.id || ""),
-              }
-            : undefined,
-        sessionPath:
-          typeof body.sessionPath === "string" && body.sessionPath
-            ? body.sessionPath
-            : undefined,
-        thinkingLevel:
-          typeof body.thinkingLevel === "string"
-            ? body.thinkingLevel
-            : undefined,
-        forkResume: Boolean(body.forkResume),
+        ...startOptionsFromBody(body),
         warmOnly: Boolean(body.warmOnly),
       }),
     );
@@ -2476,28 +2532,10 @@ async function route(req, res) {
     const agentAlive = agentIsAlive(promptAgent);
     if (!agentAlive) {
       const started = await runLoggedCommand(sessionKey, "start", body, () =>
-        promptAgent.start(String(body.cwd || process.cwd()), {
-          sessionPath:
-            typeof body.sessionPath === "string" && body.sessionPath
-              ? body.sessionPath
-              : undefined,
-          model:
-            body.model && typeof body.model === "object"
-              ? {
-                  provider: String(body.model.provider || ""),
-                  id: String(body.model.id || ""),
-                }
-              : undefined,
-          thinkingLevel:
-            typeof body.thinkingLevel === "string"
-              ? body.thinkingLevel
-              : undefined,
-          accessMode: body.accessMode === "read-only" ? "read-only" : undefined,
-          agentMode:
-            body.agentMode === "plan" || body.agentMode === "manual"
-              ? body.agentMode
-              : undefined,
-        }),
+        promptAgent.start(
+          String(body.cwd || process.cwd()),
+          startOptionsFromBody(body),
+        ),
       );
       if (!started.ok) return sendJson(res, 500, started);
     }
@@ -2863,7 +2901,9 @@ async function route(req, res) {
   }
   if (req.method === "POST" && action === "fork") {
     const body = await readBody(req);
-    const forkBackend = sessionBackends.get(sessionKey) ?? "pi";
+    const forkBackend = backendName(
+      body.backend ?? sessionBackends.get(sessionKey) ?? "pi",
+    );
     if (!capabilitiesFor(forkBackend).fork) {
       return sendJson(
         res,
@@ -2871,19 +2911,117 @@ async function route(req, res) {
         unsupported("fork", "This agent cannot fork a conversation."),
       );
     }
-    const result = await runLoggedCommand(sessionKey, "fork", body, () =>
-      callAgentMethod(
-        watch(sessionKey),
-        "forkAt",
-        [Number(body.timestamp)],
-        "fork",
-      ),
-    );
-    return sendJson(
-      res,
-      result.ok ? 200 : result.unsupported ? 200 : 500,
-      result,
-    );
+    const forkAgent = watch(sessionKey, forkBackend);
+    const claim = claimFork(forkAgent);
+    if (!claim.ok) return sendJson(res, 200, claim);
+    const forkOptions = startOptionsFromBody(body);
+    try {
+      // Pi and Codex fork through the live process. Claude forks the JSONL
+      // on disk, and Grok's forkAt starts itself against the source file's
+      // cwd — reviving either here dropped model/mode and, for Claude, held
+      // a CLI the fork never uses.
+      const forkNeedsProcess = forkBackend === "pi" || forkBackend === "codex";
+      if (forkNeedsProcess && !agentIsAlive(forkAgent)) {
+        const cwd = String(body.cwd || forkAgent.cwd || "");
+        if (!cwd) {
+          return sendJson(res, 200, {
+            ok: false,
+            error:
+              "This session is not running yet. Send a message once, then fork.",
+          });
+        }
+        const started = await runLoggedCommand(sessionKey, "start", body, () =>
+          forkAgent.start(cwd, forkOptions),
+        );
+        if (!started.ok)
+          return sendJson(res, started.unsupported ? 200 : 500, started);
+      }
+      // Isolate the tree first so Grok's ACP fork can receive newCwd, and so
+      // every backend's child tab starts in a checkout that matches the fork
+      // point (snapshot commit) rather than sharing the parent's dirty files.
+      let forkCwd = String(body.cwd || forkAgent.cwd || "");
+      let worktree;
+      let isolatedFrom = "";
+      try {
+        if (forkCwd) isolatedFrom = confineWorkspacePath(forkCwd);
+      } catch {
+        isolatedFrom = "";
+      }
+      if (isolatedFrom) {
+        try {
+          const snap = await commitForFork(
+            isolatedFrom,
+            Number(body.timestamp),
+          );
+          const isolated = await createWorktree(
+            isolatedFrom,
+            String(body.name || "fork"),
+            snap.ok ? { commit: snap.commit } : undefined,
+          );
+          if (isolated.ok) {
+            addWorkspaceRoot(isolated.data.path);
+            forkCwd = isolated.data.path;
+            worktree = isolated.data;
+          }
+        } catch {
+          /* not a git repo, or git failed: the fork still copies the chat */
+        }
+      }
+      const result = await runLoggedCommand(sessionKey, "fork", body, () =>
+        callAgentMethod(
+          watch(sessionKey),
+          "forkAt",
+          [
+            Number(body.timestamp),
+            {
+              cwd: body.cwd,
+              sessionPath: forkOptions.sessionPath,
+              promptIndex: body.promptIndex,
+              userText:
+                typeof body.userText === "string" ? body.userText : undefined,
+              forkCwd,
+              model: forkOptions.model,
+              thinkingLevel: forkOptions.thinkingLevel,
+              accessMode: forkOptions.accessMode,
+              agentMode: forkOptions.agentMode,
+            },
+          ],
+          "fork",
+        ),
+      );
+      if (result.ok) {
+        // The agent names the cwd the fork session actually lives in. When
+        // that isn't the worktree (ACP ignored newCwd), drop the empty
+        // checkout instead of pointing the tab at a tree the session isn't in.
+        if (
+          worktree?.path &&
+          result.forkCwd &&
+          result.forkCwd !== worktree.path
+        ) {
+          await removeWorktree(
+            isolatedFrom || worktree.path,
+            worktree.path,
+            true,
+          ).catch(() => {});
+          worktree = undefined;
+        }
+        if (!result.forkCwd && forkCwd) result.forkCwd = forkCwd;
+        if (worktree) result.worktree = worktree;
+      } else if (worktree?.path && !result.keepWorktree) {
+        await removeWorktree(
+          String(body.cwd || forkAgent.cwd || worktree.path),
+          worktree.path,
+          true,
+        ).catch(() => {});
+      }
+      return sendJson(
+        res,
+        result.ok ? 200 : result.unsupported ? 200 : 500,
+        result,
+      );
+    } finally {
+      releaseFork(forkAgent);
+    }
   }
   if (req.method === "GET" && action === "settings") {
     const agent = watch(sessionKey);
@@ -3057,6 +3195,23 @@ async function route(req, res) {
     // Review payload. Prefer the per-turn snapshot so leftover dirty files
     // from earlier turns are not in the evidence. Fall back to HEAD.
     if (url.searchParams.get("review") === "1") {
+      // A task worktree's review unit is the whole branch -- its commits and
+      // its uncommitted work -- not one turn. `diff <base>` spans both.
+      if (url.searchParams.get("task") === "1") {
+        const base = await baseOf(dir);
+        if (base) {
+          const whole = await git(["diff", "-U15", "--no-renames", base]);
+          const diff = String(whole.stdout ?? "");
+          return sendJson(res, 200, {
+            ok: true,
+            repo: true,
+            scope: "task",
+            base,
+            diff: diff.slice(0, 400_000),
+            truncated: diff.length > 400_000,
+          });
+        }
+      }
       const since = Number(url.searchParams.get("since"));
       if (Number.isFinite(since) && since > 0) {
         const isolated = await diffSinceSnapshot(dir, since, 15);
@@ -3133,6 +3288,10 @@ async function route(req, res) {
         diff: text.slice(0, 200_000),
       });
     }
+    // Race scoreboards pass base=1: numstat against the worktree's recorded
+    // base spans the branch's commits, not just the dirty tree.
+    const taskBase =
+      url.searchParams.get("base") === "1" ? await baseOf(dir) : null;
     const [
       remoteProbe,
       branchProbe,
@@ -3147,7 +3306,7 @@ async function route(req, res) {
       git(["remote", "get-url", "origin"]),
       git(["branch", "--show-current"]),
       git(["status", "--porcelain=v1", "--no-renames"]),
-      git(["diff", "--numstat", "HEAD"]),
+      git(["diff", "--numstat", taskBase ?? "HEAD"]),
       // Fails (not ok) when the branch has no upstream — that is the signal
       // for "never pushed", not an error worth surfacing.
       git(["rev-list", "--left-right", "--count", "HEAD...@{upstream}"]),
@@ -3222,6 +3381,18 @@ async function route(req, res) {
       // One row per file: a path can appear staged AND worktree-modified;
       // skip duplicates (deeper status merge would double-count).
       counts.delete(path);
+    }
+    // Base mode only: the leftover numstat rows are commit-clean paths, i.e.
+    // the branch's committed work, which status never lists.
+    if (taskBase) {
+      for (const [path, stat] of counts) {
+        changes.push({
+          path,
+          status: "modified",
+          additions: stat.additions,
+          deletions: stat.deletions,
+        });
+      }
     }
     const tracking = trackingProbe.stdout.trim().match(/^(\d+)\s+(\d+)$/);
     const state = gitStateFromDir(gitDirProbe.stdout.trim());
@@ -3354,6 +3525,66 @@ async function route(req, res) {
     );
   }
 
+  // Worktrees: file isolation per session or per board card. A tab's cwd is
+  // all that changes -- every backend already takes its cwd from the client,
+  // so nothing in the agent adapters needs to know these exist.
+  if (req.method === "GET" && action === "worktrees") {
+    let dir;
+    try {
+      dir = confineWorkspacePath(String(url.searchParams.get("cwd") ?? ""));
+    } catch (error) {
+      return sendJson(res, 400, {
+        ok: false,
+        error: String(error?.message ?? error),
+      });
+    }
+    const trees = await listWorktrees(dir);
+    return sendJson(res, 200, {
+      ok: true,
+      current: await toplevelOf(dir),
+      base: trees.length > 1 ? await baseOf(dir) : null,
+      worktrees: trees,
+    });
+  }
+  if (req.method === "POST" && action === "worktree") {
+    const body = await readBody(req);
+    let dir;
+    try {
+      dir = confineWorkspacePath(
+        typeof body.cwd === "string" && body.cwd ? body.cwd : process.cwd(),
+      );
+    } catch (error) {
+      return sendJson(res, 400, {
+        ok: false,
+        error: String(error?.message ?? error),
+      });
+    }
+    const op = body.op === "remove" ? "remove" : "create";
+    const result = await runLoggedCommand(
+      sessionKey,
+      `worktree-${op}`,
+      body,
+      async () => {
+        if (op === "remove") {
+          // The path to delete comes from the browser: confine it before a
+          // `worktree remove --force` can be pointed anywhere.
+          let target;
+          try {
+            target = confineWorkspacePath(String(body.path ?? ""));
+          } catch (error) {
+            return { ok: false, error: String(error?.message ?? error) };
+          }
+          return removeWorktree(dir, target, body.force === true);
+        }
+        const made = await createWorktree(dir, String(body.name ?? "task"));
+        // The new checkout becomes a session cwd, so it has to be reachable
+        // by the workspace endpoints the file explorer and git ops use.
+        if (made.ok) addWorkspaceRoot(made.data.path);
+        return made;
+      },
+    );
+    return sendJson(res, result.ok ? 200 : 500, result);
+  }
   if (req.method === "POST" && action === "git") {
     const body = await readBody(req);
     const op = GIT_WRITE_OPS.has(body.op) ? body.op : "push";
@@ -3520,6 +3751,59 @@ async function route(req, res) {
             }
             return { ok: true, output: out.filter(Boolean).join("\n") };
           }
+          if (op === "pr") {
+            // gh reads the branch and its upstream, so the branch has to be
+            // pushed before there is anything to open a PR against.
+            const branch = await run(["rev-parse", "--abbrev-ref", "HEAD"]);
+            const head = branch.stdout.trim();
+            if (!head || head === "HEAD")
+              return { ok: false, error: "Not on a branch." };
+            try {
+              await run(["push", "-u", "origin", head]);
+            } catch (error) {
+              const failure = String(error?.stderr || error?.message || error);
+              if (!/everything up-to-date/i.test(failure))
+                return { ok: false, error: failure };
+            }
+            const title =
+              typeof body.message === "string" ? body.message.trim() : "";
+            try {
+              const done = await execFileAsync(
+                "gh",
+                [
+                  "pr",
+                  "create",
+                  "--head",
+                  head,
+                  ...(title ? ["--title", title, "--body", ""] : ["--fill"]),
+                ],
+                { cwd: dir, timeout: 120_000, maxBuffer: 4 * 1024 * 1024 },
+              );
+              const output = `${done.stdout}${done.stderr}`.trim();
+              return {
+                ok: true,
+                output,
+                url: output.match(/https:\/\/\S+/)?.[0],
+              };
+            } catch (error) {
+              const failure = String(error?.stderr || error?.message || error);
+              // An existing PR is a success from the user's point of view:
+              // hand back its URL instead of an error they cannot act on.
+              if (/already exists/i.test(failure))
+                return {
+                  ok: true,
+                  output: failure,
+                  url: failure.match(/https:\/\/\S+/)?.[0],
+                };
+              if (/not found|command not found|ENOENT/i.test(failure))
+                return {
+                  ok: false,
+                  error:
+                    "The GitHub CLI (gh) is not installed, so a pull request cannot be opened from here. The branch has been pushed.",
+                };
+              return { ok: false, error: failure };
+            }
+          }
           if (op === "stash") {
             const label =
               typeof body.message === "string" ? body.message.trim() : "";
@@ -3611,7 +3895,34 @@ async function route(req, res) {
     const instructions = capabilitiesFor(compactBackend).compactInstructions
       ? body.customInstructions
       : undefined;
-    const agent = watch(sessionKey);
+    // Lazy (re)start, same as the prompt route: a session opened for
+    // display has no agent process yet (pi spawns on the first message),
+    // and compact re-summarizes through the model, so it needs a live
+    // process. Start one instead of failing with "process is not running".
+    adoptLiveAgent(sessionKey, compactBackend, body.sessionPath);
+    const agent = watch(sessionKey, compactBackend);
+    if (!agentIsAlive(agent)) {
+      const started = await runLoggedCommand(sessionKey, "start", body, () =>
+        agent.start(String(body.cwd || process.cwd()), {
+          sessionPath:
+            typeof body.sessionPath === "string" && body.sessionPath
+              ? body.sessionPath
+              : undefined,
+          model:
+            body.model && typeof body.model === "object"
+              ? {
+                  provider: String(body.model.provider || ""),
+                  id: String(body.model.id || ""),
+                }
+              : undefined,
+          thinkingLevel:
+            typeof body.thinkingLevel === "string"
+              ? body.thinkingLevel
+              : undefined,
+        }),
+      );
+      if (!started.ok) return sendJson(res, 500, started);
+    }
     const sessionPath = sessionPathOf(agent);
     let before = await clientMessages(agent, sessionPath);
     // Lazy-start tabs hydrate from disk and may have an empty in-memory
@@ -3667,6 +3978,72 @@ async function route(req, res) {
         watch(sessionKey).setThinkingLevel(String(body.level)),
       ),
     );
+  }
+  if (req.method === "POST" && action === "rename") {
+    const body = await readBody(req);
+    const title =
+      typeof body.title === "string" ? body.title.trim().slice(0, 200) : "";
+    if (!title)
+      return sendJson(res, 200, { ok: false, error: "title required" });
+    return sendJson(
+      res,
+      200,
+      await runLoggedCommand(sessionKey, "rename", body, async () => {
+        const result = await callAgentMethod(
+          watch(sessionKey),
+          "setSessionName",
+          [title],
+          "rename",
+        );
+        if (result?.ok ?? result?.success) {
+          publishRuntimeEvent(sessionKey, "pi", {
+            type: "session_title_set",
+            title,
+          });
+        }
+        return result?.ok
+          ? result
+          : { ...result, ok: Boolean(result?.success) };
+      }),
+    );
+  }
+  if (req.method === "POST" && action === "terminal") {
+    const body = await readBody(req);
+    const op = String(body.op ?? "");
+    // Tabs are owned by the server, not the agent process: they outlive the
+    // agent and stream to the browser on the same SSE bus. Chunks bypass
+    // the runtime log (they would evict real turn events); the tab's
+    // open/exit lifecycle is logged so a refreshed page can show the tab.
+    if (op === "run") {
+      const command = typeof body.command === "string" ? body.command : "";
+      if (!command.trim())
+        return sendJson(res, 200, { ok: false, error: "command required" });
+      const tab = terminalTabs.run({
+        sessionKey,
+        command,
+        cwd: typeof body.cwd === "string" && body.cwd ? body.cwd : undefined,
+        title: typeof body.title === "string" ? body.title : undefined,
+      });
+      return sendJson(res, 200, { ok: true, tabId: tab.tabId });
+    }
+    if (op === "read")
+      return sendJson(
+        res,
+        200,
+        await terminalTabs.read({
+          sessionKey,
+          tabId: String(body.tabId ?? ""),
+          waitMs: Number(body.waitMs) || 0,
+          lines: Number(body.lines) || 400,
+        }),
+      );
+    if (op === "stop")
+      return sendJson(
+        res,
+        200,
+        terminalTabs.stop({ sessionKey, tabId: String(body.tabId ?? "") }),
+      );
+    return sendJson(res, 200, { ok: false, error: "unknown terminal op" });
   }
   if (req.method === "GET" && action === "state") {
     // Live state snapshot for the stream-reconnect self-heal: after the SSE

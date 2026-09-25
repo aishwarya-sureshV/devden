@@ -101,6 +101,7 @@ const OP_LABEL: Record<GitOp, string> = {
   "undo-commit": "Undo last commit",
   continue: "Continue",
   abort: "Abort",
+  pr: "Open pull request",
 };
 
 /**
@@ -133,6 +134,7 @@ export function ChangesPanel({
   compact = false,
   onWorkspaceClick,
   onAskAgent,
+  onLeaveWorktree,
 }: {
   sessionKey: string;
   cwd?: string;
@@ -143,6 +145,9 @@ export function ChangesPanel({
   onWorkspaceClick?: () => void;
   /** Drops a prompt in the composer; the user still presses send. */
   onAskAgent?: (prompt: string) => void;
+  /** Deleting the worktree this session lives in leaves its cwd gone, so the
+   *  parent has to move the tab back to the main checkout. */
+  onLeaveWorktree?: (mainPath: string) => void;
 }) {
   const [data, setData] = useState<GitChangesResponse | null>(null);
   const [dismissed, setDismissed] = useState(false);
@@ -224,6 +229,10 @@ export function ChangesPanel({
   );
   const wasStreaming = useRef(streaming);
   const fetchToken = useRef(0);
+  const [worktree, setWorktree] = useState<{
+    branch: string;
+    main: string;
+  } | null>(null);
 
   const refresh = useCallback(async () => {
     const token = ++fetchToken.current;
@@ -240,6 +249,22 @@ export function ChangesPanel({
           saveExcluded(next);
           return next;
         });
+      }
+      // Is this session isolated? Only the main checkout's path differs, so
+      // one call answers both "are we in a worktree" and "where is home".
+      const trees = await api.worktrees(sessionKey, cwd || "");
+      if (token === fetchToken.current) {
+        const here = trees.worktrees?.find(
+          (tree) => tree.path === trees.current,
+        );
+        setWorktree(
+          here && !here.main
+            ? {
+                branch: here.branch,
+                main: trees.worktrees?.find((tree) => tree.main)?.path ?? "",
+              }
+            : null,
+        );
       }
     } catch {
       /* offline or unauthed; keep the previous snapshot */
@@ -407,6 +432,45 @@ export function ChangesPanel({
     }
   };
 
+  /**
+   * Delete the checkout this session is sitting in. The tab has to move back
+   * to the main tree first -- its cwd is about to stop existing.
+   */
+  const discardWorktree = async () => {
+    if (!worktree?.main || busy) return;
+    setMenuOpen(false);
+    setBusyOp("abort");
+    try {
+      let result = await api.removeWorktree(sessionKey, cwd || "", cwd || "");
+      if (!result.ok && result.dirty) {
+        const sure = window.confirm(
+          `${worktree.branch} has uncommitted changes.\n\nDelete the worktree and lose them?`,
+        );
+        if (!sure) {
+          setBusyOp(null);
+          return;
+        }
+        result = await api.removeWorktree(
+          sessionKey,
+          cwd || "",
+          cwd || "",
+          true,
+        );
+      }
+      if (!result.ok) {
+        setFeedback({
+          ok: false,
+          title: "Could not delete the worktree.",
+          output: result.error,
+        });
+        return;
+      }
+      onLeaveWorktree?.(worktree.main);
+    } finally {
+      setBusyOp(null);
+    }
+  };
+
   const changes = data?.changes ?? [];
   // Pill diffstat: the whole turn's additions/deletions, GitHub style.
   const totalAdd = changes.reduce((sum, change) => sum + change.additions, 0);
@@ -564,6 +628,31 @@ export function ChangesPanel({
             </button>
           ))}
 
+          {worktree && (
+            <>
+              <p className="changes__menu-head">Worktree</p>
+              <button
+                type="button"
+                role="menuitem"
+                disabled={changes.length > 0 || inProgress}
+                onClick={() => void runGit("pr")}
+              >
+                Open pull request{" "}
+                <span>
+                  {changes.length ? "commit first" : `push ${worktree.branch}`}
+                </span>
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                disabled={!worktree.main}
+                onClick={() => void discardWorktree()}
+              >
+                Delete this worktree <span>back to main checkout</span>
+              </button>
+            </>
+          )}
+
           <p className="changes__menu-head">
             Stash{stashes.length ? ` · ${stashes.length}` : ""}
           </p>
@@ -701,6 +790,14 @@ export function ChangesPanel({
   // state worth showing even when the tree is clean.
   const branchMeta = (
     <span className="changes__meta">
+      {worktree && (
+        <span
+          className="changes__worktree"
+          title="Isolated checkout — other sessions cannot see these files"
+        >
+          worktree ·{" "}
+        </span>
+      )}
       {data?.branch}
       {data?.upstream === false && " · unpushed branch"}
       {ahead > 0 && ` · ↑${ahead}`}

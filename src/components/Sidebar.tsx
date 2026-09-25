@@ -20,6 +20,7 @@ import {
 } from "../lib/api";
 import type { WorkbenchView } from "../lib/navigation";
 import { formatRelativeTime } from "../lib/time";
+import { formatClaudeModelName, isClaudeModel } from "../lib/claudeModels";
 import { savedSessionTitle } from "../lib/sessionTitle";
 import { textAwaitsAnswer } from "../lib/awaitingAnswer";
 import {
@@ -29,7 +30,7 @@ import {
   sessionMatchesFilters,
   sessionMetaLine,
 } from "../lib/sessionModels";
-import type { ConversationTab } from "../lib/store";
+import { BACKEND_DEFAULT_MODEL, type ConversationTab } from "../lib/store";
 import {
   FishLogo,
   IconArchive,
@@ -105,20 +106,31 @@ function backendModelLine(
   tabs: ConversationTab[],
   sessions: ResumeSession[],
 ): string {
+  // One model id, labelled for this backend. Claude reports Claude models
+  // only, so a session that recorded a foreign id (a proxied or experimental
+  // run) must not become the row's model.
+  const label = (raw: string | undefined): string | null => {
+    const value = String(raw ?? "").trim();
+    if (!value) return null;
+    const id = value.includes("/")
+      ? value.slice(value.lastIndexOf("/") + 1)
+      : value;
+    if (backend === "claude")
+      return isClaudeModel(id) ? formatClaudeModelName(id) : null;
+    return formatSessionModelName(id);
+  };
   const live = [...tabs]
     .reverse()
     .find((tab) => tab.backend === backend && tab.timeline.state?.model);
   const model = live?.timeline.state?.model;
-  const raw = String(model?.name || model?.id || "").trim();
-  if (raw) {
-    const id = raw.includes("/") ? raw.slice(raw.lastIndexOf("/") + 1) : raw;
-    return `${formatSessionModelName(id)} · ${backendMark(backend).blurb}`;
+  const fromTab = label(model?.id || model?.name);
+  if (fromTab) return fromTab;
+  for (const session of sessions) {
+    if (session.backend !== backend) continue;
+    const fromSession = label(sessionDisplayModel(session));
+    if (fromSession) return fromSession;
   }
-  const session = sessions.find((entry) => entry.backend === backend);
-  const last = session ? sessionDisplayModel(session) : "";
-  if (last)
-    return `${formatSessionModelName(last)} · ${backendMark(backend).blurb}`;
-  return backendMark(backend).blurb;
+  return label(BACKEND_DEFAULT_MODEL[backend]?.id) ?? "";
 }
 
 export function Sidebar({
@@ -357,10 +369,10 @@ export function Sidebar({
   const switchBackend = (next: AgentBackend) => {
     setBackendMenuOpen(false);
     if (next === currentBackend) return;
+    // Row click only picks the agent NEW sessions start on — it must not
+    // spawn a surprise session pane mid-conversation. Opening another
+    // agent's session is the + button's job (openBeside).
     setDefaultBackend(next);
-    // Toggling the agent opens its own fresh session in the current workspace
-    // rather than leaving the previous backend's tab (and its model list) up.
-    void startFresh(tabs.find((tab) => tab.key === activeKey)?.cwd);
   };
 
   // Same workspace, a second agent: the current pane keeps running and the
@@ -374,6 +386,15 @@ export function Sidebar({
       return;
     }
     const key = openConversation(cwd, undefined, backend);
+    onSessionSplit(key);
+    onViewChange("sessions");
+  };
+
+  // The + on an open row: another session on THAT row's agent and folder.
+  // The picker's + only offers the other agents, so this is the way to get a
+  // second pi session once pi is already the current one.
+  const openBesideTab = (tab: ConversationTab) => {
+    const key = openConversation(tab.cwd, undefined, tab.backend);
     onSessionSplit(key);
     onViewChange("sessions");
   };
@@ -630,15 +651,9 @@ export function Sidebar({
                           <BackendLogo backend={backend} size={18} />
                         </span>
                         <span className="sidebar__backend-option">
-                          <strong>
-                            {backendLabel(backend).toLowerCase()}
-                          </strong>
+                          <strong>{backendLabel(backend).toLowerCase()}</strong>
                           <em>
-                            {backendModelLine(
-                              backend,
-                              tabs,
-                              resumeSessions,
-                            )}
+                            {backendModelLine(backend, tabs, resumeSessions)}
                           </em>
                         </span>
                         <span className="sidebar__live-dot" aria-hidden />
@@ -646,27 +661,21 @@ export function Sidebar({
                           <span className="sidebar__tick">✓</span>
                         ) : null}
                       </button>
-                      {!active && (
-                        <button
-                          type="button"
-                          className="sidebar__backend-beside"
-                          aria-label={`Open a ${backendLabel(backend)} session beside this one`}
-                          title={`Open a ${backendLabel(backend)} session beside this one`}
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            openBeside(backend);
-                          }}
-                        >
-                          <IconPlus size={12} />
-                        </button>
-                      )}
+                      <button
+                        type="button"
+                        className="sidebar__backend-beside"
+                        aria-label={`Open a ${backendLabel(backend)} session beside this one`}
+                        title={`Open a ${backendLabel(backend)} session beside this one`}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          openBeside(backend);
+                        }}
+                      >
+                        <IconPlus size={12} />
+                      </button>
                     </div>
                   );
                 })}
-                <p className="sidebar__backend-hint">
-                  Click a row to switch this pane. Plus opens that agent
-                  beside it — running sessions keep theirs.
-                </p>
               </div>
             )}
           </div>
@@ -797,6 +806,16 @@ export function Sidebar({
                       </span>
                     </span>
                   </button>
+                  {/* Another session on this row's own agent + folder. */}
+                  <button
+                    type="button"
+                    className="sidebar__item-new"
+                    aria-label={`Open another ${backendLabel(tab.backend)} session`}
+                    title={`Open another ${backendLabel(tab.backend)} session`}
+                    onClick={() => openBesideTab(tab)}
+                  >
+                    <IconPlus size={14} />
+                  </button>
                   {/* Splitting a pane with itself is a no-op, and on the single
                       visible row (focus mode) this button and its tooltip
                       landed right on the session title. Offer it only where it
@@ -835,7 +854,7 @@ export function Sidebar({
                 type="button"
                 role="tab"
                 aria-selected={view !== "fleet"}
-                className={view !== "fleet" ? "is-active" : undefined}
+                className={view === "fleet" ? undefined : "is-active"}
                 onClick={() => chooseView("sessions")}
               >
                 Sessions
@@ -848,6 +867,15 @@ export function Sidebar({
                 onClick={() => chooseView("fleet")}
               >
                 Fleet
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={view === "battle"}
+                className={view === "battle" ? "is-active" : undefined}
+                onClick={() => chooseView("battle")}
+              >
+                Battle
               </button>
             </div>
             {filtersOpen && (

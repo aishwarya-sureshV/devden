@@ -155,7 +155,9 @@ export type GitOp =
   | "branch-switch"
   | "undo-commit"
   | "continue"
-  | "abort";
+  | "abort"
+  /** Push the branch and open a pull request for it (needs the gh CLI). */
+  | "pr";
 
 export interface GitOpOptions {
   /** Commit message, or the stash label. */
@@ -216,8 +218,13 @@ export interface SessionSnapshotResponse {
   restored?: boolean;
   /** Worktree/cwd for the forked session (falls back to the original cwd). */
   forkCwd?: string;
-  /** Claude: the fork tab must resume the source session with --fork-session. */
-  forkResume?: boolean;
+  /** Isolated checkout created for this fork, when the parent cwd is a git repo. */
+  worktree?: {
+    path: string;
+    branch: string;
+    base: string;
+    seeded: string[];
+  };
 }
 
 /** What a file rewind did, or — with dryRun — what it would do. */
@@ -690,7 +697,9 @@ export const api = {
     thinkingLevel?: string,
     adoptOnly?: boolean,
     warmOnly?: boolean,
-    forkResume?: boolean,
+    independent?: boolean,
+    accessMode?: "workspace-write" | "read-only",
+    agentMode?: "standard" | "plan" | "manual" | "routed",
   ) =>
     post<{
       ok: boolean;
@@ -705,7 +714,9 @@ export const api = {
       ...(thinkingLevel ? { thinkingLevel } : {}),
       ...(adoptOnly ? { adoptOnly: true } : {}),
       ...(warmOnly ? { warmOnly: true } : {}),
-      ...(forkResume ? { forkResume: true } : {}),
+      ...(independent ? { independent: true } : {}),
+      ...(accessMode ? { accessMode } : {}),
+      ...(agentMode ? { agentMode } : {}),
     }),
   prompt: (
     key: string,
@@ -769,8 +780,29 @@ export const api = {
       { sessionPath },
       30_000,
     ),
-  fork: (key: string, timestamp: number) =>
-    post<SessionSnapshotResponse>(`/api/${key}/fork`, { timestamp }),
+  fork: (
+    key: string,
+    timestamp: number,
+    context: {
+      cwd?: string;
+      sessionPath?: string;
+      backend?: AgentBackend;
+      /** 0-based user-turn index to cut a Grok fork at. */
+      promptIndex?: number;
+      /** Text of the user turn being forked, so a miscounted index can be corrected. */
+      userText?: string;
+      /** Label for the isolated worktree branch. */
+      name?: string;
+      model?: ModelInfo | null;
+      thinkingLevel?: string | null;
+      accessMode?: "workspace-write" | "read-only";
+      agentMode?: "standard" | "plan" | "manual" | "routed";
+    } = {},
+  ) =>
+    post<SessionSnapshotResponse>(`/api/${key}/fork`, {
+      timestamp,
+      ...context,
+    }),
   settings: (key: string) =>
     get<{ ok: boolean; data?: AgentSettings; error?: string }>(
       `/api/${key}/settings`,
@@ -815,26 +847,62 @@ export const api = {
   remoteStop: () =>
     post<{ ok: boolean; error?: string }>("/api/remote/stop", {}),
   gitRun: (key: string, cwd: string, op: GitOp, options?: GitOpOptions) =>
-    post<{ ok: boolean; output?: string; error?: string }>(
+    post<{ ok: boolean; output?: string; url?: string; error?: string }>(
       `/api/${key}/git`,
       { cwd, op, ...options },
       120_000,
     ),
-  gitChanges: (key: string, cwd: string) =>
+  /** This repo's worktrees; `current` is which one `cwd` is in. */
+  worktrees: (key: string, cwd: string) =>
+    get<{
+      ok: boolean;
+      current?: string;
+      base?: string | null;
+      worktrees?: { path: string; branch: string; main: boolean }[];
+      error?: string;
+    }>(`/api/${key}/worktrees?cwd=${encodeURIComponent(cwd)}`),
+  /** Cut an isolated checkout on its own branch; returns the cwd to open. */
+  createWorktree: (key: string, cwd: string, name: string) =>
+    post<{
+      ok: boolean;
+      data?: {
+        path: string;
+        branch: string;
+        base: string;
+        seeded: string[];
+      };
+      error?: string;
+    }>(`/api/${key}/worktree`, { cwd, op: "create", name }, 120_000),
+  /** `dirty` comes back when the refusal was uncommitted work, not a failure. */
+  removeWorktree: (key: string, cwd: string, path: string, force = false) =>
+    post<{
+      ok: boolean;
+      data?: { path: string; branch: string };
+      dirty?: boolean;
+      error?: string;
+    }>(`/api/${key}/worktree`, { cwd, op: "remove", path, force }, 120_000),
+  /** `base` widens the change list to the worktree's whole branch (race
+   *  scoreboards, where committed work must still count). */
+  gitChanges: (key: string, cwd: string, base = false) =>
     get<GitChangesResponse>(
-      `/api/${key}/git-changes?cwd=${encodeURIComponent(cwd)}`,
+      `/api/${key}/git-changes?cwd=${encodeURIComponent(cwd)}${base ? "&base=1" : ""}`,
     ),
-  /** This-turn diff (snapshot → now) at -U15. `since` is the user-message time. */
-  gitReviewDiff: (key: string, cwd: string, since?: number) => {
+  /**
+   * This-turn diff (snapshot → now) at -U15. `since` is the user-message time.
+   * `task` widens it to everything the worktree's branch did, commits included.
+   */
+  gitReviewDiff: (key: string, cwd: string, since?: number, task = false) => {
     const params = new URLSearchParams({
       cwd,
       review: "1",
     });
+    if (task) params.set("task", "1");
     if (since && Number.isFinite(since)) params.set("since", String(since));
     return get<{
       ok: boolean;
       repo?: boolean;
-      scope?: "turn" | "head";
+      scope?: "turn" | "head" | "task";
+      base?: string;
       snapshotAt?: number;
       diff?: string;
       truncated?: boolean;
@@ -873,7 +941,16 @@ export const api = {
       },
       120_000,
     ),
-  compact: (key: string, customInstructions?: string) =>
+  compact: (
+    key: string,
+    customInstructions?: string,
+    start?: {
+      cwd?: string;
+      sessionPath?: string;
+      model?: ModelInfo | null;
+      thinkingLevel?: string | null;
+    },
+  ) =>
     post<{
       ok: boolean;
       state?: SessionState;
@@ -881,12 +958,32 @@ export const api = {
       error?: string;
     }>(
       `/api/${key}/compact`,
-      { customInstructions },
+      {
+        customInstructions,
+        // Session context for the lazy-start path: a session with no agent
+        // process yet gets one started here, same as the first prompt.
+        ...(start?.cwd ? { cwd: start.cwd } : null),
+        ...(start?.sessionPath ? { sessionPath: start.sessionPath } : null),
+        ...(start?.model ? { model: start.model } : null),
+        ...(start?.thinkingLevel
+          ? { thinkingLevel: start.thinkingLevel }
+          : null),
+      },
       // Compaction re-summarizes the whole history through the model; the
       // default request timeout cut it off and reported a failure for a
       // compaction that was in fact still running.
       300_000,
     ),
+  rename: (key: string, title: string) =>
+    post<{ ok: boolean; error?: string; unsupported?: boolean }>(
+      `/api/${key}/rename`,
+      { title },
+    ),
+  stopTerminal: (key: string, tabId: string) =>
+    post<{ ok: boolean; error?: string }>(`/api/${key}/terminal`, {
+      op: "stop",
+      tabId,
+    }),
   setModel: (key: string, provider: string, modelId: string) =>
     post<{
       ok: boolean;
@@ -949,6 +1046,15 @@ export const api = {
       mimeType,
       data,
     }),
+  /** Opens the native macOS folder dialog on the server and returns the
+   *  absolute path — a web file input can never provide one. */
+  pickDirectory: (prompt: string) =>
+    post<{
+      ok: boolean;
+      path?: string;
+      canceled?: boolean;
+      error?: string;
+    }>("/api/pick-directory", { prompt }, 120_000),
   commands: (key: string, backend?: AgentBackend, cwd?: string) => {
     const params = new URLSearchParams();
     if (backend) params.set("backend", backend);

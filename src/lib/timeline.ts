@@ -11,6 +11,20 @@ import type {
 } from "./api";
 import { isSubagentTool } from "./subagents.ts";
 
+/** Real token/cost usage for one assistant message — the shape every
+ *  backend normalizes to in the session log (see server/grok-agent.js and
+ *  codex-agent.js `usageFrom`; pi writes it natively).
+ */
+export interface MessageUsage {
+  input: number;
+  output: number;
+  cacheRead?: number;
+  cacheWrite?: number;
+  reasoning?: number;
+  totalTokens: number;
+  cost?: { total?: number };
+}
+
 export interface UserMessageVersion {
   text: string;
   timestamp: number;
@@ -26,6 +40,15 @@ export interface PendingApproval {
   toolName: string;
   detail: string;
   options: { id: string; label: string }[];
+}
+
+/** A compaction as it happened live; the /api/xray re-read adds the cut. */
+export interface LiveCompaction {
+  at: number;
+  reason: string;
+  tokensBefore: number | null;
+  tokensAfter: number | null;
+  summary: string;
 }
 
 export type TimelineItem =
@@ -45,6 +68,9 @@ export type TimelineItem =
       timestamp: number;
       // Set when this block was produced by a subagent rather than the main loop.
       parentToolUseId?: string;
+      // When this is the first item of an assistant message, that message's
+      // real usage (token-batch messages carry usage but produce no text).
+      usage?: MessageUsage;
     }
   | {
       id: string;
@@ -54,6 +80,10 @@ export type TimelineItem =
       timestamp: number;
       provider?: string;
       modelId?: string;
+      // Real per-message token/cost usage straight off the session log / SSE
+      // message. Attached to the message's first text item only, so summing
+      // over items never double-counts.
+      usage?: MessageUsage;
       // Set when this block was produced by a subagent rather than the main loop.
       parentToolUseId?: string;
     }
@@ -73,6 +103,9 @@ export type TimelineItem =
       // Id of the Task tool call that spawned this one, when a subagent made
       // it. Absent for the main loop's own calls.
       parentToolUseId?: string;
+      // When this is the first item of an assistant message, that message's
+      // real usage (thinking-less tool batches produce only tool items).
+      usage?: MessageUsage;
     }
   | {
       id: string;
@@ -80,15 +113,58 @@ export type TimelineItem =
       text: string;
       tone: "info" | "warning" | "error";
       timestamp: number;
+      // Expandable content (e.g. a compaction summary) revealed on click.
+      detail?: string;
       // Set when the notice is about a subagent run, so it renders in that
       // run's panel instead of the main transcript.
       parentToolUseId?: string;
+    }
+  | {
+      id: string;
+      kind: "terminal";
+      // Server-owned terminal tab id (see server/terminal-tabs.js); the item
+      // updates in place as output streams in.
+      tabId: string;
+      title: string;
+      command: string;
+      output: string;
+      status: "running" | "exited";
+      exitCode?: number;
+      timestamp: number;
     };
 
 export function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : {};
+}
+
+/** Real usage off an assistant message (all backends normalize to the same
+ *  shape). Returns undefined when the
+ *  message carries no usable numbers. */
+export function usageOfMessage(
+  message: Record<string, unknown> | undefined,
+): MessageUsage | undefined {
+  const usage = asRecord(message?.usage);
+  const input = Number(usage.input);
+  const output = Number(usage.output);
+  if (!Number.isFinite(input) || !Number.isFinite(output)) return undefined;
+  const cost = asRecord(usage.cost);
+  const costTotal = Number(cost.total);
+  return {
+    input,
+    output,
+    cacheRead: finiteOr(usage.cacheRead),
+    cacheWrite: finiteOr(usage.cacheWrite),
+    reasoning: finiteOr(usage.reasoning),
+    totalTokens: finiteOr(usage.totalTokens) ?? input + output,
+    ...(Number.isFinite(costTotal) ? { cost: { total: costTotal } } : {}),
+  };
+}
+
+function finiteOr(value: unknown): number | undefined {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : undefined;
 }
 
 function firstJsonObject(raw: string): Record<string, unknown> | null {
@@ -121,10 +197,20 @@ function isGenericAgentError(text: string): boolean {
   return /^(grok turn failed:\s*)?internal error$/i.test(text.trim());
 }
 
+/** grok CLI logs this at ERROR for every failed tool; the tool card already
+ *  shows the failure. */
+function isGrokToolOutputLog(line: string): boolean {
+  return /\btool_error:\s*tool_output_error\b/i.test(line);
+}
+
 /** Pull the human sentence out of a provider log or ACP throw. */
 export function readableAgentError(value: unknown): string {
   if (typeof value !== "string") return "";
-  const raw = value.trim();
+  const raw = value
+    .split(/\r?\n/)
+    .filter((line) => !isGrokToolOutputLog(line))
+    .join("\n")
+    .trim();
   if (!raw) return "";
   const payload = firstJsonObject(raw);
   if (payload) {
@@ -152,6 +238,7 @@ function looksLikeProviderApiLog(raw: string): boolean {
   return (
     /^\d{4}-\d{2}-\d{2}T/.test(raw) ||
     /ERROR responses API/i.test(raw) ||
+    /ERROR tool_error:/i.test(raw) ||
     /error_message=/.test(raw) ||
     /body_preview=/.test(raw)
   );
@@ -268,8 +355,13 @@ export class Timeline {
   status: RunStatus = "stopped";
   state: SessionState | null = null;
   cycle = 0;
+  /** Stream ids touched since the last assistant message_end — the current
+   *  message's items, so its real usage anchors on the first one. */
+  private messageStreamIds: string[] = [];
   /** Manual-mode tool calls waiting on the user's approval. */
   pendingApprovals: PendingApproval[] = [];
+  /** Compactions seen live in this tab (X-ray markers). */
+  compactions: LiveCompaction[] = [];
   /**
    * The generated session title, kept outside `state` on purpose. It arrives
    * as its own background event and every later `state` event from the
@@ -371,6 +463,7 @@ export class Timeline {
     text: string,
     tone: "info" | "warning" | "error",
     parentToolUseId?: string,
+    detail?: string,
   ) {
     if (!text) return;
     this.updateItems((current) => {
@@ -386,6 +479,7 @@ export class Timeline {
           tone,
           timestamp: Date.now(),
           ...(parentToolUseId ? { parentToolUseId } : {}),
+          ...(detail ? { detail } : {}),
         },
       ];
     });
@@ -734,6 +828,16 @@ export class Timeline {
           typeof message.model === "string" ? message.model : undefined;
         const parentToolUseId = parentToolUseIdOf(message);
         if (!Array.isArray(message.content)) continue;
+        // The first item this message produces carries its real usage, so the
+        // rework graph sums tokens without double-counting (tool-batch
+        // messages have usage but no text).
+        let usageLeft = usageOfMessage(message);
+        const stampUsage = (item: TimelineItem): TimelineItem => {
+          if (!usageLeft) return item;
+          (item as { usage?: MessageUsage }).usage = usageLeft;
+          usageLeft = undefined;
+          return item;
+        };
         for (
           let contentIndex = 0;
           contentIndex < message.content.length;
@@ -745,33 +849,37 @@ export class Timeline {
             const text =
               typeof content.thinking === "string" ? content.thinking : "";
             if (text)
-              items.push({
-                id: `history-rationale-${messageIndex}-${contentIndex}`,
-                kind: "rationale",
-                text,
-                live: false,
-                timestamp,
-                ...(parentToolUseId ? { parentToolUseId } : {}),
-              });
+              items.push(
+                stampUsage({
+                  id: `history-rationale-${messageIndex}-${contentIndex}`,
+                  kind: "rationale",
+                  text,
+                  live: false,
+                  timestamp,
+                  ...(parentToolUseId ? { parentToolUseId } : {}),
+                }),
+              );
           } else if (type === "text") {
             const text = typeof content.text === "string" ? content.text : "";
             if (text)
-              items.push({
-                id: `history-assistant-${messageIndex}-${contentIndex}`,
-                kind: "assistant",
-                text,
-                live: false,
-                timestamp,
-                provider,
-                modelId,
-                ...(parentToolUseId ? { parentToolUseId } : {}),
-              });
+              items.push(
+                stampUsage({
+                  id: `history-assistant-${messageIndex}-${contentIndex}`,
+                  kind: "assistant",
+                  text,
+                  live: false,
+                  timestamp,
+                  provider,
+                  modelId,
+                  ...(parentToolUseId ? { parentToolUseId } : {}),
+                }),
+              );
           } else if (type === "toolCall") {
             const id = String(
               content.id ?? `history-tool-${messageIndex}-${contentIndex}`,
             );
             const nestedParent = parentToolUseIdOf(content) ?? parentToolUseId;
-            const tool: TimelineItem = {
+            const tool: TimelineItem = stampUsage({
               id,
               kind: "tool",
               name: String(content.name ?? "tool"),
@@ -781,7 +889,7 @@ export class Timeline {
               status: "running",
               startedAt: timestamp,
               ...(nestedParent ? { parentToolUseId: nestedParent } : {}),
-            };
+            });
             tools.set(id, items.length);
             items.push(tool);
           }
@@ -828,6 +936,9 @@ export class Timeline {
     this.items = items;
     this.streams.clear();
     this.cycle = 0;
+    // X-ray markers live in the session file; the /api/xray re-read
+    // repopulates them after this reset.
+    this.compactions = [];
     this.state = this.withSessionName(state);
     this.status = state.isStreaming ? "working" : "ready";
     // History is a finished transcript. A toolCall without a matching
@@ -909,6 +1020,7 @@ export class Timeline {
     final?: string,
     parentToolUseId?: string,
   ) {
+    this.messageStreamIds.push(id);
     const existing = this.streams.get(id);
     if (existing) {
       // A delta after text_end is out-of-order/spurious; once finalText is set
@@ -1202,6 +1314,7 @@ export class Timeline {
         typeof message.model === "string" ? message.model : undefined;
       const parentToolUseId =
         parentToolUseIdOf(event) ?? parentToolUseIdOf(message);
+      const usage = usageOfMessage(message);
       if (finalText) {
         // Deltas may have already rendered this exact text at any content index
         // this cycle; only fall back to message_end when nothing matches.
@@ -1234,6 +1347,26 @@ export class Timeline {
           ),
         );
       }
+      if (usage) {
+        // Anchor the message's real usage on its first item: ids streamed
+        // since the last message_end (deltas), plus the text fallback above.
+        // Per-message, not per-stream: pi emits no streamKey, so a turn's
+        // several messages all share one prefix.
+        const candidates = [...new Set(this.messageStreamIds)];
+        if (finalText && !candidates.includes(`assistant-${streamKey}-0`))
+          candidates.push(`assistant-${streamKey}-0`);
+        this.updateItems((current) => {
+          for (const id of candidates) {
+            const index = current.findIndex((item) => item.id === id);
+            if (index === -1) continue;
+            const item = current[index]!;
+            current[index] = { ...item, usage } as TimelineItem;
+            return current;
+          }
+          return current;
+        });
+      }
+      this.messageStreamIds = [];
       return;
     }
 
@@ -1384,6 +1517,119 @@ export class Timeline {
 
     if (event.type === "state") {
       this.setState(event.state as SessionState);
+      return;
+    }
+
+    if (event.type === "terminal_opened") {
+      const tabId = String(event.tabId ?? "");
+      if (!tabId) return;
+      this.updateItems((current) => [
+        ...current,
+        {
+          id: crypto.randomUUID(),
+          kind: "terminal",
+          tabId,
+          title: String(event.title ?? ""),
+          command: String(event.command ?? ""),
+          output: "",
+          status: "running",
+          timestamp: Date.now(),
+        },
+      ]);
+      return;
+    }
+
+    if (event.type === "terminal_output") {
+      const chunk = typeof event.chunk === "string" ? event.chunk : "";
+      if (!chunk) return;
+      this.updateItems((current) =>
+        current.map((item) =>
+          item.kind === "terminal" && item.tabId === event.tabId
+            ? { ...item, output: (item.output + chunk).slice(-100_000) }
+            : item,
+        ),
+      );
+      return;
+    }
+
+    if (event.type === "terminal_exit") {
+      this.updateItems((current) =>
+        current.map((item) =>
+          item.kind === "terminal" && item.tabId === event.tabId
+            ? {
+                ...item,
+                status: "exited",
+                exitCode:
+                  typeof event.exitCode === "number"
+                    ? event.exitCode
+                    : undefined,
+              }
+            : item,
+        ),
+      );
+      return;
+    }
+
+    if (event.type === "compaction_end") {
+      // pi auto-compacts near the context limit; pi-agent passes the event
+      // through untouched. Surface it so the user is not left wondering why
+      // the model suddenly "forgot" the earlier transcript.
+      const result = asRecord(event.result);
+      const before =
+        typeof result.tokensBefore === "number" ? result.tokensBefore : null;
+      const after =
+        typeof result.estimatedTokensAfter === "number"
+          ? result.estimatedTokensAfter
+          : null;
+      if (!event.aborted) {
+        this.compactions = [
+          ...this.compactions,
+          {
+            at: Date.now(),
+            reason: String(event.reason ?? "manual"),
+            tokensBefore: before,
+            tokensAfter: after,
+            summary: typeof result.summary === "string" ? result.summary : "",
+          },
+        ];
+      }
+      if (event.aborted) {
+        this.appendNotice("Context compaction was aborted.", "warning");
+        return;
+      }
+      if (!result || Object.keys(result).length === 0) {
+        this.appendNotice("Context compacted.", "info");
+        return;
+      }
+      const summary = typeof result.summary === "string" ? result.summary : "";
+      const counts =
+        before && after
+          ? ` (${before.toLocaleString()} → ${after.toLocaleString()})`
+          : "";
+      this.appendNotice(
+        `Conversation compacted${counts}${summary ? ", click to view summary" : ""}`,
+        "info",
+        undefined,
+        summary,
+      );
+      return;
+    }
+
+    if (event.type === "context_guard") {
+      // The server re-asserted standing instructions the compaction summary
+      // dropped. Show what was restored so the fix is not silent either.
+      const dropped = Array.isArray(event.dropped)
+        ? event.dropped.filter(
+            (text): text is string =>
+              typeof text === "string" && text.trim().length > 0,
+          )
+        : [];
+      if (dropped.length > 0) {
+        this.appendNotice(
+          `Context guard re-asserted ${dropped.length} standing instruction${dropped.length === 1 ? "" : "s"} the compaction summary dropped:\n- ${dropped.join("\n- ")}`,
+          "warning",
+        );
+      }
       return;
     }
 

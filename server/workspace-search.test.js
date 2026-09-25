@@ -96,3 +96,31 @@ describe("against a real repository", () => {
     }
   });
 });
+
+describe("scoping a search to a path", () => {
+  it("narrows the grep itself, not its output", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "pi-web-scope-"));
+    try {
+      await run("git", ["init", "-q"], { cwd: dir });
+      await writeFile(join(dir, "lib.ts"), "export function widget() {\n  return 1\n}\n");
+      await writeFile(join(dir, "use.ts"), "import { widget } from './lib'\nwidget()\n");
+      await run("git", ["add", "."], { cwd: dir });
+
+      const scoped = await grepWorkspace(dir, "widget", { pathspec: "use.ts" });
+      assert.equal(scoped.ok, true);
+      assert.ok(scoped.matches.length > 0);
+      assert.ok(scoped.matches.every((match) => match.relativePath === "use.ts"));
+
+      // A bare fragment works too: callers should not need the full path.
+      const fragment = await grepWorkspace(dir, "widget", { pathspec: "lib" });
+      assert.ok(fragment.matches.every((match) => match.relativePath === "lib.ts"));
+
+      const rejected = await grepWorkspace(dir, "widget", {
+        pathspec: "x".repeat(300),
+      });
+      assert.equal(rejected.ok, false);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});

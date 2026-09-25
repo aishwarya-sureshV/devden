@@ -66,11 +66,13 @@ export function TurnCompleteBar({
         aria-expanded={open}
         disabled={Boolean(starting) || reviewers.length === 0}
         onClick={() => setOpen((value) => !value)}
+        title={`${tools} · ${files}`}
       >
         <strong>Review</strong>
-        <span className="turn-complete__meta">
-          {tools} · {files}
-        </span>
+        {/* Files only: the tool count made the pill wide enough to squeeze
+            the Changes pill down to "Chang" in a split layout. It stays on
+            the title, where it costs no width. */}
+        <span className="turn-complete__meta">{files}</span>
         <IconChevronDown size={11} />
       </button>
       {open && (
@@ -99,8 +101,8 @@ export function TurnCompleteBar({
             );
           })}
           <p className="turn-complete__hint">
-            Sends this turn’s transcript to another agent. The reviewer does
-            not write to the worktree.
+            Sends this turn’s transcript to another agent. The reviewer does not
+            write to the worktree.
           </p>
         </div>
       )}

@@ -258,7 +258,8 @@ test("formatResetAt drops the weekday for a same-day reset", () => {
   const later = new Date(2026, 0, 12, 9, 0).getTime();
   assert.equal(
     formatResetAt(later, at),
-    `${new Date(later).toLocaleDateString(undefined, { weekday: "short" })} 9:00 AM`,
+    // Mirror the locale-aware time (en-US gives "9:00 AM", en-IN "9:00 am").
+    `${new Date(later).toLocaleDateString(undefined, { weekday: "short" })} ${new Date(later).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })}`,
   );
   assert.equal(formatResetAt(Number.NaN), "");
 });

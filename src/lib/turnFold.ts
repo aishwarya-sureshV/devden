@@ -38,7 +38,9 @@ export function turnSummaryItems(turn: TimelineItem[]): TimelineItem[] {
     if (item.kind === "tool" || item.kind === "rationale") lastWork = index;
   });
   return turn.filter(
-    (item, index) => item.kind === "assistant" && index > lastWork,
+    (item, index) =>
+      index > lastWork &&
+      (item.kind === "assistant" || item.kind === "notice"),
   );
 }
 

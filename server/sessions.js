@@ -15,6 +15,13 @@ import { homedir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { AGENT_BACKENDS } from "./agent-registry.js";
 import { isSubagentToolName } from "./agent-subagent.js";
+import {
+  deadZoneStats,
+  entryTimestamp,
+  findDroppedInstructions,
+  liveFailures,
+  parseSessionCompactions,
+} from "./context-guard.js";
 
 export { isSubagentToolName };
 
@@ -382,6 +389,52 @@ export async function readSessionMessages(path) {
   }
 }
 
+/**
+ * Context X-ray: what compaction ate. Compaction records (with cut
+ * timestamps resolved from the session file), the dead zone the latest
+ * compaction produced, standing instructions its summary dropped, and the
+ * failed tool calls still live in the model's context. Only pi session
+ * files record compaction entries; other backends report none.
+ */
+export async function readSessionXray(path) {
+  const empty = { ok: true, compactions: [] };
+  try {
+    const { path: safePath, backend } = await resolveSessionPath(path);
+    if (backend !== "pi") return empty;
+    const contents = await readFile(safePath, "utf8");
+    const { compactions, entries } = parseSessionCompactions(contents);
+    if (compactions.length === 0) return empty;
+    const latest = compactions[compactions.length - 1];
+    const cut = latest.cutTimestamp ?? 0;
+    const before = entries.filter(
+      (entry) => entry?.type === "message" && entryTimestamp(entry) < cut,
+    );
+    const after = entries.filter(
+      (entry) => entry?.type === "message" && entryTimestamp(entry) >= cut,
+    );
+    const dropped = findDroppedInstructions({
+      summary: latest.summary,
+      liveText: after.map((entry) => messageText(entry?.message)).join("\n"),
+      userMessages: before
+        .map((entry) => entry?.message)
+        .filter((message) => message?.role === "user"),
+    });
+    return {
+      ok: true,
+      compactions,
+      deadZone: deadZoneStats(entries, latest.cutTimestamp),
+      dropped: dropped.map((instruction) => instruction.text),
+      liveFailures: liveFailures(entries, latest.cutTimestamp),
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      error: String(error?.message ?? error),
+      compactions: [],
+    };
+  }
+}
+
 // chat_history.jsonl is grok's own full request log -- item-list format
 // (type: system/user/reasoning/assistant/tool_result), not role+content
 // blocks. Real user turns are wrapped in <user_query> tags and carry a
@@ -531,7 +584,9 @@ export function childMessagesFromGrokUpdates(contents, parentToolUseId) {
     const kind = update.sessionUpdate;
     if (kind === "agent_message_chunk") {
       const delta =
-        update.content?.type === "text" ? String(update.content.text ?? "") : "";
+        update.content?.type === "text"
+          ? String(update.content.text ?? "")
+          : "";
       if (delta) text += delta;
     } else if (kind === "tool_call") {
       flushText();
@@ -554,7 +609,11 @@ export function childMessagesFromGrokUpdates(contents, parentToolUseId) {
       if (update.status === "completed" || update.status === "failed")
         endTool(id, update, update.status === "failed");
     } else if (kind === "tool_call_update") {
-      if (update.rawInput && update.toolCallId && !toolNames.has(update.toolCallId)) {
+      if (
+        update.rawInput &&
+        update.toolCallId &&
+        !toolNames.has(update.toolCallId)
+      ) {
         flushText();
         const id = String(update.toolCallId);
         const name = String(update.title ?? id);
@@ -618,12 +677,19 @@ function rawOutputText(value) {
   }
 }
 
-export function loadGrokChildMessages(parentChatPath, childId, parentToolUseId) {
+export function loadGrokChildMessages(
+  parentChatPath,
+  childId,
+  parentToolUseId,
+) {
   const parentDir = dirname(parentChatPath);
   const cwdDir = dirname(parentDir);
   const messages = [];
   try {
-    const updates = readFileSync(join(cwdDir, childId, "updates.jsonl"), "utf8");
+    const updates = readFileSync(
+      join(cwdDir, childId, "updates.jsonl"),
+      "utf8",
+    );
     messages.push(...childMessagesFromGrokUpdates(updates, parentToolUseId));
   } catch {
     /* child session not on disk (still running, or already pruned) */
@@ -631,7 +697,10 @@ export function loadGrokChildMessages(parentChatPath, childId, parentToolUseId) 
   let findings = "";
   try {
     const parsed = JSON.parse(
-      readFileSync(join(parentDir, "subagents", childId, "output.json"), "utf8"),
+      readFileSync(
+        join(parentDir, "subagents", childId, "output.json"),
+        "utf8",
+      ),
     );
     findings =
       typeof parsed?.output === "string" && parsed.output.trim()
@@ -643,7 +712,8 @@ export function loadGrokChildMessages(parentChatPath, childId, parentToolUseId) 
   if (findings) {
     const already = messages.some(
       (message) =>
-        message.role === "assistant" && grokMessageText(message).includes(findings),
+        message.role === "assistant" &&
+        grokMessageText(message).includes(findings),
     );
     if (!already) {
       messages.push({
@@ -1109,7 +1179,10 @@ export async function readResumeSession(path) {
             lastModelProvider = entry.provider;
           models.add(entry.modelId);
         }
-        if (typeof entry.thinkingLevel === "string" && entry.thinkingLevel.trim())
+        if (
+          typeof entry.thinkingLevel === "string" &&
+          entry.thinkingLevel.trim()
+        )
           lastEffort = entry.thinkingLevel.trim();
       } else if (entry.type === "message") {
         messageCount++;

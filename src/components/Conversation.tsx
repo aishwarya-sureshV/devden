@@ -31,7 +31,9 @@ import {
   useStore,
   useTimeline,
   BACKEND_DEFAULT_EFFORT,
+  type Attachment,
   type ConversationTab,
+  type TaskSeed,
 } from "../lib/store";
 import { LIVE_TEXT_STALL_MS, shouldShowThinkingRow } from "../lib/thinkingRow";
 import { DeployButton } from "./DeployButton";
@@ -151,17 +153,16 @@ import {
   IconChat,
   IconChevronDown,
   IconCode,
-  IconCommand,
   IconCube,
   IconDots,
   IconDownload,
   IconFile,
   IconFork,
   IconInfo,
+  IconPencil,
   IconHistory,
   IconColumns,
   IconList,
-  IconPencil,
   IconPlus,
   IconRefresh,
   IconStop,
@@ -177,14 +178,6 @@ const apiAgentMode = (mode: AgentMode): "standard" | "plan" | "manual" =>
   mode === "plan" ? "plan" : mode === "manual" ? "manual" : "standard";
 const USAGE_IDLE_REFRESH_INTERVAL_MS = 5 * 60_000 + 30_000;
 const USAGE_RUNNING_REFRESH_INTERVAL_MS = 30_000;
-type Attachment = {
-  id: string;
-  name: string;
-  mimeType: string;
-  size: number;
-  path: string;
-  imageData?: string;
-};
 
 function isUsageShortcut(value: string): boolean {
   return /^\/(?:grok-cli-usage|grok-usage)$/i.test(value.trim());
@@ -262,7 +255,7 @@ const LOCAL_COMMANDS: SlashCommand[] = [
   },
 ];
 
-function fileAsBase64(file: File): Promise<string> {
+export function fileAsBase64(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onerror = () =>
@@ -310,6 +303,8 @@ export function Conversation({
     setPreferredModel,
     setConversationLabel,
     workspaceReveal,
+    taskSeeds,
+    clearTaskSeed,
     openForkedConversation,
     openConversation,
     closeConversation,
@@ -367,8 +362,12 @@ export function Conversation({
   // history before answering. Without a visible in-progress state the UI looked
   // idle, so /compact got sent again and again.
   const [compacting, setCompacting] = useState(false);
-  const [accessMode, setAccessMode] = useState<AccessMode>("workspace-write");
-  const [agentMode, setAgentMode] = useState<AgentMode>("standard");
+  const [accessMode, setAccessMode] = useState<AccessMode>(
+    tab.accessMode ?? "workspace-write",
+  );
+  const [agentMode, setAgentMode] = useState<AgentMode>(
+    tab.agentMode ?? "standard",
+  );
   const [route, setRoute] = useState<SessionRoute>(emptyRoute);
   const [routePicking, setRoutePicking] = useState(true);
   const [openRoleId, setOpenRoleId] = useState<string | null>(null);
@@ -413,6 +412,8 @@ export function Conversation({
     "chat" | "trajectory" | "backend"
   >("chat");
   const [sessionDetailsOpen, setSessionDetailsOpen] = useState(false);
+  const [renaming, setRenaming] = useState(false);
+  const [renameDraft, setRenameDraft] = useState("");
   const [overflowOpen, setOverflowOpen] = useState(false);
   const overflowRef = useRef<HTMLDivElement | null>(null);
   const [workspaceOpen, setWorkspaceOpen] = useState(false);
@@ -439,7 +440,6 @@ export function Conversation({
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const dragCounterRef = useRef(0);
-  const addDetailsRef = useRef<HTMLDetailsElement | null>(null);
   const modeMenuRef = useRef<HTMLDivElement | null>(null);
   const usageRequestRef = useRef<Promise<boolean> | null>(null);
   const usageRefreshPendingRef = useRef(false);
@@ -870,6 +870,7 @@ export function Conversation({
     onAnswer: (_text: string): void => {},
     onOpenSubagent: (_id: string): void => {},
     onBackgroundSubagent: (_id: string): void => {},
+    onStopTerminal: (_tabId: string): void => {},
   });
   rowHandlersRef.current = {
     onFork: (item) => void forkOutput(item),
@@ -920,6 +921,9 @@ export function Conversation({
         current.filter((openId) => openId !== id),
       );
     },
+    onStopTerminal: (tabId) => {
+      void api.stopTerminal(tab.key, tabId);
+    },
   };
   const stableRowHandlers = useMemo(
     () => ({
@@ -943,6 +947,8 @@ export function Conversation({
         rowHandlersRef.current.onOpenSubagent(id),
       onBackgroundSubagent: (id: string): void =>
         rowHandlersRef.current.onBackgroundSubagent(id),
+      onStopTerminal: (tabId: string): void =>
+        rowHandlersRef.current.onStopTerminal(tabId),
     }),
     [],
   );
@@ -1006,6 +1012,7 @@ export function Conversation({
       subagentChildren={subagentChildren}
       onOpenSubagent={stableRowHandlers.onOpenSubagent}
       onBackgroundSubagent={stableRowHandlers.onBackgroundSubagent}
+      onStopTerminal={stableRowHandlers.onStopTerminal}
       forking={forkingId === item.id}
       canFork={caps.fork}
       canTruncate={caps.truncate}
@@ -1717,10 +1724,23 @@ export function Conversation({
     setConversationSessionPath(tab.key, result.state.sessionFile);
   };
 
-  const send = async (raw: string) => {
+  // A tab opened from a board card carries its first message with it. Fire it
+  // once, after the tab is mounted -- send() configures and starts the agent
+  // on its own, so there is nothing to wait for.
+  const seedFired = useRef(false);
+  useEffect(() => {
+    const seed: TaskSeed | undefined = taskSeeds[tab.key];
+    if (seedFired.current || seed === undefined) return;
+    seedFired.current = true;
+    clearTaskSeed(tab.key);
+    void send(seed.prompt, seed.attachments);
+  }, [taskSeeds, tab.key, clearTaskSeed]);
+
+  const send = async (raw: string, seedAttachments?: Attachment[]) => {
     if (awaitingRoute) return;
     const message = raw.trim();
-    if (!message && attachments.length === 0) return;
+    if (!message && attachments.length === 0 && !seedAttachments?.length)
+      return;
     // Enter in the textarea and the form submit can fire in the same tick,
     // and a key-repeat Enter re-sends the same draft. Either path used to
     // POST /prompt then immediately /queue the same text, so the first
@@ -1786,17 +1806,21 @@ export function Conversation({
         // No transcript notice here: the compacting strip above the composer is
         // the single live status, and a second message in the transcript read
         // as a duplicate with the Changes panel sandwiched between them.
-        const result = await api.compact(tab.key);
+        const result = await api.compact(tab.key, undefined, {
+          cwd: tab.cwd,
+          sessionPath: tab.sessionPath ?? state?.sessionFile ?? undefined,
+          model: state?.model ?? undefined,
+          thinkingLevel: state?.thinkingLevel ?? undefined,
+        });
         setCompacting(false);
         if (result.ok) {
           // Compact rewrites the backend log the model will see. Hydrating
           // with that rewritten history is what made the original turns
           // disappear from the transcript.
           if (result.state) timeline.setState(result.state);
-          timeline.appendNotice(
-            "Conversation compacted. The model will use a summary.",
-            "info",
-          );
+          // The backend's compaction event appends the single transcript
+          // notice (with counts + an expandable summary) — adding one here
+          // read as a duplicate pill.
         } else
           timeline.appendNotice(
             result.error ?? "Could not compact the conversation",
@@ -1856,9 +1880,7 @@ export function Conversation({
           (item) => item.kind === "tool",
         ).length;
         // Prefer the backend's own accounting; fall back to the estimate.
-        const usage = context.exact
-          ? context
-          : estimateContext(timeline.items, state ?? null);
+        const usage = context;
         const qualifier = usage.exact ? "" : "~";
         const breakdown = (usage.categories ?? [])
           .slice(0, 5)
@@ -1923,14 +1945,22 @@ export function Conversation({
           (item): item is Extract<TimelineItem, { kind: "assistant" }> =>
             item.kind === "assistant" && !item.live,
         );
-        const target = assistants.at(-Math.min(position, assistants.length));
-        if (!target) {
+        if (assistants.length === 0) {
           timeline.appendNotice(
             "Nothing to fork yet — send a message first.",
             "warning",
           );
           return;
         }
+        if (position > assistants.length) {
+          timeline.appendNotice(
+            `There are only ${assistants.length} ${assistants.length === 1 ? "reply" : "replies"} to fork.`,
+            "warning",
+          );
+          return;
+        }
+        const target = assistants.at(-position);
+        if (!target) return;
         await forkOutput(target);
         return;
       }
@@ -2007,7 +2037,7 @@ export function Conversation({
         }
         return;
       }
-      const pickedAttachments = attachments;
+      const pickedAttachments = seedAttachments ?? attachments;
       // An image attachment is already inline in the `images` payload below.
       // Listing its path under "inspect the attached file(s)" made agents Read
       // it a second time, so the same picture entered context twice and was
@@ -2161,12 +2191,6 @@ export function Conversation({
     const closeFloatingMenus = (event: PointerEvent) => {
       const target = event.target;
       if (!(target instanceof Element)) return;
-      if (
-        addDetailsRef.current?.open &&
-        !addDetailsRef.current.contains(target)
-      ) {
-        addDetailsRef.current.open = false;
-      }
       if (commandMenuOpen && !target.closest(".composer"))
         setCommandMenuOpen(false);
       if (
@@ -2439,43 +2463,95 @@ export function Conversation({
     void api.abort(tab.key);
   }, [tab.key]);
 
-  const forkOutput = async (
-    item: Extract<TimelineItem, { kind: "assistant" }>,
-  ) => {
-    if (streaming || forkingId) return;
-    setForkingId(item.id);
-    const result = await api.fork(tab.key, item.timestamp);
-    setForkingId(null);
-    if (!result.ok || !result.state || !Array.isArray(result.messages)) {
+  /**
+   * Move this session into its own checkout. Snapshots, the Changes panel and
+   * every git op already key off the tab's cwd, so repointing it is the whole
+   * of the isolation -- no backend knows or needs to know.
+   */
+  const isolateSession = async () => {
+    const made = await api.createWorktree(tab.key, tab.cwd, tab.label);
+    if (!made.ok || !made.data) {
       timeline.appendNotice(
-        result.error ?? "Could not fork this response",
-        "unsupported" in result && result.unsupported ? "info" : "error",
+        made.error ?? "Could not create a worktree here.",
+        "error",
       );
       return;
     }
-    // Pi restores the live session and hands back the branch as a separate
-    // session file (state = the branched session): open the branch as its own
-    // side chat instead of replacing this conversation. The backend also
-    // creates a git worktree for the branch when the workspace is a git repo,
-    // so the fork never annotates the original working copy.
-    if (result.restored && result.state.sessionFile) {
+    setConversationWorkspace(tab.key, made.data.path);
+    timeline.appendNotice(
+      `Now working in an isolated checkout on ${made.data.branch}.${
+        made.data.seeded.length
+          ? ` Carried over: ${made.data.seeded.join(", ")}.`
+          : ""
+      }`,
+      "info",
+    );
+  };
+
+  const forkOutput = async (
+    item: Extract<TimelineItem, { kind: "assistant" }>,
+  ) => {
+    if (forkingId) return;
+    if (item.live || timeline.state?.isStreaming) {
+      timeline.appendNotice(
+        "Wait for this reply to finish before forking.",
+        "info",
+      );
+      return;
+    }
+    setForkingId(item.id);
+    try {
+      const result = await api.fork(tab.key, item.timestamp, {
+        cwd: tab.cwd,
+        sessionPath: state?.sessionFile ?? tab.sessionPath,
+        backend: tab.backend,
+        promptIndex: promptIndexAtAssistant(timeline.items, item.id),
+        userText: userTextBeforeAssistant(timeline.items, item.id),
+        name: `${tab.label}-fork`,
+        model: state?.model,
+        thinkingLevel: state?.thinkingLevel,
+        accessMode,
+        agentMode,
+      });
+      if (!result.ok || !result.state?.sessionFile) {
+        timeline.appendNotice(
+          result.error ?? "Could not fork this response",
+          "unsupported" in result && result.unsupported ? "info" : "error",
+        );
+        return;
+      }
+      const messages = Array.isArray(result.messages) ? result.messages : [];
+      // Every backend returns the branch as its own session file and leaves
+      // this conversation where it was. Open that file as a side chat.
+      const forkCwd = result.forkCwd ?? tab.cwd;
       const forkKey = openForkedConversation({
-        cwd: result.forkCwd ?? tab.cwd,
+        cwd: forkCwd,
         sessionPath: result.state.sessionFile,
-        messages: result.messages,
+        messages,
         state: result.state,
         label: `${tab.label} · fork`,
         backend: tab.backend,
-        forkResume: result.forkResume === true,
+        accessMode,
+        agentMode,
       });
       refreshSessions();
       onSessionSplit?.(forkKey);
-      timeline.appendNotice("Forked into a side conversation.", "info");
+      const branch = result.worktree?.branch;
+      timeline.appendNotice(
+        branch
+          ? `Forked into a side conversation on ${branch}.`
+          : "Forked into a side conversation.",
+        "info",
+      );
       return;
+    } catch (error) {
+      timeline.appendNotice(
+        error instanceof Error ? error.message : "Could not fork this response",
+        "error",
+      );
+    } finally {
+      setForkingId(null);
     }
-    timeline.hydrate(result.messages, result.state);
-    setConversationSessionPath(tab.key, result.state.sessionFile);
-    refreshSessions();
   };
 
   const tight = (split && density !== "full") || narrow;
@@ -2489,6 +2565,7 @@ export function Conversation({
           backend={tab.backend}
           disabled={configuring}
           onPick={(path) => configureSession(accessMode, agentMode, path)}
+          onIsolate={isolateSession}
           onViewWorkspace={openWorkspace}
         />
         {!split && (
@@ -2576,6 +2653,13 @@ export function Conversation({
                 current.trim() ? `${current}\n\n${prompt}` : prompt,
               )
             }
+            onLeaveWorktree={(mainPath) => {
+              setConversationWorkspace(tab.key, mainPath);
+              timeline.appendNotice(
+                "Worktree deleted — this session is back on the main checkout.",
+                "info",
+              );
+            }}
           />
           {lastAssistantId && (
             <TurnCompleteBar
@@ -2599,6 +2683,7 @@ export function Conversation({
           disabled={configuring}
           hideTrigger
           onPick={(path) => configureSession(accessMode, agentMode, path)}
+          onIsolate={isolateSession}
           onViewWorkspace={openWorkspace}
         />
       )}
@@ -2927,46 +3012,15 @@ export function Conversation({
         </div>
         <div className="composer__row">
           <div className="composer__tools">
-            <details ref={addDetailsRef} className="add-disclosure">
-              <summary className="composer__add" aria-label="Add">
-                <IconPlus />
-              </summary>
-              <div className="native-add-menu">
-                <button
-                  type="button"
-                  onClick={() => {
-                    if (addDetailsRef.current)
-                      addDetailsRef.current.open = false;
-                    fileInputRef.current?.click();
-                  }}
-                >
-                  <span className="native-add-menu__icon">
-                    <IconUpload />
-                  </span>
-                  <span>Upload file</span>
-                  <em>20 MB max</em>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    if (addDetailsRef.current)
-                      addDetailsRef.current.open = false;
-                    loadCommands();
-                    setCommandMenuOpen(true);
-                    setSlashIndex(0);
-                    textareaRef.current?.focus();
-                  }}
-                >
-                  <span className="native-add-menu__icon">
-                    <IconCommand />
-                  </span>
-                  <span>Slash commands</span>
-                  <em>
-                    {commands.length} from {backendLabel(tab.backend)}
-                  </em>
-                </button>
-              </div>
-            </details>
+            <button
+              type="button"
+              className="composer__add"
+              aria-label="Attach files"
+              title="Attach files (20 MB max)"
+              onClick={() => fileInputRef.current?.click()}
+            >
+              <IconPlus />
+            </button>
             {hasItems && (
               <div className="composer__mode" ref={modeMenuRef}>
                 <button
@@ -3268,6 +3322,7 @@ export function Conversation({
   const workspaceExplorer = workspaceMounted ? (
     <WorkspaceExplorer
       key={tab.cwd}
+      sessionKey={tab.key}
       root={tab.cwd}
       visible={workspaceOpen}
       placement={workspacePlacement}
@@ -3301,6 +3356,7 @@ export function Conversation({
         disabled={configuring}
         variant="chip"
         onPick={(path) => configureSession(accessMode, agentMode, path)}
+        onIsolate={isolateSession}
         onViewWorkspace={openWorkspace}
       />
     ) : null;
@@ -3513,15 +3569,82 @@ export function Conversation({
     />
   );
 
+  // Click-to-rename: the title itself becomes the editor in place — no
+  // separate dialog. Enter or blur saves; Escape cancels.
+  const startRename = () => {
+    const fallback = firstUserItem?.kind === "user" ? firstUserItem.text : "";
+    setRenameDraft(state?.sessionName?.trim() || fallback.slice(0, 200));
+    setRenaming(true);
+  };
+  const finishRename = () => {
+    setRenaming(false);
+    const title = renameDraft.trim();
+    if (!title || title === displayTitle) return;
+    // The session_title_set event updates the timeline, the tab label and
+    // the sidebar; the API call just persists it.
+    void api.rename(tab.key, title).then((result) => {
+      if (!result.ok && result.error)
+        window.alert(`Rename failed: ${result.error}`);
+    });
+  };
+  const renameInput = (
+    <input
+      className="conversation-header__title-input"
+      value={renameDraft}
+      onChange={(event) => setRenameDraft(event.target.value)}
+      onBlur={finishRename}
+      onKeyDown={(event) => {
+        if (event.key === "Escape") setRenaming(false);
+        // Blur is the single save path, so Enter cannot double-commit.
+        if (event.key === "Enter") {
+          event.preventDefault();
+          event.currentTarget.blur();
+        }
+      }}
+      autoFocus
+      onFocus={(event) => event.target.select()}
+      aria-label="Session title"
+    />
+  );
+
   return (
     <>
       <div className={`conversation-header${split ? ` is-${density}` : ""}`}>
         {tight && (
           <div className="conversation-header__identity">
             {statusDot}
-            <span className="conversation-header__agent">
-              {backendLabel(tab.backend)}
-            </span>
+            {split ? (
+              renaming ? (
+                renameInput
+              ) : (
+                <button
+                  type="button"
+                  className="conversation-header__agent"
+                  aria-label="Rename session"
+                  title="Rename session"
+                  onClick={startRename}
+                >
+                  <span
+                    className="conversation-header__agent-logo"
+                    style={{ color: backendMark(tab.backend).color }}
+                    aria-hidden
+                  >
+                    <BackendLogo backend={tab.backend} size={13} />
+                  </span>
+                  <span className="conversation-header__agent-title">
+                    {displayTitle}
+                  </span>
+                </button>
+              )
+            ) : (
+              <span className="conversation-header__agent">
+                {backendLabel(tab.backend)}
+              </span>
+            )}
+            <span className="conversation-header__spacer" aria-hidden />
+            {providerUsage && showsUsageSummary(providerUsage) && (
+              <UsageSummary usage={providerUsage} />
+            )}
             {density === "dense" && folderChip}
             {overflowMenu}
           </div>
@@ -3540,12 +3663,19 @@ export function Conversation({
           </div>
           {!split && (
             <div className="conversation-header__workspace">
-              <span
-                className="conversation-header__session-title"
-                title={displayTitle}
-              >
-                {displayTitle}
-              </span>
+              {renaming ? (
+                renameInput
+              ) : (
+                <button
+                  type="button"
+                  className="conversation-header__session-title"
+                  aria-label="Rename session"
+                  title="Rename session"
+                  onClick={startRename}
+                >
+                  {displayTitle}
+                </button>
+              )}
             </div>
           )}
           <div className="conversation-header__tabs-actions">
@@ -3904,31 +4034,6 @@ function ThinkingRow({
   );
 }
 
-/** What the transcript shows in place of the model's babysitting churn: one
- *  steady row for as long as the run is in flight. `attention` replaces it
- *  when the runner reports the child is blocked on a reply — otherwise a
- *  stalled run is indistinguishable from a slow one. */
-function SubagentWaitRow({ runs }: { runs: SubagentRun[] }) {
-  const running = runs.filter((run) => run.status === "running");
-  if (running.length === 0) return null;
-  const blocked = running.find((run) => run.attention);
-  const label = blocked?.attention
-    ? `Subagent needs attention — ${blocked.attention}`
-    : running.length > 1
-      ? `${running.length} background subagents are running — waiting for them to complete`
-      : "Background subagent is running — waiting for it to complete";
-  return (
-    <div
-      className={`thinking${blocked ? " thinking--attention" : ""}`}
-      aria-label={label}
-    >
-      <span className="thinking__spinner" />
-      <span>{label}</span>
-      {blocked ? null : <span className="thinking__dots" aria-hidden="true" />}
-    </div>
-  );
-}
-
 function ContextFill({ context }: { context: ContextUsage }) {
   const percent = context.percent ?? 0;
   const nearLimit = percent >= 80;
@@ -3956,6 +4061,31 @@ function ContextFill({ context }: { context: ContextUsage }) {
       title={title}
     >
       <span style={{ width: `${Math.min(100, percent)}%` }} />
+    </div>
+  );
+}
+
+/** What the transcript shows in place of the model's babysitting churn: one
+ *  steady row for as long as the run is in flight. `attention` replaces it
+ *  when the runner reports the child is blocked on a reply — otherwise a
+ *  stalled run is indistinguishable from a slow one. */
+function SubagentWaitRow({ runs }: { runs: SubagentRun[] }) {
+  const running = runs.filter((run) => run.status === "running");
+  if (running.length === 0) return null;
+  const blocked = running.find((run) => run.attention);
+  const label = blocked?.attention
+    ? `Subagent needs attention — ${blocked.attention}`
+    : running.length > 1
+      ? `${running.length} background subagents are running — waiting for them to complete`
+      : "Background subagent is running — waiting for it to complete";
+  return (
+    <div
+      className={`thinking${blocked ? " thinking--attention" : ""}`}
+      aria-label={label}
+    >
+      <span className="thinking__spinner" />
+      <span>{label}</span>
+      {blocked ? null : <span className="thinking__dots" aria-hidden="true" />}
     </div>
   );
 }
@@ -4058,6 +4188,33 @@ function RewindFilesButton({
   );
 }
 
+/** Notice with expandable content (compaction summary) — one compact line,
+ *  click to reveal what was compacted away. */
+function CompactedNotice({
+  text,
+  tone,
+  detail,
+}: {
+  text: string;
+  tone: "info" | "warning" | "error";
+  detail: string;
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className={`notice notice--${tone}`}>
+      <button
+        type="button"
+        className="notice__summary"
+        aria-expanded={open}
+        onClick={() => setOpen((current) => !current)}
+      >
+        {text}
+      </button>
+      {open && <pre className="notice__detail">{detail}</pre>}
+    </div>
+  );
+}
+
 const TimelineRow = memo(function TimelineRow({
   item,
   onOpenFile,
@@ -4077,6 +4234,7 @@ const TimelineRow = memo(function TimelineRow({
   subagentChildren,
   onOpenSubagent,
   onBackgroundSubagent,
+  onStopTerminal,
 }: {
   item: TimelineItem;
   onOpenFile: (view: ToolFileView) => void;
@@ -4103,6 +4261,8 @@ const TimelineRow = memo(function TimelineRow({
   subagentChildren?: Map<string, Extract<TimelineItem, { kind: "tool" }>[]>;
   onOpenSubagent?: (id: string) => void;
   onBackgroundSubagent?: (id: string) => void;
+  /** Stop a running server-owned terminal tab (its card's Stop button). */
+  onStopTerminal?: (tabId: string) => void;
 }) {
   if (item.kind === "tool" && isSubagentTool(item.name))
     return (
@@ -4124,7 +4284,41 @@ const TimelineRow = memo(function TimelineRow({
       />
     );
   if (item.kind === "notice")
-    return <div className={`notice notice--${item.tone}`}>{item.text}</div>;
+    return item.detail ? (
+      <CompactedNotice text={item.text} tone={item.tone} detail={item.detail} />
+    ) : (
+      <div className={`notice notice--${item.tone}`}>{item.text}</div>
+    );
+  if (item.kind === "terminal")
+    return (
+      <div className="terminal-card">
+        <div className="terminal-card__header">
+          <span
+            className={`terminal-card__dot${
+              item.status === "running" ? " is-running" : ""
+            }`}
+          />
+          <span className="terminal-card__title" title={item.command}>
+            {item.title}
+          </span>
+          <span className="terminal-card__status">
+            {item.status === "exited"
+              ? `exit ${item.exitCode ?? "?"}`
+              : "running"}
+          </span>
+          {item.status === "running" && onStopTerminal && (
+            <button
+              type="button"
+              className="terminal-card__stop"
+              onClick={() => onStopTerminal(item.tabId)}
+            >
+              Stop
+            </button>
+          )}
+        </div>
+        <pre className="terminal-card__output">{item.output}</pre>
+      </div>
+    );
   if (item.kind === "user") {
     const versions = item.versions;
     const versionIndex = item.versionIndex ?? 0;
@@ -4230,7 +4424,12 @@ const TimelineRow = memo(function TimelineRow({
           </div>
         )}
       {item.kind === "assistant" && !item.live && showActions && (
-        <div className="response-actions" aria-label="Response actions">
+        <div
+          className="response-actions"
+          aria-label="Response actions"
+          onMouseDown={(event) => event.stopPropagation()}
+          onClick={(event) => event.stopPropagation()}
+        >
           <CopyButton
             text={item.text.replace(/\s*\[DONE:\d+\]\s*/gi, " ")}
             label="Copy response"
@@ -4294,6 +4493,45 @@ function getResponseActionIds(
     if (response?.kind === "assistant") ids.add(response.id);
   });
   return ids;
+}
+
+/** Harness rows the journal never counts as a user turn. */
+function isCountedUserTurn(
+  item: Extract<TimelineItem, { kind: "user" }>,
+): boolean {
+  const text = item.text.trim();
+  if (!text) return false;
+  return (
+    !text.startsWith("<user_info>") &&
+    !text.startsWith("<system-reminder>") &&
+    !text.startsWith("<session_context>")
+  );
+}
+
+/** 0-based user-turn index for the assistant reply being forked. */
+function promptIndexAtAssistant(
+  items: TimelineItem[],
+  assistantId: string,
+): number {
+  let users = 0;
+  for (const item of items) {
+    if (item.kind === "user" && isCountedUserTurn(item)) users += 1;
+    if (item.id === assistantId) return Math.max(0, users - 1);
+  }
+  return Math.max(0, users - 1);
+}
+
+function userTextBeforeAssistant(
+  items: TimelineItem[],
+  assistantId: string,
+): string {
+  let last = "";
+  for (const item of items) {
+    if (item.kind === "user" && isCountedUserTurn(item))
+      last = item.text.trim();
+    if (item.id === assistantId) return last;
+  }
+  return last;
 }
 
 function capText(text: string, limit = 80_000): string {

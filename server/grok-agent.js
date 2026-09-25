@@ -31,6 +31,7 @@
  * silently queuing or corrupting state.
  */
 import { spawn } from "node:child_process";
+import { readFile } from "node:fs/promises";
 import {
   closeSync,
   existsSync,
@@ -70,6 +71,13 @@ import {
   parseSubagentId,
   stripTrailingCompactTurn,
 } from "./sessions.js";
+import {
+  cwdFromGrokSession,
+  promptIndexFromTimestamp,
+  resolvePromptIndex,
+  seedGrokForkJournals,
+  sliceMessagesThroughPrompt,
+} from "./grok-fork.js";
 
 export { isSubagentToolName } from "./agent-subagent.js";
 export { parseSubagentId } from "./sessions.js";
@@ -312,6 +320,18 @@ function toolResultText(content) {
 /** True when the last real block is a tool call. Grok journals
  *  `turn_completed` at the end of a generation, including ones that still
  *  end on tools — that is not the end of the user prompt. */
+/**
+ * ACP `session/update` is per-session. Forking creates a second session on
+ * the same grok process (and a second process may load it too). Thoughts
+ * for the child still arrive on this connection; applying them called
+ * startIdleTurn and the parent tab showed "Grok is thinking".
+ */
+export function sessionUpdateIsFor(sessionId, notification) {
+  const incoming = notification?.sessionId;
+  if (!incoming || !sessionId) return true;
+  return incoming === sessionId;
+}
+
 export function assistantEndedOnTools(content) {
   if (!Array.isArray(content)) return false;
   for (let index = content.length - 1; index >= 0; index -= 1) {
@@ -339,6 +359,14 @@ function sessionFilePathFor(cwd, sessionId) {
 
 function sessionIdFromPath(sessionPath) {
   return basename(dirname(sessionPath));
+}
+
+/** Ids are only unique inside one cwd directory. */
+function sameGrokSession(sessionPath, sessionId, cwd) {
+  if (!sessionPath || sessionIdFromPath(sessionPath) !== sessionId) return false;
+  const pathCwd = cwdFromGrokSession(sessionPath);
+  if (pathCwd && cwd && pathCwd !== cwd) return false;
+  return true;
 }
 
 class GrokAgentProcess {
@@ -440,16 +468,24 @@ class GrokAgentProcess {
     return this.hasConnection() && Boolean(this.sessionId);
   }
 
-  async ensureRunning() {
-    if (this.isAlive()) return { ok: true };
-    const cwd = this.cwd;
-    const sessionPath = this.sessionFile;
+  async ensureRunning(sessionPath, options = {}) {
+    const path =
+      (typeof sessionPath === "string" && sessionPath) || this.sessionFile;
+    if (this.isAlive()) {
+      if (!path || sameGrokSession(path, this.sessionId, this.cwd))
+        return { ok: true };
+      return this.switchSession(path);
+    }
+    const cwd = cwdFromGrokSession(path) || options.cwd || this.cwd;
     if (!cwd) return { ok: false, error: "Grok session is not running" };
     if (!this.hasConnection()) this.killChild();
     return this.start(cwd, {
-      sessionPath,
-      model: this.model,
-      thinkingLevel: this.thinkingLevel,
+      sessionPath: path,
+      model: options.model || this.model,
+      thinkingLevel: options.thinkingLevel || this.thinkingLevel,
+      ...(options.agentMode || this.agentMode
+        ? { agentMode: options.agentMode || this.agentMode }
+        : {}),
     });
   }
 
@@ -511,6 +547,11 @@ class GrokAgentProcess {
             .toString("utf8")
             // biome-ignore lint/suspicious/noControlCharactersInRegex: ANSI SGR
             .replace(/\u001b\[[0-9;]*m/g, "")
+            .split(/\r?\n/)
+            // grok logs ERROR tool_error: tool_output_error for every failed
+            // tool (missing file, MCP -32602). The card already shows that.
+            .filter((line) => !/\btool_error:\s*tool_output_error\b/i.test(line))
+            .join("\n")
             .trim();
           if (message)
             this.emit({ type: "stderr", sessionKey: this.sessionKey, message });
@@ -565,6 +606,8 @@ class GrokAgentProcess {
               self.handleSessionUpdate(notification);
             },
             async requestPermission(params) {
+              if (!sessionUpdateIsFor(self.sessionId, params))
+                return { outcome: { outcome: "cancelled" } };
               const options = params.options ?? [];
               // Manual mode routes the ask to the UI; the choice comes back
               // as a gate option id, which maps onto ACP's optionId here.
@@ -669,6 +712,7 @@ class GrokAgentProcess {
       }
 
       let replayedMessages;
+      if (options.agentMode) this.agentMode = options.agentMode;
       if (options.sessionPath) {
         this.sessionId = sessionIdFromPath(options.sessionPath);
         this.model = options.model?.id
@@ -839,6 +883,7 @@ class GrokAgentProcess {
   }
 
   handleSessionUpdate(notification) {
+    if (!sessionUpdateIsFor(this.sessionId, notification)) return;
     const update = notification.update;
     if (update.sessionUpdate === "available_commands_update") {
       this.availableCommands = Array.isArray(update.availableCommands)
@@ -1804,7 +1849,7 @@ class GrokAgentProcess {
         return { ok: false, error: String(error?.message ?? error) };
       }
     }
-    const cwd = this.cwd ?? homedir();
+    const cwd = cwdFromGrokSession(sessionPath) || this.cwd || homedir();
     this.stop();
     return this.start(cwd, { sessionPath });
   }
@@ -1837,36 +1882,103 @@ class GrokAgentProcess {
     }
   }
 
-  // Branching a conversation (pi's fork/truncate) needs either a documented
-  // ACP extension for it or reverse-engineering grok's own rewind_points
-  // format. grok's ACP exposes _x.ai/session/fork (the extension the vscode
-  // integration uses): it copies the whole conversation into a new session
-  // id. targetPromptIndex exists on the wire but truncates chat_history
-  // without truncating updates.jsonl on some builds, so a partial fork would
-  // replay a conversation the model has forgotten — omit it.
-  // ponytail: full-history fork only; pass targetPromptIndex when grok's
-  // store keeps both journals consistent.
-  async forkAt() {
-    if (!this.sessionId)
+  // Grok's ACP x.ai/session/fork copies the session, optionally cut at
+  // targetPromptIndex. The live process can sit on a *different* session
+  // id than the tab (warm newSession, or a restart that didn't pass
+  // sessionPath) — always fork the file the client named, and if ACP
+  // writes an empty journal, copy the source journals ourselves.
+  async forkAt(timestamp, context = {}) {
+    const sourceFile =
+      (typeof context.sessionPath === "string" && context.sessionPath) ||
+      this.sessionFile;
+    if (!sourceFile && !this.sessionId)
+      return { ok: false, error: "No Grok session is available to fork." };
+    const revived = await this.ensureRunning(sourceFile, context);
+    if (!revived?.ok)
+      return {
+        ok: false,
+        error: revived?.error ?? "No Grok session is available to fork.",
+      };
+    if (!this.sessionId || !this.connection)
       return { ok: false, error: "No Grok session is available to fork." };
     try {
+      const sourceId = sourceFile
+        ? sessionIdFromPath(sourceFile)
+        : this.sessionId;
+      let messages = Array.isArray(this.messages) ? this.messages : [];
+      // Live turns only land in this.messages at turn_end. A fork mid-turn,
+      // or after a resume that hydrated the UI from disk, would otherwise
+      // hand the new tab an empty transcript.
+      const readSource =
+        sourceFile && existsSync(sourceFile)
+          ? sourceFile
+          : this.sessionFile && existsSync(this.sessionFile)
+            ? this.sessionFile
+            : "";
+      if (messages.length === 0 && readSource) {
+        try {
+          messages = messagesFromGrokLog(await readFile(readSource, "utf8"));
+        } catch {
+          /* start() on the fork tab will replay from the new session file */
+        }
+      }
+      const promptIndex =
+        Number.isFinite(Number(context.promptIndex)) || context.userText
+          ? resolvePromptIndex(messages, context.promptIndex, context.userText)
+          : promptIndexFromTimestamp(messages, timestamp);
+      const sourceCwd = cwdFromGrokSession(sourceFile) || this.cwd;
+      const forkCwd =
+        typeof context.forkCwd === "string" && context.forkCwd
+          ? context.forkCwd
+          : sourceCwd;
       const forked = await this.connection.extMethod("x.ai/session/fork", {
-        sourceSessionId: this.sessionId,
-        sourceCwd: this.cwd,
-        newCwd: this.cwd,
+        sourceSessionId: sourceId,
+        sourceCwd,
+        newCwd: forkCwd,
+        targetPromptIndex: promptIndex,
       });
       const newSessionId = forked?.newSessionId;
       if (!newSessionId) throw new Error("fork returned no new session id");
+      // ACP sometimes ignores newCwd and writes the fork under the source
+      // directory. Seeding the newCwd path as well would be a second copy.
+      const atFork = sessionFilePathFor(forkCwd, newSessionId);
+      const atSource = sourceCwd
+        ? sessionFilePathFor(sourceCwd, newSessionId)
+        : "";
+      let forkFile = atFork;
+      let usedCwd = forkCwd;
+      if (
+        atSource &&
+        forkCwd !== sourceCwd &&
+        existsSync(atSource) &&
+        !existsSync(atFork)
+      ) {
+        forkFile = atSource;
+        usedCwd = sourceCwd;
+      }
+      try {
+        await seedGrokForkJournals(readSource, forkFile, promptIndex);
+      } catch {
+        /* sliced messages still stop the UI at the fork point */
+      }
+      if (existsSync(forkFile)) {
+        try {
+          const fromDisk = messagesFromGrokLog(await readFile(forkFile, "utf8"));
+          if (fromDisk.length > 0) messages = fromDisk;
+        } catch {
+          /* keep the in-memory slice */
+        }
+      }
       return {
         ok: true,
         restored: true,
-        forkCwd: this.cwd,
+        forkCwd: usedCwd,
         state: {
           ...(await this.getState()),
           sessionId: newSessionId,
-          sessionFile: sessionFilePathFor(this.cwd, newSessionId),
+          sessionFile: forkFile,
         },
-        messages: this.messages,
+        messages: sliceMessagesThroughPrompt(messages, promptIndex),
       };
     } catch (error) {
       return { ok: false, error: String(error?.message ?? error) };
