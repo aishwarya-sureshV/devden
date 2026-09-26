@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { ApprovalGate } from "./approval-gate.js";
+import { ApprovalGate, countPendingApprovals } from "./approval-gate.js";
 
 function fakeAgent(agentMode = "manual") {
   const agent = {
@@ -68,4 +68,18 @@ test("denyAll clears every pending ask so an aborted turn can end", async () => 
   assert.deepEqual(await first, { allow: false, choice: "deny" });
   assert.deepEqual(await second, { allow: false, choice: "deny" });
   assert.equal(gate.pending.size, 0);
+});
+
+test("countPendingApprovals sums every live gate", () => {
+  const pools = {
+    pi: {
+      agents: new Map([
+        ["a", { approvalGate: { pending: new Map([["1", {}], ["2", {}]]) } }],
+      ]),
+    },
+    claude: { agents: new Map([["b", { approvalGate: { pending: new Map() } }]]) },
+    grok: { agents: new Map([["c", {}]]) },
+  };
+  assert.equal(countPendingApprovals(pools), 2);
+  assert.equal(countPendingApprovals(null), 0);
 });

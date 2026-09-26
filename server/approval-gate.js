@@ -109,3 +109,18 @@ export class ApprovalGate {
     }
   }
 }
+
+/** How many tool calls are parked on an approval card, across every pool. */
+export function countPendingApprovals(pools) {
+  let count = 0;
+  const list = Array.isArray(pools) ? pools : Object.values(pools || {});
+  for (const pool of list) {
+    const agents = pool?.agents;
+    if (!agents || typeof agents.values !== "function") continue;
+    for (const agent of agents.values()) {
+      const size = agent?.approvalGate?.pending?.size;
+      if (typeof size === "number") count += size;
+    }
+  }
+  return count;
+}

@@ -1,0 +1,68 @@
+{
+  "name": "devden-mac",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Unsigned Mac app shell for DevDen",
+  "main": "main.cjs",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder --mac dmg --arm64 --x64"
+  },
+  "devDependencies": {
+    "electron": "^33.4.11",
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "app.devden.desktop",
+    "productName": "DevDen",
+    "asar": true,
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "main.cjs",
+      "package.json",
+      "icon.png"
+    ],
+    "extraResources": [
+      {
+        "from": "../bin",
+        "to": "devden/bin"
+      },
+      {
+        "from": "../server",
+        "to": "devden/server",
+        "filter": [
+          "**/*",
+          "!**/*.test.js"
+        ]
+      },
+      {
+        "from": "../dist",
+        "to": "devden/dist"
+      },
+      {
+        "from": "../package.json",
+        "to": "devden/package.json"
+      },
+      {
+        "from": "../node_modules",
+        "to": "devden/node_modules"
+      }
+    ],
+    "mac": {
+      "identity": null,
+      "category": "public.app-category.developer-tools",
+      "icon": "icon.png",
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        }
+      ]
+    }
+  }
+}

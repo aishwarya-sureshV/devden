@@ -4,6 +4,7 @@
  *
  * Endpoints:
  *   GET  /api/health
+ *   GET  /api/attention                 -> pending tool-approval count
  *   GET  /api/sessions?view=archived       -> persisted ~/.pi sessions
  *   POST /api/sessions/archive             { sessionPath }
  *   POST /api/sessions/restore             { sessionPath }
@@ -80,6 +81,7 @@ import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import { logFault } from "./log-fault.js";
 import { hasAskBlock } from "./ask-block.js";
+import { countPendingApprovals } from "./approval-gate.js";
 import { createTerminalTabs } from "./terminal-tabs.js";
 import { leaseVerdict } from "./lease-sweep.js";
 import { WebSocketServer } from "ws";
@@ -1943,6 +1945,13 @@ async function route(req, res) {
   const requiresAccess = accessTokens().length > 0;
   if (requiresAccess && !isLoopbackRequest(req) && !requestHasAccess(req, url))
     return denyAccess(res);
+
+  if (pathname === "/api/attention" && req.method === "GET") {
+    return sendJson(res, 200, {
+      ok: true,
+      pendingApprovals: countPendingApprovals(POOLS),
+    });
+  }
 
   if (pathname === "/api/remote/status" && req.method === "GET") {
     const tunnel = getRemoteTunnel();

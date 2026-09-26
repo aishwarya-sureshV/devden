@@ -1,14 +1,6 @@
 #!/usr/bin/env bash
-# Claude Code launcher for devden. This is additive: it never intercepts or
-# forwards the real `claude` command.
+# Old name. Not an npm bin. The command is `devden --backend claude`.
 set -euo pipefail
-
-LAUNCHER_NAME="claude-web"
-# shellcheck source=lib/devden-launcher.sh
-source "$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/devden-launcher.sh"
-resolve_devden_root
-
-ensure_build
-refresh_stale_server
-start_server
-open_workbench "backend=claude"
+echo "claude-web is now: devden --backend claude" >&2
+here="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+exec "$here/devden" --backend claude "$@"

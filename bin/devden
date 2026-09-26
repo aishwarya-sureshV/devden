@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# devden launcher: opens the pi-backed web workbench. It is its own command
-# and never touches or intercepts the real `pi` binary — `pi` stays the TUI.
+# devden launcher: starts the workbench server and opens it in a browser.
+# It never touches the real `pi` or `claude` binaries.
 set -euo pipefail
 
 LAUNCHER_NAME="devden"
@@ -8,27 +8,72 @@ LAUNCHER_NAME="devden"
 source "$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/devden-launcher.sh"
 resolve_devden_root
 
-if [[ "${1:-}" == "--stop" ]]; then
+usage() {
+  cat <<EOF
+Usage: devden [--backend pi|claude|grok|codex] [--stop]
+
+Starts the workbench on ${HOST}:${PORT} and opens it in a browser.
+macOS and Linux only.
+EOF
+}
+
+stop_server() {
+  local server_pid server_command
   server_pid="$(lsof -tiTCP:"$PORT" -sTCP:LISTEN 2>/dev/null | head -1 || true)"
   if [[ -z "$server_pid" ]]; then
     echo "devden: not running"
-    exit 0
+    return 0
   fi
   server_command="$(ps -p "$server_pid" -o command= 2>/dev/null || true)"
   if [[ "$server_command" != *"server/index.js"* ]]; then
     echo "devden: port $PORT is in use by another application" >&2
-    exit 1
+    return 1
   fi
   kill -TERM "$server_pid" 2>/dev/null || true
   for _ in $(seq 1 20); do
-    lsof -tiTCP:"$PORT" -sTCP:LISTEN >/dev/null 2>&1 || { echo "devden: stopped"; exit 0; }
+    lsof -tiTCP:"$PORT" -sTCP:LISTEN >/dev/null 2>&1 || { echo "devden: stopped"; return 0; }
     sleep 0.1
   done
   echo "devden: did not release port $PORT" >&2
-  exit 1
-fi
+  return 1
+}
+
+backend=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --stop)
+      stop_server
+      exit 0
+      ;;
+    --backend)
+      if [[ $# -lt 2 ]]; then
+        usage >&2
+        exit 1
+      fi
+      backend="$2"
+      shift 2
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      usage >&2
+      exit 1
+      ;;
+  esac
+done
+
+case "$backend" in
+  ""|pi) query="" ;;
+  claude|grok|codex) query="backend=$backend" ;;
+  *)
+    echo "devden: backend must be pi, claude, grok, or codex" >&2
+    exit 1
+    ;;
+esac
 
 ensure_build
 refresh_stale_server
 start_server
-open_workbench ""
+open_workbench "$query"

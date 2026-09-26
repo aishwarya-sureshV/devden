@@ -4,30 +4,61 @@ A local web workbench for the coding agents already on your machine: **pi**, **C
 
 ## Install
 
-You need [Node.js](https://nodejs.org) and npm, on macOS or Linux, and at least one of those agents on your `PATH` and signed in. The first screen shows which ones are ready.
+macOS or Linux, with [Node.js](https://nodejs.org) 20 or newer. Windows is not supported. You also want at least one of **pi**, **Claude Code**, **Grok**, or **Codex** on your `PATH` and signed in. The first screen shows which ones are ready.
 
 ```bash
-git clone https://github.com/aishwarya-sureshV/devden.git
-cd devden
-npm install
-npm install -g .
+npx devden
+```
+
+Or install the command and keep it:
+
+```bash
+npm install -g devden
 devden
 ```
 
 That starts a server on `127.0.0.1:4319` and opens the workbench. Run it again later and it reuses the server that is already up.
 
 ```bash
-claude-web     # same workbench; new sessions start on Claude Code
-devden --stop  # stop the server
+devden --backend claude   # new sessions start on Claude Code
+devden --backend grok
+devden --backend codex
+devden --stop
 ```
 
-Install from this checkout. The npm package named `pi-web` is a different project (`ravshansbox/pi-web`).
+From a checkout of this repo, `npm install` then `npm install -g .` does the same thing.
+
+On macOS, `node-pty` 1.1.0 installs a prebuilt binary for `darwin-arm64` and `darwin-x64`. A fresh Mac does not need Xcode command-line tools. On Linux that version has no prebuilt binary, so the install compiles it and needs Python, make, and a C++ compiler.
+
+The npm package named `pi-web` is a different project (`ravshansbox/pi-web`). This project's old local data in `~/.pi-web` is still read if `~/.devden` does not exist yet.
 
 If an older install of this repo replaced your Homebrew `pi` binary, put the stock one back:
 
 ```bash
 ln -sfn ../lib/node_modules/@earendil-works/pi-coding-agent/dist/cli.js /opt/homebrew/bin/pi
 ```
+
+## Homebrew
+
+The formula is [`packaging/homebrew/devden.rb`](packaging/homebrew/devden.rb). It tracks `main` until the first tagged release.
+
+```bash
+brew install --HEAD ./packaging/homebrew/devden.rb
+```
+
+A tap (`brew tap aishwarya-sureshV/devden`) needs a separate `homebrew-devden` repository with that file at `Formula/devden.rb`.
+
+## Mac app
+
+The npm command is the normal install. The Mac app is a Dock icon for the same server. It is unsigned, so the first launch trips Gatekeeper: right-click the app, choose Open, then Open again. A paid Apple Developer account removes that step when the warning starts to matter.
+
+While a tool call is waiting for approval, the Dock icon shows how many are waiting.
+
+```bash
+cd electron && npm install && npm start
+```
+
+Pushing a `v*` tag runs [`.github/workflows/mac-dmg.yml`](.github/workflows/mac-dmg.yml), which builds unsigned arm64 and x64 `.dmg` files. You can also run that workflow by hand. The app uses Node from your `PATH` to run the server, and it opens your home folder.
 
 ## What you will not find in other workbenches
 
@@ -90,7 +121,7 @@ npm run check:grok # grok ACP adapter against the installed CLI
 
 Check `http://127.0.0.1:4319/api/health` before starting another server. Port 4319 is the live event stream for anyone using the workbench. Server JavaScript changes apply the next time that process starts. After `npm run build`, the `devden` launcher serves `dist/` and does not need Vite.
 
-`devden` and `claude-web` are the `bin` entries in `package.json`. Both share `bin/lib/devden-launcher.sh`. The server spawns each agent by name from `PATH`.
+`devden` is the `bin` entry in `package.json`. It runs `bin/lib/devden-launcher.sh`. The server spawns each agent by name from `PATH`.
 
 ## Keeping your local changes across `npm update`
 

@@ -2,13 +2,25 @@
   "name": "devden",
   "version": "0.1.0",
   "type": "module",
-  "description": "Web workbench for local coding agents: pi, Claude Code, and grok",
+  "description": "Web workbench for local coding agents: pi, Claude Code, Grok, and Codex",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/aishwarya-sureshV/devden.git"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "os": [
+    "darwin",
+    "linux"
+  ],
   "bin": {
-    "devden": "bin/devden",
-    "claude-web": "bin/claude-web"
+    "devden": "bin/devden"
   },
   "files": [
-    "bin",
+    "bin/devden",
+    "bin/lib",
     "server",
     "dist"
   ],
@@ -21,6 +33,8 @@
     "start": "node scripts/supervise.mjs",
     "typecheck": "tsc --noEmit",
     "test": "node --test server/ src/lib/",
+    "app": "npm start --prefix electron",
+    "app:dist": "npm run dist --prefix electron",
     "check:grok": "node server/grok-selfcheck.js",
     "prepublishOnly": "npm run build"
   },

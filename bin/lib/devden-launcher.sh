@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Shared launcher helpers for devden's bin/devden and bin/claude-web wrappers.
-# Sourced by both; LAUNCHER_NAME must be set by the caller for messages.
+# Shared launcher helpers for the devden command.
+# Sourced by bin/devden; LAUNCHER_NAME must be set by the caller for messages.
 set -euo pipefail
 
 # Resolve the real launcher location before finding the project root. npm's
@@ -100,10 +100,25 @@ start_server() {
   fi
 }
 
+open_url() {
+  local url="$1"
+  if [[ "$(uname -s)" == "Darwin" ]]; then
+    open "$url"
+  elif command -v xdg-open >/dev/null 2>&1; then
+    xdg-open "$url" >/dev/null 2>&1 &
+  else
+    echo "$LAUNCHER_NAME: open $url"
+  fi
+}
+
 open_workbench() {
   local query="$1"
-  local launch_cwd encoded_cwd
+  local launch_cwd encoded_cwd qs
   launch_cwd="$(pwd -P)"
   encoded_cwd="$(node -p 'encodeURIComponent(process.argv[1])' "$launch_cwd")"
-  open "http://$HOST:$PORT/?$query&cwd=$encoded_cwd&fresh=$(date +%s)"
+  qs="cwd=${encoded_cwd}&fresh=$(date +%s)"
+  if [[ -n "$query" ]]; then
+    qs="${query}&${qs}"
+  fi
+  open_url "http://$HOST:$PORT/?${qs}"
 }
