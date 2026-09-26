@@ -18,7 +18,7 @@ import { IconChevronDown, IconCode, IconFolder } from "./icons";
 
 export type WorkspacePickerHandle = { openBrowser: () => void };
 
-const RECENT_WORKSPACES_KEY = "pi-web.workspaces.v1";
+const RECENT_WORKSPACES_KEY = "devden.workspaces.v1";
 
 function folderLabel(path: string): string {
   return path.split("/").filter(Boolean).at(-1) ?? path;

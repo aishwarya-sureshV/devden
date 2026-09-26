@@ -6,13 +6,13 @@
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { homedir } from "node:os";
+import { devdenHome } from "./setup-state.js";
 
 const KINDS = new Set(["plan", "diagnose", "execute", "review"]);
 const BACKENDS = new Set(["pi", "claude", "grok", "codex"]);
 const TEMPLATES = new Set(["diagnose", "fix", "plan", "custom"]);
 
-export function routeStoreDir(root = join(homedir(), ".pi-web", "routes")) {
+export function routeStoreDir(root = join(devdenHome(), "routes")) {
   return root;
 }
 

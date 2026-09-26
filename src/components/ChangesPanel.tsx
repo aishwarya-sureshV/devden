@@ -117,7 +117,7 @@ function folderName(path: string): string {
 }
 
 /**
- * `/Users/you/dev/pi-web` -> `~/dev`. Assumes the usual macOS/Linux home
+ * `/Users/you/dev/devden` -> `~/dev`. Assumes the usual macOS/Linux home
  * layout, the same assumption the sidebar's workspaceLabel already makes.
  * ponytail: heuristic; pass the server's homedir if odd layouts matter.
  */
@@ -157,7 +157,7 @@ export function ChangesPanel({
     setCollapsed((current) => {
       const next = !current;
       try {
-        localStorage.setItem("pi-web.changes-collapsed", next ? "1" : "0");
+        localStorage.setItem("devden.changes-collapsed", next ? "1" : "0");
       } catch {
         /* storage unavailable; choice lasts this mount only */
       }
@@ -195,7 +195,7 @@ export function ChangesPanel({
   const [reloadToken, setReloadToken] = useState(0);
   // Files the user unchecked. Persisted per repo so the exclusion survives
   // pushes AND future turns' change boxes until the user re-includes them.
-  const excludedKey = `pi-web.changes-excluded:${cwd || "default"}`;
+  const excludedKey = `devden.changes-excluded:${cwd || "default"}`;
   const [excluded, setExcluded] = useState<ReadonlySet<string>>(new Set());
   const saveExcluded = useCallback(
     (next: ReadonlySet<string>) => {
@@ -362,7 +362,7 @@ export function ChangesPanel({
       const result = await api.gitCommitPush(
         sessionKey,
         cwd || "",
-        message.trim() || "Update from pi-web",
+        message.trim() || "Update from devden",
         paths,
         remote,
       );

@@ -20,7 +20,7 @@ const log = [
     role: "user",
     content: [
       {
-        text: "[pi-web harness instruction — this block is not part of the user's message; do not quote, repeat, or reference it]\nblah\n[end pi-web harness instruction]\nrun echo pong",
+        text: "[devden harness instruction — this block is not part of the user's message; do not quote, repeat, or reference it]\nblah\n[end devden harness instruction]\nrun echo pong",
       },
     ],
   }),

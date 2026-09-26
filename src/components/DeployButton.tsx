@@ -4,9 +4,9 @@ import { IconChevronDown, IconCloud, IconLaptop } from "./icons";
 
 /**
  * One-click deploy for the project this conversation is working in — its cwd,
- * not pi-web's. The server confines that path to the workspace roots, keeps
+ * not devden's. The server confines that path to the workspace roots, keeps
  * the deploy state file inside the project, and only restarts this server when
- * the project being deployed happens to BE pi-web.
+ * the project being deployed happens to BE devden.
  *
  * Split button:
  *   - Primary click: deploy LOCAL (default) — build the working tree as-is

@@ -227,7 +227,7 @@ export function liveFailures(entries, cutTimestamp) {
     .sort((a, b) => b.count - a.count);
 }
 
-/** The message pi-web auto-sends after a compaction ate live constraints. */
+/** The message devden auto-sends after a compaction ate live constraints. */
 export function buildReassertion(dropped) {
   const lines = dropped
     .map(

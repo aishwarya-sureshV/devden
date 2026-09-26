@@ -11,11 +11,11 @@
  */
 import { createHash } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
 import { join } from "node:path";
+import { devdenHome } from "./setup-state.js";
 
 export function displayHistoryDir() {
-  return join(process.env.PI_WEB_HOME || join(homedir(), ".pi-web"), "display-history");
+  return join(devdenHome(), "display-history");
 }
 
 function overlayPath(sessionPath) {

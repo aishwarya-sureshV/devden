@@ -85,14 +85,14 @@ describe("withDisplayHistory persistence", () => {
   let home;
 
   before(async () => {
-    previousHome = process.env.PI_WEB_HOME;
-    home = await mkdtemp(join(tmpdir(), "pi-web-display-"));
-    process.env.PI_WEB_HOME = home;
+    previousHome = process.env.DEVDEN_HOME;
+    home = await mkdtemp(join(tmpdir(), "devden-display-"));
+    process.env.DEVDEN_HOME = home;
   });
 
   after(async () => {
-    if (previousHome === undefined) delete process.env.PI_WEB_HOME;
-    else process.env.PI_WEB_HOME = previousHome;
+    if (previousHome === undefined) delete process.env.DEVDEN_HOME;
+    else process.env.DEVDEN_HOME = previousHome;
     await rm(home, { recursive: true, force: true });
   });
 

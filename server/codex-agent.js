@@ -64,7 +64,7 @@ function usageFrom(tokenUsage) {
 
 /**
  * Rollout files are named rollout-<ISO timestamp>-<thread uuid>.jsonl, so a
- * saved-session path (pi-web's session identity) yields the threadId that
+ * saved-session path (devden's session identity) yields the threadId that
  * `thread/resume` wants without opening the file.
  */
 export function threadIdFromPath(sessionPath) {
@@ -266,7 +266,10 @@ class CodexAgentProcess {
     if (options.thinkingLevel) this.thinkingLevel = options.thinkingLevel;
 
     this.setStatus("starting");
-    const connection = new CodexAppServer();
+    const connection = new CodexAppServer({
+      executable: this.executable,
+      envExtra: this.envExtra,
+    });
     this.connection = connection;
     connection.onNotification((message) => this.handleNotification(message));
     connection.onServerRequest((message) => this.handleServerRequest(message));
@@ -276,7 +279,7 @@ class CodexAgentProcess {
         cwd: effectiveCwd,
         sandbox: this.accessMode,
         // Manual mode asks the human per untrusted command via
-        // execCommandApproval; otherwise pi-web owns the access decision
+        // execCommandApproval; otherwise devden owns the access decision
         // through accessMode and asking would hang the turn.
         approvalPolicy: this.agentMode === "manual" ? "untrusted" : "never",
         ...(this.model?.id ? { model: this.model.id } : {}),

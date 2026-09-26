@@ -18,7 +18,7 @@ import { CodexAgentPool } from "./codex-agent.js";
 import { GrokAgentPool } from "./grok-agent.js";
 import { PiAgentProcess } from "./pi-agent.js";
 
-const WORKTREE = "/tmp/pi-web-fork-worktree";
+const WORKTREE = "/tmp/devden-fork-worktree";
 
 describe("Claude forkAt", () => {
   const home = mkdtempSync(join(tmpdir(), "claude-fork-home-"));
@@ -67,7 +67,7 @@ describe("Claude forkAt", () => {
     });
     assert.equal(result.ok, true);
     assert.equal(result.forkCwd, WORKTREE);
-    assert.match(result.state.sessionFile, /pi-web-fork-worktree/);
+    assert.match(result.state.sessionFile, /devden-fork-worktree/);
     assert.match(readFileSync(result.state.sessionFile, "utf8"), /first/);
   });
 

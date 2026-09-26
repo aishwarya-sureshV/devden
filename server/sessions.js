@@ -36,21 +36,21 @@ export function parseSubagentId(text) {
   return match?.[1] ?? "";
 }
 const SESSIONS_ROOT = join(AGENT_ROOT, "sessions");
-const ARCHIVE_INDEX = join(AGENT_ROOT, "pi-web-archived-sessions.json");
+const ARCHIVE_INDEX = join(AGENT_ROOT, "devden-archived-sessions.json");
 const CLAUDE_ROOT = join(homedir(), ".claude");
 const CLAUDE_SESSIONS_ROOT = join(CLAUDE_ROOT, "projects");
-const CLAUDE_ARCHIVE_INDEX = join(CLAUDE_ROOT, "pi-web-archived-sessions.json");
-// grok's own session store -- pi-web only reads from it and keeps its own
+const CLAUDE_ARCHIVE_INDEX = join(CLAUDE_ROOT, "devden-archived-sessions.json");
+// grok's own session store -- devden only reads from it and keeps its own
 // archive index alongside it rather than writing into grok's files.
 const GROK_ROOT = join(homedir(), ".grok");
 const GROK_SESSIONS_ROOT = join(GROK_ROOT, "sessions");
-const GROK_ARCHIVE_INDEX = join(GROK_ROOT, "pi-web-archived-sessions.json");
+const GROK_ARCHIVE_INDEX = join(GROK_ROOT, "devden-archived-sessions.json");
 // codex's rollout store. Its own thread index already knows every session's
 // title, cwd and timestamps, so listing goes through the app-server rather
 // than re-deriving them by scanning rollout JSONL.
 const CODEX_ROOT = process.env.CODEX_HOME || join(homedir(), ".codex");
 const CODEX_SESSIONS_ROOT = join(CODEX_ROOT, "sessions");
-const CODEX_ARCHIVE_INDEX = join(CODEX_ROOT, "pi-web-archived-sessions.json");
+const CODEX_ARCHIVE_INDEX = join(CODEX_ROOT, "devden-archived-sessions.json");
 let archiveMutation = Promise.resolve();
 
 import { messagesFromClaudeLog } from "./claude-agent.js";
@@ -87,14 +87,14 @@ export async function listSessions({ archived = false, backend = "pi" } = {}) {
   // list, so a pi session and a claude session can sit side by side instead
   // of the UI being scoped to whichever backend the page was opened with.
   if (backend === "all") {
-    const lists = await Promise.all(
-      AGENT_BACKENDS.map((name) =>
+    const lists = await Promise.all([
+      ...AGENT_BACKENDS.map((name) =>
         listSessions({ archived, backend: name }).catch(() => ({
           ok: false,
           sessions: [],
         })),
       ),
-    );
+    ]);
     const sessions = lists.flatMap((result) => result.sessions ?? []);
     sessions.sort((a, b) => b.modifiedAt - a.modifiedAt);
     return { ok: true, sessions };
@@ -280,7 +280,7 @@ async function readGrokResumeSession(sessionDir) {
 
 // codex owns a thread index that already carries title, preview, cwd and
 // timestamps, so one `thread/list` replaces a scan of the rollout files.
-// Archiving stays in pi-web's own index (as for claude and grok) rather than
+// Archiving stays in devden's own index (as for claude and grok) rather than
 // mutating codex's, so un-archiving here never surprises the codex CLI.
 async function listCodexSessions({ archived = false } = {}) {
   try {
@@ -375,7 +375,11 @@ export async function readSessionMessages(path) {
       backend === "claude"
         ? messagesFromClaudeLog(contents, safePath)
         : backend === "grok"
-          ? messagesFromGrokLog(contents, loadChild)
+          ? messagesFromGrokLog(
+              contents,
+              loadChild,
+              await grokTurnWindowsBeside(safePath),
+            )
           : backend === "codex"
             ? messagesFromCodexLog(contents)
             : messagesFromPiLog(contents);
@@ -435,18 +439,80 @@ export async function readSessionXray(path) {
   }
 }
 
+/**
+ * Grok's chat_history.jsonl has no per-message clock. events.jsonl does:
+ * `turn_started` / `turn_ended` carry ISO `ts`. One window per model turn,
+ * in order, so a re-read can stamp the prompt with the start and the reply
+ * with the end instead of Date.now().
+ */
+export function grokTurnWindows(contents) {
+  const windows = [];
+  let current = null;
+  for (const line of String(contents || "").split("\n")) {
+    if (!line) continue;
+    let entry;
+    try {
+      entry = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    const ts = Date.parse(entry?.ts ?? "");
+    if (!Number.isFinite(ts)) continue;
+    if (entry.type === "turn_started") {
+      if (current) windows.push(current);
+      current = { start: ts, end: ts };
+      continue;
+    }
+    if (!current) continue;
+    if (entry.type === "turn_ended") {
+      current.end = ts;
+      windows.push(current);
+      current = null;
+      continue;
+    }
+    if (ts > current.end) current.end = ts;
+  }
+  if (current) windows.push(current);
+  return windows;
+}
+
+async function grokTurnWindowsBeside(chatPath) {
+  try {
+    return grokTurnWindows(
+      await readFile(join(dirname(chatPath), "events.jsonl"), "utf8"),
+    );
+  } catch {
+    return undefined;
+  }
+}
+
 // chat_history.jsonl is grok's own full request log -- item-list format
 // (type: system/user/reasoning/assistant/tool_result), not role+content
 // blocks. Real user turns are wrapped in <user_query> tags and carry a
 // numeric prompt_index; synthetic context grok injects for itself
 // (<user_info>, skill listings, etc.) carries synthetic_reason instead and
 // is skipped so the preview matches what the user actually typed.
-export function messagesFromGrokLog(contents, loadChild) {
+// `windows` is grokTurnWindows() output. Without it, every line is stamped
+// at read time — the fold then says "Worked for 0s" at the current minute.
+export function messagesFromGrokLog(contents, loadChild, windows) {
   const messages = [];
   // tool_result entries name only the call id, so the tool name is carried
   // forward from the assistant entry that made the call.
   const toolNames = new Map();
   let pendingThinking = "";
+  const timed = Array.isArray(windows) && windows.length > 0;
+  let turn = -1;
+  let turnEnd = 0;
+  const at = (which) => {
+    if (!timed) return Date.now();
+    if (which === "start") {
+      turn += 1;
+      const window = windows[turn] ?? windows[windows.length - 1];
+      turnEnd = window.end || window.start;
+      return window.start;
+    }
+    return turnEnd;
+  };
   for (const line of String(contents || "").split("\n")) {
     if (!line) continue;
     let entry;
@@ -479,7 +545,7 @@ export function messagesFromGrokLog(contents, loadChild) {
         messages.push({
           role: "user",
           content: [{ type: "text", text: clean }],
-          timestamp: Date.now(),
+          timestamp: at("start"),
         });
     } else if (entry.type === "assistant") {
       const content = [];
@@ -502,7 +568,7 @@ export function messagesFromGrokLog(contents, loadChild) {
         });
       }
       if (content.length)
-        messages.push({ role: "assistant", content, timestamp: Date.now() });
+        messages.push({ role: "assistant", content, timestamp: at("end") });
     } else if (entry.type === "tool_result") {
       const id = String(entry.tool_call_id ?? "");
       const name = toolNames.get(id) ?? "tool";
@@ -512,7 +578,7 @@ export function messagesFromGrokLog(contents, loadChild) {
         toolCallId: id,
         toolName: name,
         content: [{ type: "text", text: resultText }],
-        timestamp: Date.now(),
+        timestamp: at("end"),
       });
       // A spawn receipt names the child; its tools and findings live in the
       // child's own files, so hydrate re-attaches them under the spawn call.
@@ -525,10 +591,16 @@ export function messagesFromGrokLog(contents, loadChild) {
             role: "assistant",
             content: [{ type: "text", text: extra }],
             parentToolUseId: id,
-            timestamp: Date.now(),
+            timestamp: at("end"),
           });
         } else if (Array.isArray(extra) && extra.length) {
-          messages.push(...extra);
+          // Child logs have no clock of their own. Keep them on this turn's
+          // end, or a nested line stamped at read time becomes the footer.
+          messages.push(
+            ...extra.map((message) =>
+              timed ? { ...message, timestamp: turnEnd } : message,
+            ),
+          );
         }
       }
     }
@@ -756,12 +828,12 @@ export function stripTrailingCompactTurn(messages) {
 // instruction block (their CLARIFY_PROMPT_PREFIX); both store it verbatim, so
 // it has to come back out to show what the user actually typed.
 function stripHarnessPrefix(text) {
-  const end = "[end pi-web harness instruction]";
+  const end = "[end devden harness instruction]";
   // Loop: a turn can carry more than one block (the clarify gate plus, on a
   // resumed turn, the interruption notice), and stripping only the first
   // left the second showing as something the user had typed.
   let rest = text;
-  while (rest.startsWith("[pi-web harness instruction")) {
+  while (rest.startsWith("[devden harness instruction")) {
     const at = rest.indexOf(end);
     if (at === -1) return rest;
     rest = rest.slice(at + end.length).trimStart();

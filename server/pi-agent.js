@@ -16,6 +16,7 @@ import { fileURLToPath } from "node:url";
 import { AgentPool } from "./agent-pool.js";
 import { ApprovalGate } from "./approval-gate.js";
 import { attachQueue } from "./agent-queue.js";
+import { isUsageLimitError, limitErrorText } from "./usage-limit.js";
 import {
   attachSubagentFollows,
   noteSubagentToolEvent,
@@ -48,7 +49,7 @@ const BACKGROUND_TASKS_EXTENSION_URL = new URL(
   "./pi-extensions/background-tasks.ts",
   import.meta.url,
 );
-const TERMINAL_TABS_PORT = process.env.PI_WEB_PORT || "4319";
+const TERMINAL_TABS_PORT = process.env.DEVDEN_PORT || "4319";
 
 const PLAN_MODE_PROMPT = [
   "You are in plan mode, a strictly read-only exploration phase.",
@@ -75,9 +76,17 @@ const UNTIMED_COMMANDS = new Set(["prompt", "steer", "follow_up"]);
 /** How long agent_settled gets to show up on its own after the turn's RPC
  *  response, before the response is taken as the end of the turn. */
 const STRANDED_TURN_GRACE_MS = 5_000;
+/** Silence from pi, mid-turn and outside any tool: warn at the first mark,
+ *  abort and resume at the second (codex/Claude Code both use 5 min), give up
+ *  after MODEL_STALL_MAX_RETRIES resumes. */
+const MODEL_STALL_WARN_MS = 60_000;
+const MODEL_STALL_ABORT_MS = 5 * 60_000;
+const MODEL_STALL_MAX_RETRIES = 2;
+const MODEL_STALL_CONTINUE_PROMPT =
+  "Your previous response stalled (no output from the model for several minutes) and was interrupted. Continue the task from where you left off.";
 
 function resolvePiExecutable() {
-  return process.env.PI_WEB_PI_BIN || "pi";
+  return process.env.DEVDEN_PI_BIN || "pi";
 }
 
 // pi's own answer to "what thinking levels exist" (confirmed against a live
@@ -258,9 +267,11 @@ export class PiAgentProcess {
     this.approvalGate = new ApprovalGate(this);
     /** @type {Set<(event: object) => void>} */
     this.listeners = new Set();
-    // First-response watchdog state (see armFirstResponseWatchdog).
-    this.awaitingFirstActivity = false;
-    this.firstActivityTimer = undefined;
+    // Model-stall watchdog state (see noteTurnActivity).
+    this.stallTimer = undefined;
+    this.runningTools = new Set();
+    this.stallWarned = false;
+    this.stallRetries = 0;
     // Stranded-turn backstop (see settleAfterResponse). turnSeq identifies
     // which turn a pending backstop belongs to.
     this.strandedTurnTimer = undefined;
@@ -296,15 +307,6 @@ export class PiAgentProcess {
   }
 
   emit(event) {
-    // Any sign of turn activity clears the first-response watchdog.
-    if (
-      this.awaitingFirstActivity &&
-      (event.type === "agent_start" ||
-        event.type === "message_update" ||
-        event.type === "agent_end")
-    ) {
-      this.disarmFirstResponseWatchdog();
-    }
     for (const listener of this.listeners) {
       try {
         listener(event);
@@ -315,39 +317,129 @@ export class PiAgentProcess {
   }
 
   /**
-   * A prompt whose turn never starts is invisible: pi accepted the message
-   * (it lands in the session file) but a stalled model call produced no
-   * agent_start, no deltas, and no error — the UI just sat quiet for minutes
-   * while the user wondered whether anything was sent. If the child process
-   * shows no turn activity within 60s of a prompt, tell the user plainly so
-   * they can interrupt and resend instead of waiting blind.
+   * A stalled model call is invisible: no deltas, no error, and get_state
+   * still says isStreaming:true, so the stranded-turn backstop rightly leaves
+   * it alone. The one signal that separates it from a slow tool is *who* is
+   * silent — pi announces tool_execution_start/end, so silence while no tool
+   * runs (and no approval is pending) is the model's. Re-armed on every pi
+   * event of the turn, not just the first.
    */
-  armFirstResponseWatchdog() {
-    this.disarmFirstResponseWatchdog();
-    this.awaitingFirstActivity = true;
-    this.firstActivityTimer = setTimeout(() => {
-      if (!this.awaitingFirstActivity) return;
-      this.awaitingFirstActivity = false;
-      this.emit({
-        type: "stderr",
-        sessionKey: this.sessionKey,
-        message:
-          "The model has not responded for over a minute — it may be stalled. Press esc to interrupt, then resend your message.",
-      });
-    }, 60_000);
+  noteTurnActivity(event) {
+    if (event.type === "tool_execution_start")
+      this.runningTools.add(event.toolCallId);
+    else if (event.type === "tool_execution_end")
+      this.runningTools.delete(event.toolCallId);
+    // The model producing output again is the recovery the retries were for.
+    if (event.type === "message_update") this.stallRetries = 0;
+    this.stallWarned = false;
+    if (
+      this.status !== "working" ||
+      this.runningTools.size ||
+      event.type === "extension_ui_request"
+    ) {
+      this.disarmStallWatchdog();
+      return;
+    }
+    this.armStallWatchdog();
   }
 
-  disarmFirstResponseWatchdog() {
-    this.awaitingFirstActivity = false;
-    if (this.firstActivityTimer) {
-      clearTimeout(this.firstActivityTimer);
-      this.firstActivityTimer = undefined;
+  armStallWatchdog(delayMs = MODEL_STALL_WARN_MS) {
+    this.disarmStallWatchdog();
+    const turn = this.turnSeq;
+    this.stallTimer = setTimeout(() => {
+      this.stallTimer = undefined;
+      if (this.status !== "working" || this.turnSeq !== turn) return;
+      this.onModelStall(turn);
+    }, delayMs);
+    this.stallTimer.unref?.();
+  }
+
+  disarmStallWatchdog() {
+    if (this.stallTimer) {
+      clearTimeout(this.stallTimer);
+      this.stallTimer = undefined;
     }
+  }
+
+  /** The model has been silent mid-turn: warn first, then abort and resume. */
+  onModelStall() {
+    if (!this.stallWarned) {
+      this.stallWarned = true;
+      this.emit({
+        type: "notice",
+        tone: "warning",
+        sessionKey: this.sessionKey,
+        message:
+          "No response from the model for over a minute. It will be interrupted and resumed automatically at 5 minutes — press esc to stop now.",
+      });
+      this.armStallWatchdog(MODEL_STALL_ABORT_MS - MODEL_STALL_WARN_MS);
+      return;
+    }
+    void this.retryStalledTurn().catch(() => {});
+  }
+
+  async retryStalledTurn() {
+    const attempt = this.stallRetries + 1;
+    const giveUp = attempt > MODEL_STALL_MAX_RETRIES;
+    logFault(
+      `pi model stalled mid-turn (${giveUp ? "giving up" : `retry ${attempt}`})`,
+      this.sessionKey,
+    );
+    if (!giveUp)
+      this.emit({
+        type: "notice",
+        tone: "warning",
+        sessionKey: this.sessionKey,
+        message: `The model stalled for 5 minutes. Interrupting and resuming (${attempt}/${MODEL_STALL_MAX_RETRIES})…`,
+      });
+    await this.abort().catch(() => {});
+    // Resuming before the aborted turn settles would let that late settle
+    // flip the resumed turn to "ready" and fire queued messages into it.
+    const settled = await this.waitForSettle(10_000);
+    if (!settled) {
+      this.settleTurn();
+      this.emit({ type: "agent_settled", sessionKey: this.sessionKey });
+    }
+    if (giveUp || !settled) {
+      this.stallRetries = 0;
+      this.emit({
+        type: "notice",
+        tone: "error",
+        sessionKey: this.sessionKey,
+        message: !settled
+          ? "The model stopped responding and pi could not interrupt the call. Restart the session to recover."
+          : `The model stopped responding and ${MODEL_STALL_MAX_RETRIES} automatic resumes didn't help. The turn was stopped — resend when the provider is responsive.`,
+      });
+      return;
+    }
+    // The user sent something in the gap; their turn wins.
+    if (this.status === "working") return;
+    this.stallRetries = attempt;
+    void this.prompt(MODEL_STALL_CONTINUE_PROMPT);
+  }
+
+  waitForSettle(ms) {
+    if (this.status !== "working") return Promise.resolve(true);
+    return new Promise((resolve) => {
+      const done = (ok) => {
+        clearTimeout(timer);
+        off();
+        resolve(ok);
+      };
+      const off = this.onEvent((event) => {
+        if (event.type === "__status" && event.status !== "working")
+          done(true);
+      });
+      const timer = setTimeout(() => done(false), ms);
+    });
   }
 
   /** Everything that has to happen when a turn is over, from whichever signal
    *  got here first. */
   settleTurn() {
+    this.disarmStallWatchdog();
+    this.runningTools.clear();
+    this.stallWarned = false;
     if (this.strandedTurnTimer) {
       clearTimeout(this.strandedTurnTimer);
       this.strandedTurnTimer = undefined;
@@ -357,6 +449,14 @@ export class PiAgentProcess {
     // disk, so pick up anything the live follow missed.
     this.subagents.reconcile();
     this.setStatus("ready");
+    // A usage-limit error ends the RPC turn, but the work did not finish.
+    // Flushing the queue here sends the next prompt into a dead quota and
+    // Resume then follows that prompt instead of the one that was cut off.
+    // Hold it until a later settle that is not another wall.
+    if (this.turnCutByLimit) {
+      this.turnCutByLimit = false;
+      this.holdQueue();
+    }
     // Drain first so the state snapshot cannot resurrect a chip the
     // queue_updated event just cleared.
     this.sendNextQueued();
@@ -519,14 +619,15 @@ export class PiAgentProcess {
         options.model.id,
       );
     if (options.thinkingLevel) args.push("--thinking", options.thinkingLevel);
-    const child = spawn(resolvePiExecutable(), args, {
+    const child = spawn(this.executable || resolvePiExecutable(), args, {
       cwd,
       env: withHostGuardEnv({
         ...process.env,
+        ...(this.envExtra || {}),
         // Bridge for the terminal-tab tools in background-tasks.ts: they
         // call back into this server to run/read user-visible tabs.
-        PI_WEB_PORT: TERMINAL_TABS_PORT,
-        PI_WEB_SESSION_KEY: this.sessionKey,
+        DEVDEN_PORT: TERMINAL_TABS_PORT,
+        DEVDEN_SESSION_KEY: this.sessionKey,
         FORCE_COLOR: "0",
         NO_COLOR: "1",
       }),
@@ -536,8 +637,12 @@ export class PiAgentProcess {
     child.stdout.on("data", (chunk) => this.readStdout(chunk));
     child.stderr.on("data", (chunk) => {
       const message = chunk.toString("utf8").trim();
-      if (message)
-        this.emit({ type: "stderr", sessionKey: this.sessionKey, message });
+      if (!message) return;
+      // The wall often arrives on stderr before agent_settled. Only a live
+      // turn counts: a late line must not hold the next, genuine settle.
+      if (this.status === "working" && isUsageLimitError(message))
+        this.turnCutByLimit = true;
+      this.emit({ type: "stderr", sessionKey: this.sessionKey, message });
     });
     child.once("error", (error) => {
       this.failPending(error);
@@ -594,7 +699,9 @@ export class PiAgentProcess {
   prompt(message, images) {
     this.turnSeq += 1;
     this.setStatus("working");
-    this.armFirstResponseWatchdog();
+    this.runningTools.clear();
+    this.stallWarned = false;
+    this.armStallWatchdog();
     return this.runCommand({
       type: "prompt",
       message,
@@ -604,7 +711,8 @@ export class PiAgentProcess {
   steer(message, images) {
     this.turnSeq += 1;
     this.setStatus("working");
-    this.armFirstResponseWatchdog();
+    this.stallWarned = false;
+    if (!this.runningTools.size) this.armStallWatchdog();
     return this.runCommand({
       type: "steer",
       message,
@@ -613,7 +721,7 @@ export class PiAgentProcess {
   }
   recoverIdleAfterFailedTurn(result) {
     if (!result?.ok) {
-      this.disarmFirstResponseWatchdog();
+      this.disarmStallWatchdog();
       if (this.status === "working") this.setStatus("ready");
       return result;
     }
@@ -1239,6 +1347,11 @@ export class PiAgentProcess {
     // branch's, not the parent tab's. Drop them until we switch back.
     if (this.suppressForkState) return;
     if (event.type === "agent_start") this.setStatus("working");
+    // message_end / agent_end carry errorMessage before agent_settled, which
+    // is what would otherwise release the queue.
+    if (this.status === "working" && limitErrorText(event))
+      this.turnCutByLimit = true;
+    this.noteTurnActivity(event);
     if (
       event.type === "tool_execution_start" ||
       event.type === "tool_execution_end"

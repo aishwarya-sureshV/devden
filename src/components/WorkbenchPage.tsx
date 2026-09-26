@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import {
   api,
-  type AgentSettings,
   type McpServerInfo,
   type PiCatalogResponse,
 } from "../lib/api";
@@ -21,6 +20,7 @@ import {
   setNotificationsEnabled,
 } from "../lib/notify";
 import { useStore } from "../lib/store";
+import { SettingsAgents } from "./SettingsAgents";
 
 const EMPTY_CATALOG: PiCatalogResponse = {
   ok: true,
@@ -95,7 +95,7 @@ export function WorkbenchPage({
       ? "Specialized instructions available to your local Pi agent."
       : view === "extensions"
         ? "Packages and local extensions loaded by Pi."
-        : "Workbench appearance and your current Pi defaults.";
+        : "Workbench appearance, agents, MCP and notifications.";
 
   return (
     <div className="resource-page">
@@ -205,7 +205,7 @@ function NotificationsCard() {
       notify(
         "Notifications on",
         "This is what an alert looks like.",
-        "pi-web-test",
+        "devden-test",
         { force: true },
       );
     }
@@ -335,138 +335,6 @@ function McpCard({ sessionKey }: { sessionKey?: string }) {
       ) : (
         <p className="settings-card__note">
           Open a session to see its MCP servers.
-        </p>
-      )}
-    </section>
-  );
-}
-
-/**
- * Claude Code's own settings as the running agent resolved them: what is in
- * force, which file each scope came from, and every hook that will fire.
- *
- * Read-only. The CLI's settings-write control request accepts a single key
- * (outputStyle), so it cannot honestly back an editor — the files are listed
- * with their paths instead, and the workspace explorer edits them.
- */
-function AgentSettingsCard({ sessionKey }: { sessionKey?: string }) {
-  const [settings, setSettings] = useState<AgentSettings | null>(null);
-  const [error, setError] = useState("");
-  const [showRaw, setShowRaw] = useState(false);
-
-  useEffect(() => {
-    if (!sessionKey) {
-      setSettings(null);
-      setError("");
-      return;
-    }
-    let cancelled = false;
-    void api
-      .settings(sessionKey)
-      .then((result) => {
-        if (cancelled) return;
-        if (result.ok && result.data) {
-          setSettings(result.data);
-          setError("");
-        } else {
-          setSettings(null);
-          setError(result.error ?? "Settings unavailable.");
-        }
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setSettings(null);
-          setError("Settings unavailable.");
-        }
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [sessionKey]);
-
-  return (
-    <section className="settings-card">
-      <div className="settings-card__heading">
-        <IconSettings />
-        <div>
-          <strong>Agent settings and hooks</strong>
-          <span>
-            What the running Claude session actually resolved, and where each
-            part came from.
-          </span>
-        </div>
-      </div>
-      {sessionKey ? (
-        error ? (
-          <p className="settings-card__note">{error}</p>
-        ) : settings ? (
-          <>
-            <dl className="settings-card__rows">
-              {settings.sources.map((source) => (
-                <div key={source.source}>
-                  <dt>{source.source}</dt>
-                  <dd>{Object.keys(source.settings).join(", ") || "empty"}</dd>
-                </div>
-              ))}
-            </dl>
-
-            <p className="settings-card__note">
-              <strong>{settings.hooks.length}</strong>{" "}
-              {settings.hooks.length === 1 ? "hook" : "hooks"} in force
-              {settings.hooks.length > 0 ? ":" : "."}
-            </p>
-            {settings.hooks.length > 0 && (
-              <dl className="settings-card__rows">
-                {settings.hooks.map((hook, index) => (
-                  <div key={`${hook.event}-${index}`}>
-                    <dt>
-                      {hook.event}
-                      {hook.matcher && hook.matcher !== "*"
-                        ? ` · ${hook.matcher}`
-                        : ""}
-                    </dt>
-                    <dd>
-                      <code className="settings-card__hook">
-                        {hook.command || hook.type}
-                      </code>
-                    </dd>
-                  </div>
-                ))}
-              </dl>
-            )}
-
-            <p className="settings-card__note">
-              Settings files (edit these in the workspace explorer):
-            </p>
-            <code className="settings-card__path">
-              {settings.files.userSettings}
-            </code>
-            <code className="settings-card__path">
-              {settings.files.projectSettings}
-            </code>
-            <code className="settings-card__path">
-              {settings.files.localSettings}
-            </code>
-
-            <button
-              type="button"
-              className="settings-card__reveal"
-              onClick={() => setShowRaw((v) => !v)}
-            >
-              {showRaw ? "Hide" : "Show"} resolved settings
-            </button>
-            {showRaw && (
-              <pre className="settings-card__raw">
-                {JSON.stringify(settings.effective, null, 2)}
-              </pre>
-            )}
-          </>
-        ) : (
-          <p className="settings-card__note">Loading…</p>
-        )
-      ) : (
-        <p className="settings-card__note">
-          Open a session to see its resolved settings.
         </p>
       )}
     </section>
@@ -718,6 +586,9 @@ function ResourceList({
   );
 }
 
+const SETTINGS_TABS = ["Appearance", "Agents", "MCP", "Notifications"] as const;
+type SettingsTab = (typeof SETTINGS_TABS)[number];
+
 function SettingsView({
   catalog,
   theme,
@@ -733,6 +604,7 @@ function SettingsView({
   onShowThinkingChange: (show: boolean) => void;
   sessionKey?: string;
 }) {
+  const [tab, setTab] = useState<SettingsTab>("Appearance");
   const settings = catalog.settings;
   const rows = [
     ["Default provider", settings.defaultProvider || "Not set"],
@@ -745,91 +617,115 @@ function SettingsView({
   ];
   return (
     <div className="settings-stack">
-      <section className="settings-card">
-        <div className="settings-card__heading">
-          <IconSettings />
-          <div>
-            <strong>Workbench appearance</strong>
-            <span>Choose how Pi Workbench looks.</span>
-          </div>
-        </div>
-        <div
-          className="settings-card__theme"
-          role="group"
-          aria-label="Workbench appearance"
-        >
+      <div
+        className="settings-tabs"
+        role="tablist"
+        aria-label="Settings sections"
+      >
+        {SETTINGS_TABS.map((name) => (
           <button
+            key={name}
             type="button"
-            className={theme === "light" ? "is-active" : ""}
-            aria-pressed={theme === "light"}
-            onClick={() => onThemeChange("light")}
+            role="tab"
+            aria-selected={tab === name}
+            className={tab === name ? "is-active" : ""}
+            onClick={() => setTab(name)}
           >
-            Light
+            {name}
           </button>
-          <button
-            type="button"
-            className={theme === "dark" ? "is-active" : ""}
-            aria-pressed={theme === "dark"}
-            onClick={() => onThemeChange("dark")}
-          >
-            Dark
-          </button>
-        </div>
-      </section>
-      <section className="settings-card">
-        <div className="settings-card__heading">
-          <IconSettings />
-          <div>
-            <strong>Thinking blocks</strong>
-            <span>Show the agent's reasoning text between its replies.</span>
-          </div>
-        </div>
-        <div
-          className="settings-card__theme"
-          role="group"
-          aria-label="Thinking blocks"
-        >
-          <button
-            type="button"
-            className={!showThinking ? "is-active" : ""}
-            aria-pressed={!showThinking}
-            onClick={() => onShowThinkingChange(false)}
-          >
-            Hidden
-          </button>
-          <button
-            type="button"
-            className={showThinking ? "is-active" : ""}
-            aria-pressed={showThinking}
-            onClick={() => onShowThinkingChange(true)}
-          >
-            Shown
-          </button>
-        </div>
-      </section>
-      <NotificationsCard />
-      <McpCard sessionKey={sessionKey} />
-      <AgentSettingsCard sessionKey={sessionKey} />
-      <section className="settings-card">
-        <div className="settings-card__heading">
-          <IconCube />
-          <div>
-            <strong>Pi defaults</strong>
-            <span>Read from your local Pi settings.</span>
-          </div>
-        </div>
-        <dl className="settings-card__rows">
-          {rows.map(([label, value]) => (
-            <div key={label}>
-              <dt>{label}</dt>
-              <dd>{value}</dd>
+        ))}
+      </div>
+      {tab === "Appearance" && (
+        <>
+          <section className="settings-card">
+            <div className="settings-card__heading">
+              <IconSettings />
+              <div>
+                <strong>Workbench appearance</strong>
+                <span>Choose how Pi Workbench looks.</span>
+              </div>
             </div>
-          ))}
-        </dl>
-        {settings.path && (
-          <code className="settings-card__path">{settings.path}</code>
-        )}
-      </section>
+            <div
+              className="settings-card__theme"
+              role="group"
+              aria-label="Workbench appearance"
+            >
+              <button
+                type="button"
+                className={theme === "light" ? "is-active" : ""}
+                aria-pressed={theme === "light"}
+                onClick={() => onThemeChange("light")}
+              >
+                Light
+              </button>
+              <button
+                type="button"
+                className={theme === "dark" ? "is-active" : ""}
+                aria-pressed={theme === "dark"}
+                onClick={() => onThemeChange("dark")}
+              >
+                Dark
+              </button>
+            </div>
+          </section>
+          <section className="settings-card">
+            <div className="settings-card__heading">
+              <IconSettings />
+              <div>
+                <strong>Thinking blocks</strong>
+                <span>
+                  Show the agent's reasoning text between its replies.
+                </span>
+              </div>
+            </div>
+            <div
+              className="settings-card__theme"
+              role="group"
+              aria-label="Thinking blocks"
+            >
+              <button
+                type="button"
+                className={showThinking ? "" : "is-active"}
+                aria-pressed={!showThinking}
+                onClick={() => onShowThinkingChange(false)}
+              >
+                Hidden
+              </button>
+              <button
+                type="button"
+                className={showThinking ? "is-active" : ""}
+                aria-pressed={showThinking}
+                onClick={() => onShowThinkingChange(true)}
+              >
+                Shown
+              </button>
+            </div>
+          </section>
+          <section className="settings-card">
+            <div className="settings-card__heading">
+              <IconCube />
+              <div>
+                <strong>Pi defaults</strong>
+                <span>Read from your local Pi settings.</span>
+              </div>
+            </div>
+            <dl className="settings-card__rows">
+              {rows.map(([label, value]) => (
+                <div key={label}>
+                  <dt>{label}</dt>
+                  <dd>{value}</dd>
+                </div>
+              ))}
+            </dl>
+            {settings.path && (
+              <code className="settings-card__path">{settings.path}</code>
+            )}
+          </section>
+        </>
+      )}
+      {tab === "Agents" && <SettingsAgents />}
+      {tab === "MCP" && <McpCard sessionKey={sessionKey} />}
+      {tab === "Notifications" && <NotificationsCard />}
     </div>
   );
 }

@@ -1,5 +1,5 @@
 import {
-  AGENT_BACKENDS,
+  agentBackendIds,
   backendLabel,
   type AgentBackend,
   type ResumeSession,
@@ -147,7 +147,7 @@ export function sessionFilterCatalog(
     AgentBackend,
     { count: number; models: Map<string, number> }
   >();
-  for (const backend of AGENT_BACKENDS) {
+  for (const backend of agentBackendIds()) {
     byBackend.set(backend, { count: 0, models: new Map() });
   }
   for (const session of sessions) {
@@ -158,7 +158,7 @@ export function sessionFilterCatalog(
     if (!model) continue;
     group.models.set(model, (group.models.get(model) ?? 0) + 1);
   }
-  return AGENT_BACKENDS.map((backend) => {
+  return agentBackendIds().map((backend) => {
     const group = byBackend.get(backend)!;
     return {
       backend,

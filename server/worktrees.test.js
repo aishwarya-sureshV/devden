@@ -26,7 +26,7 @@ import {
 function repo(ignore = "node_modules\n.env\n") {
   // realpath: macOS hands out /var/... which is a symlink to /private/var,
   // and git reports the resolved form back.
-  const dir = realpathSync(mkdtempSync(join(tmpdir(), "pi-web-wt-")));
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), "devden-wt-")));
   const git = (...args) =>
     execFileSync("git", ["-C", dir, ...args], { encoding: "utf8" });
   git("init", "-q", "-b", "main");

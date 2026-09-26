@@ -90,8 +90,8 @@ describe("shell wrapper", () => {
   it("lets echo through and refuses kill of the guarded pid", async () => {
     const env = withHostGuardEnv({
       ...process.env,
-      PI_WEB_HOST_GUARD_PIDS: "4242",
-      PI_WEB_HOST_GUARD_PORT: "4319",
+      DEVDEN_HOST_GUARD_PIDS: "4242",
+      DEVDEN_HOST_GUARD_PORT: "4319",
     });
     const bash = join(env.PATH.split(":")[0], "bash");
     const ok = await run(bash, ["-c", "echo hi"], env);

@@ -19,7 +19,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
-const STATE_PATH = join(homedir(), ".pi", "agent", "pi-web-inflight.json");
+const STATE_PATH = join(homedir(), ".pi", "agent", "devden-inflight.json");
 // A turn interrupted days ago is stale context, not work in progress; the
 // user has moved on and silently spending tokens on it would be worse than
 // dropping it.

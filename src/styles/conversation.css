@@ -864,7 +864,6 @@
 }
 .backend-log__live-dot.is-live {
  background: var(--pw-green);
- box-shadow: 0 0 0 3px color-mix(in srgb, var(--pw-green) 16%, transparent);
 }
 .backend-log__actions > button {
  min-height: 30px;
@@ -1505,7 +1504,6 @@
 }
 .tl__node.is-live {
  background: var(--ds-activity);
- box-shadow: 0 0 8px var(--ds-activity);
 }
 
 /* connecting vertical line */
@@ -2871,7 +2869,6 @@
  height: 7px;
  border-radius: 50%;
  background: var(--pw-accent);
- box-shadow: 0 0 0 3px color-mix(in srgb, var(--pw-accent) 16%, transparent);
 }
 .todo-tracker__label {
  font-weight: 600;
@@ -3025,6 +3022,8 @@
 }
 .session-grid.is-split .composer__card,
 .session-grid.is-split .composer__turn-bar,
+.session-grid.is-split .queue-strip,
+.session-grid.is-split .limit-strip,
 .session-grid.is-split .changes,
 .session-grid.is-split .todo-tracker,
 .session-grid.is-split .route-setup,
@@ -3035,6 +3034,11 @@
 .session-grid.is-split .review-card,
 .session-grid.is-split .route-card {
  max-width: 100%;
+}
+/* The handoff row sits under the composer. With two or more panes it
+   changes each column's height, so the inputs no longer line up. */
+.session-grid.is-split .composer__handoff {
+ display: none;
 }
 .composer--tight .composer__card {
  gap: 4px;
@@ -3288,7 +3292,6 @@
 }
 .composer__primary:hover:not(:disabled) {
  background: var(--dsw-alias-state-business-tertiary);
- filter: brightness(0.97);
 }
 .composer__primary:disabled {
  opacity: 0.45;
@@ -3998,6 +4001,18 @@
  opacity: 0.45;
  cursor: default;
 }
+.workspace-explorer__codetheme {
+ flex: none;
+ min-height: 28px;
+ padding: 0 6px;
+ border: 1px solid var(--dsw-alias-border-l2);
+ border-radius: 7px;
+ background: transparent;
+ color: var(--dsw-alias-label-caption);
+ font-size: 11.5px;
+ font-family: inherit;
+ cursor: pointer;
+}
 .workspace-code-editor {
  flex: 1;
  min-height: 0;
@@ -4393,7 +4408,7 @@ body[data-ds-dark-theme] .workspace-code-editor {
 /* Dark sessions view: matte body + orange copy.
    Sidebar and composer tokens are left alone. */
 body[data-ds-dark-theme] .conversation-stage .user-msg {
- color: #c8c2b8;
+ color: var(--pw-fg);
  -webkit-font-smoothing: auto;
 }
 body[data-ds-dark-theme] .conversation-stage .rich-text strong,
@@ -4788,7 +4803,11 @@ body[data-ds-dark-theme] .conversation-stage .rich-text :not(pre) > code {
  cursor: pointer;
 }
 .changes__push:hover {
- filter: brightness(1.06);
+ background: color-mix(
+  in srgb,
+  var(--dsw-alias-state-business-primary, #b05d13) 86%,
+  black
+ );
 }
 .changes__push:disabled {
  opacity: 0.6;
@@ -5217,7 +5236,6 @@ body[data-ds-dark-theme] .conversation-stage .rich-text :not(pre) > code {
  width: 100%;
  max-width: calc(var(--pw-chat-content-width) - 48px);
  box-sizing: border-box;
- padding: 0 16px;
 }
 .queue-chip {
  display: flex;

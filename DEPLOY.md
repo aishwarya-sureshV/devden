@@ -1,4 +1,4 @@
-# Deploying pi-web to the cloud (cheapest options)
+# Deploying devden to the cloud (cheapest options)
 
 The conversation header has a **split Deploy button**:
 
@@ -12,7 +12,7 @@ The conversation header has a **split Deploy button**:
     pushed to your remote. Shows the last deployed commit id and the current
     HEAD commit id — nothing else.
 
-Both share one state file (`.pi-web-deploy.json`), which keeps `lastLocal`
+Both share one state file (`.devden-deploy.json`), which keeps `lastLocal`
 and `lastCloud` history separately. The amber dot on the primary button means
 the working tree differs from the most recent deploy of either kind (it
 hashes HEAD + status + diff into a tree signature, so uncommitted edits count
@@ -23,7 +23,7 @@ too).
 ## Option 1 — Oracle Cloud Always Free ($0/mo, recommended)
 
 Genuinely free forever (no trial expiry). As of June 2026 the ARM Ampere A1
-allowance is 2 OCPU / 12 GB RAM — still enough for pi-web, `npm run build`,
+allowance is 2 OCPU / 12 GB RAM — still enough for devden, `npm run build`,
 and ollama with small models (7–8B q4). Sign-up needs a card for verification
 but is not charged on Always Free resources.
 
@@ -40,9 +40,9 @@ Setup:
    curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
    sudo apt install -y nodejs
    sudo adduser --disabled-password piweb
-   sudo git clone <your-repo-url> /opt/pi-web
-   sudo chown -R piweb:piweb /opt/pi-web
-   cd /opt/pi-web && sudo -u piweb npm install && sudo -u piweb npm run build
+   sudo git clone <your-repo-url> /opt/devden
+   sudo chown -R piweb:piweb /opt/devden
+   cd /opt/devden && sudo -u piweb npm install && sudo -u piweb npm run build
    ```
 
 4. Ollama (optional — see "Where should ollama run?" below):
@@ -52,22 +52,22 @@ Setup:
    sudo -u piweb ollama pull qwen2.5-coder:7b   # or your model
    ```
 
-5. systemd service — create `/etc/systemd/system/pi-web.service`:
+5. systemd service — create `/etc/systemd/system/devden.service`:
 
    ```ini
    [Unit]
-   Description=pi-web
+   Description=devden
    After=network-online.target
    Wants=network-online.target
 
    [Service]
    Type=simple
    User=piweb
-   WorkingDirectory=/opt/pi-web
-   Environment=PI_WEB_PORT=4319
-   Environment=PI_WEB_HOST=0.0.0.0
-   Environment=PI_WEB_TOKEN=change-me-to-a-long-random-string
-   Environment=PI_WEB_DEPLOY_MODE=cloud
+   WorkingDirectory=/opt/devden
+   Environment=DEVDEN_PORT=4319
+   Environment=DEVDEN_HOST=0.0.0.0
+   Environment=DEVDEN_TOKEN=change-me-to-a-long-random-string
+   Environment=DEVDEN_DEPLOY_MODE=cloud
    ExecStart=/usr/bin/node server/index.js
    Restart=always
    RestartSec=2
@@ -79,9 +79,9 @@ Setup:
    `Restart=always` is what makes the Deploy button work here: after a deploy
    the old process SIGTERMs itself and systemd brings the new build up.
 
-6. Start it: `sudo systemctl enable --now pi-web`, then visit
+6. Start it: `sudo systemctl enable --now devden`, then visit
    `http://<instance-ip>:4319` (open port 4319 in the instance's security list
-   - the default VCN security list). Log in with your PI_WEB_TOKEN.
+   - the default VCN security list). Log in with your DEVDEN_TOKEN.
 
 Cost: **$0**. Downside: sign-up can be picky, ARM capacity is sometimes scarce.
 
@@ -96,7 +96,7 @@ but more moving parts than a plain VPS.
 
 ## Option 3 — Hetzner CX23 (~€5.5/mo, most reliable cheap VPS)
 
-EU-based, 2 vCPU / 4 GB RAM. Great uptime; 4 GB is fine for pi-web + builds,
+EU-based, 2 vCPU / 4 GB RAM. Great uptime; 4 GB is fine for devden + builds,
 tight for ollama (use their 8 GB CX34 if you want models on the box). Setup is
 identical to Oracle steps 3–6 above.
 
@@ -109,7 +109,7 @@ option; quality/hardware varies. Same setup as Oracle steps 3–6.
 
 ## Where should ollama run?
 
-pi-web reaches ollama at `OLLAMA_HOST` (default `http://127.0.0.1:11434`).
+devden reaches ollama at `OLLAMA_HOST` (default `http://127.0.0.1:11434`).
 
 - **On the VPS** (only Oracle's 12 GB RAM makes this comfortable):
   install ollama locally on the box; nothing else to configure.
@@ -123,7 +123,7 @@ pi-web reaches ollama at `OLLAMA_HOST` (default `http://127.0.0.1:11434`).
 
 ## HTTPS (strongly recommended)
 
-`PI_WEB_HOST=0.0.0.0` with token auth is OK for testing but plain HTTP means
+`DEVDEN_HOST=0.0.0.0` with token auth is OK for testing but plain HTTP means
 the token crosses the internet in the clear. Easiest free fix — Cloudflare
 Tunnel (also hides the server's IP, no open inbound ports):
 
@@ -131,9 +131,9 @@ Tunnel (also hides the server's IP, no open inbound ports):
 # on the VPS
 sudo apt install -y cloudflared
 cloudflared tunnel login
-cloudflared tunnel create pi-web
-cloudflared tunnel route dns pi-web piweb.<yourdomain>.com
-cloudflared tunnel run --url http://127.0.0.1:4319 pi-web
+cloudflared tunnel create devden
+cloudflared tunnel route dns devden piweb.<yourdomain>.com
+cloudflared tunnel run --url http://127.0.0.1:4319 devden
 # then run it as a service: sudo cloudflared service install
 ```
 
@@ -147,6 +147,6 @@ cloudflared tunnel run --url http://127.0.0.1:4319 pi-web
   you push to; the pull is `--ff-only`, so push before deploying.
 - **Button stuck on "Deploying…"** — status auto-marks stale after 15 min; a
   stuck build shows in the tooltip's log tail.
-- **Nothing happens** — check `journalctl -u pi-web -f` (systemd) or the
+- **Nothing happens** — check `journalctl -u devden -f` (systemd) or the
   terminal running `npm run dev` (local): the deployer logs land in the state
   file, but supervisor/systemd restarts are visible there.

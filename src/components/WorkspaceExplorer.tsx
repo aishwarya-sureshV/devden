@@ -15,6 +15,12 @@ import {
   type WorkspaceFileResponse,
 } from "../lib/api";
 import { highlightCode } from "../lib/highlight";
+import {
+  applyCodeTheme,
+  CODE_THEMES,
+  codeTheme,
+  type CodeThemeId,
+} from "../lib/codeTheme";
 import { langFromPath } from "../lib/toolCards";
 import type { EditorNavigation } from "./CodeEditor";
 import {
@@ -135,6 +141,7 @@ function ExplorerPanel({
   const [draft, setDraft] = useState("");
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [codeThemeId, setCodeThemeId] = useState<CodeThemeId>(codeTheme);
   const [fileLoading, setFileLoading] = useState(false);
   const [query, setQuery] = useState("");
   const [showHidden, setShowHidden] = useState(false);
@@ -155,11 +162,11 @@ function ExplorerPanel({
   } | null>(null);
   const [navigation, setNavigation] = useState<EditorNavigation | null>(null);
   const [panelWidth, setPanelWidth] = useState(() => {
-    const stored = Number(localStorage.getItem("pi-web.workspace-width"));
+    const stored = Number(localStorage.getItem("devden.workspace-width"));
     return Number.isFinite(stored) ? Math.min(860, Math.max(360, stored)) : 560;
   });
   const [treeWidth, setTreeWidth] = useState(() => {
-    const stored = Number(localStorage.getItem("pi-web.workspace-tree-width"));
+    const stored = Number(localStorage.getItem("devden.workspace-tree-width"));
     return Number.isFinite(stored) ? Math.min(420, Math.max(168, stored)) : 228;
   });
 
@@ -407,14 +414,14 @@ function ExplorerPanel({
       Math.round(window.innerWidth * 0.82),
     );
     setPanelWidth(next);
-    localStorage.setItem("pi-web.workspace-width", String(next));
+    localStorage.setItem("devden.workspace-width", String(next));
     return next;
   };
 
   const persistTreeWidth = (width: number) => {
     const next = Math.min(420, Math.max(168, width));
     setTreeWidth(next);
-    localStorage.setItem("pi-web.workspace-tree-width", String(next));
+    localStorage.setItem("devden.workspace-tree-width", String(next));
     return next;
   };
 
@@ -694,6 +701,22 @@ function ExplorerPanel({
                     ⌘-click to jump
                   </span>
                 )}
+                <select
+                  className="workspace-explorer__codetheme"
+                  value={codeThemeId}
+                  title="Syntax theme"
+                  onChange={(event) => {
+                    const id = event.target.value as CodeThemeId;
+                    applyCodeTheme(id);
+                    setCodeThemeId(id);
+                  }}
+                >
+                  {CODE_THEMES.map((theme) => (
+                    <option key={theme.id} value={theme.id}>
+                      {theme.label}
+                    </option>
+                  ))}
+                </select>
                 {canEdit && (
                   <button
                     type="button"

@@ -103,7 +103,7 @@ function commandText(item: ToolItem): string {
 }
 
 export function ToolDetailsRail({ group, onClose }: { group: ToolGroup; onClose: () => void }) {
-  const [width, setWidth] = useState(() => Number(localStorage.getItem('pi-web.tool-rail-width')) || 480)
+  const [width, setWidth] = useState(() => Number(localStorage.getItem('devden.tool-rail-width')) || 480)
   useEffect(() => {
     const close = (event: KeyboardEvent) => { if (event.key === 'Escape') onClose() }
     window.addEventListener('keydown', close)
@@ -121,7 +121,7 @@ export function ToolDetailsRail({ group, onClose }: { group: ToolGroup; onClose:
       window.removeEventListener('pointermove', move)
       window.removeEventListener('pointerup', stop)
       setWidth((current) => {
-        localStorage.setItem('pi-web.tool-rail-width', String(Math.round(current)))
+        localStorage.setItem('devden.tool-rail-width', String(Math.round(current)))
         return current
       })
     }

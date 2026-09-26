@@ -1,10 +1,10 @@
 {
-  "name": "pi-web",
+  "name": "devden",
   "version": "0.1.0",
   "type": "module",
   "description": "Web workbench for local coding agents: pi, Claude Code, and grok",
   "bin": {
-    "pi-web": "bin/pi-web",
+    "devden": "bin/devden",
     "claude-web": "bin/claude-web"
   },
   "files": [

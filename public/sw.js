@@ -9,7 +9,7 @@
  * Caching agent traffic would be actively wrong: the transcript is live state,
  * and a stale shell would silently pin the UI to an old build.
  */
-const SHELL = "pi-web-shell-v1";
+const SHELL = "devden-shell-v1";
 const SHELL_URL = "/index.html";
 
 self.addEventListener("install", (event) => {

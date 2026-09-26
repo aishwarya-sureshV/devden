@@ -91,6 +91,6 @@ test("fires when the page is backgrounded", () => {
 test("force sends even a visible page, for the settings test ping", () => {
   reset("granted", "visible");
   setNotificationsEnabled(true);
-  notify("Notifications on", "body", "pi-web-test", { force: true });
+  notify("Notifications on", "body", "devden-test", { force: true });
   assert.equal(sent.length, 1);
 });

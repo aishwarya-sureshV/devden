@@ -10,7 +10,7 @@
  * tab is alive (backgrounded is fine; fully closed is not).
  */
 
-const ENABLED_KEY = "pi-web.notifications";
+const ENABLED_KEY = "devden.notifications";
 
 let registration: ServiceWorkerRegistration | null = null;
 

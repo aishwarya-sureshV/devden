@@ -61,8 +61,8 @@ function workspaceLabel(cwd: string): string {
   return cwd.split("/").filter(Boolean).at(-1) || cwd || "Other";
 }
 
-const FILTERS_KEY = "pi-web.session-filters";
-const LEGACY_MODEL_FILTER_KEY = "pi-web.session-model-filter";
+const FILTERS_KEY = "devden.session-filters";
+const LEGACY_MODEL_FILTER_KEY = "devden.session-model-filter";
 
 function loadSessionFilters(): { backends: AgentBackend[]; models: string[] } {
   try {
@@ -73,8 +73,9 @@ function loadSessionFilters(): { backends: AgentBackend[]; models: string[] } {
         models?: unknown;
       };
       const backends = Array.isArray(parsed.backends)
-        ? parsed.backends.filter((value): value is AgentBackend =>
-            AGENT_BACKENDS.includes(value as AgentBackend),
+        ? parsed.backends.filter(
+            (value): value is AgentBackend =>
+              typeof value === "string" && /^[a-z][a-z0-9-]{0,40}$/.test(value),
           )
         : [];
       const models = Array.isArray(parsed.models)
@@ -253,7 +254,11 @@ export function Sidebar({
     deleteWorkspace,
     defaultBackend,
     setDefaultBackend,
+    backendCatalog,
   } = useStore();
+  const backendIds = backendCatalog.length
+    ? backendCatalog.map((item) => item.id)
+    : [...AGENT_BACKENDS];
   // The agent a NEW session starts on. Saved sessions always reopen on the
   // agent that wrote them, so the sidebar lists every backend at once.
   const currentBackend: AgentBackend = defaultBackend;
@@ -275,7 +280,7 @@ export function Sidebar({
     sessionView === "archived" ? archivedSessions : resumeSessions;
   const filterCatalog = useMemo(
     () => sessionFilterCatalog(savedSessions),
-    [savedSessions],
+    [savedSessions, backendCatalog],
   );
   const backendFilter = useMemo(
     () =>
@@ -629,7 +634,7 @@ export function Sidebar({
                 role="menu"
               >
                 <div className="sidebar__backend-heading">backend</div>
-                {AGENT_BACKENDS.map((backend) => {
+                {backendIds.map((backend) => {
                   const mark = backendMark(backend);
                   const active = currentBackend === backend;
                   return (

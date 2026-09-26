@@ -18,12 +18,12 @@ if (reason) {
   process.exit(1);
 }
 
-const real = realBinary(tool, process.env.PI_WEB_HOST_GUARD_PATH);
+const real = realBinary(tool, process.env.DEVDEN_HOST_GUARD_PATH);
 const child = spawn(real, args, {
   stdio: "inherit",
   env: {
     ...process.env,
-    PATH: process.env.PI_WEB_HOST_GUARD_PATH || process.env.PATH,
+    PATH: process.env.DEVDEN_HOST_GUARD_PATH || process.env.PATH,
   },
 });
 child.on("error", (error) => {

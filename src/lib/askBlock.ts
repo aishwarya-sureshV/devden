@@ -3,9 +3,10 @@
  *
  * CLARIFY_PROMPT tells every backend to ask its questions inside an ```ask
  * fence holding JSON, so the UI can render pickable options instead of asking
- * the user to type an answer to a question the model already enumerated. The
- * fence is the whole protocol: no tool channel, which matters because pi
- * (RPC), claude (SDK) and grok (ACP) have three different ones.
+ * the user to type an answer to a question the model already enumerated. A
+ * ```json fence with that same payload counts too: some models (glm-5.3-flash)
+ * tag the fence json. The fence is the whole protocol: no tool channel, which
+ * matters because pi (RPC), claude (SDK) and grok (ACP) have three different ones.
  */
 
 export interface AskOption {
@@ -45,7 +46,12 @@ export function firstAskPayload(text: string | undefined): string | null {
         return lines.slice(i + 1, j).join("\n");
       }
     }
-    return null;
+    // No closing fence: glm-5.3 tags the fence open and appends a
+    // hallucinated tool-call tail (</arg_value></tool_call>) instead of the
+    // closer, so the body reads unterminated even though the payload is
+    // complete. Return the body and let parseAsk validate — a half-streamed
+    // payload just won't parse, so streaming still shows the pending card.
+    return lines.slice(i + 1).join("\n");
   }
   return null;
 }
@@ -59,17 +65,74 @@ export function firstAsk(text: string | undefined): AskQuestion[] | null {
 /**
  * Questions from a message: the first ```ask fence, or — when the model kept
  * the payload but dropped the fence markers (flash-tier models do this) — the
- * bare JSON itself. Only a message that is exactly the payload matches here;
- * JSON.parse fails fast on any surrounding prose, so ordinary replies that
- * merely mention or quote the shape never become cards.
+ * bare JSON itself, or a ```json fence whose body is that same payload
+ * (glm-5.3-flash tags the fence json). Only a message that is exactly the
+ * payload matches the bare path; JSON.parse fails fast on any surrounding
+ * prose, so ordinary replies that merely mention or quote the shape never
+ * become cards. A json fence still has to parse as questions with options.
  */
 export function messageAsk(text: string | undefined): AskQuestion[] | null {
-  return firstAsk(text) ?? parseAsk((text ?? "").trim());
+  return firstAsk(text) ?? parseAsk((text ?? "").trim()) ?? firstJsonAsk(text);
 }
 
 /** Does this message carry the ask protocol, fenced or bare? */
 export function isAskMessage(text: string | undefined): boolean {
-  return hasAskBlock(text) || parseAsk((text ?? "").trim()) !== null;
+  return messageAsk(text) !== null || hasAskBlock(text);
+}
+
+/** Start of a fence-less questions payload still streaming in. */
+const BARE_ASK_START = /^\s*\{\s*"questions"\s*:/;
+
+/**
+ * Open ```json fence whose body has started the questions object. A finished
+ * fence is messageAsk's job; this only covers the stream, before the closer.
+ */
+const JSON_ASK_STREAM =
+  /(?:^|\n)[ ]{0,3}(?:`{3,}|~{3,})[ \t]*json[ \t]*\n[\s\S]*\{\s*"questions"\s*:/i;
+
+/** Live check: an ask is on the way but not parseable yet. */
+export function askIncoming(text: string | undefined): boolean {
+  const raw = text ?? "";
+  if (messageAsk(raw)) return false;
+  if (hasAskBlock(raw) || BARE_ASK_START.test(raw)) return true;
+  return JSON_ASK_STREAM.test(raw);
+}
+
+/**
+ * First ```json fence whose body parses as questions. Other fences are
+ * skipped. An unclosed fence swallows the rest of the message, so this
+ * returns null until the closer arrives.
+ */
+function firstJsonAsk(text: string | undefined): AskQuestion[] | null {
+  const lines = (text ?? "").replace(/\r\n/g, "\n").split("\n");
+  for (let i = 0; i < lines.length; i++) {
+    const open = /^( {0,3})(`{3,}|~{3,})[ \t]*([^\s`]*)[ \t]*$/.exec(
+      lines[i] ?? "",
+    );
+    if (!open) continue;
+    const lang = (open[3] ?? "").toLowerCase();
+    const marker = open[2] ?? "```";
+    const char = marker[0];
+    let close = -1;
+    for (let j = i + 1; j < lines.length; j++) {
+      const end = /^( {0,3})(`{3,}|~{3,})\s*$/.exec(lines[j] ?? "");
+      if (
+        end &&
+        (end[2] ?? "")[0] === char &&
+        (end[2] ?? "").length >= marker.length
+      ) {
+        close = j;
+        break;
+      }
+    }
+    if (close === -1) return null;
+    if (lang === "json") {
+      const parsed = parseAsk(lines.slice(i + 1, close).join("\n"));
+      if (parsed) return parsed;
+    }
+    i = close;
+  }
+  return null;
 }
 
 /**
@@ -77,10 +140,23 @@ export function isAskMessage(text: string | undefined): boolean {
  * half-streamed fence, or a model that wrote prose in it — so callers fall
  * back to rendering the raw block rather than showing a broken card.
  */
+/** A line that is only XML tags — the tool-call tail glm-5.3 emits instead
+ *  of the closing fence (`</arg_value></tool_call>`). Never valid JSON, so
+ *  stripping trailing ones before parsing is safe. */
+const XML_TAG_LINE = /^\s*(?:<\/?[a-zA-Z][^<>]*>[\s]*)+$/;
+
+function stripTrailingXmlTags(raw: string): string {
+  const lines = raw.replace(/\r\n/g, "\n").split("\n");
+  while (lines.length > 0 && XML_TAG_LINE.test(lines[lines.length - 1] ?? "")) {
+    lines.pop();
+  }
+  return lines.join("\n");
+}
+
 export function parseAsk(raw: string): AskQuestion[] | null {
   let parsed: unknown;
   try {
-    parsed = JSON.parse(raw);
+    parsed = JSON.parse(stripTrailingXmlTags(raw));
   } catch {
     return null;
   }

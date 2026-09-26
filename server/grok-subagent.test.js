@@ -393,7 +393,7 @@ test("idle turn closes as soon as grok journals turn_completed", async () => {
   process.env.GROK_HOME = home;
   try {
     const agent = stubAliveAgent("idle-file-check");
-    agent.cwd = "/tmp/pi-web-idle-cwd";
+    agent.cwd = "/tmp/devden-idle-cwd";
     agent.sessionId = "sess-1";
     const updates = join(
       home,
@@ -478,7 +478,7 @@ test("a tool-only turn_completed does not settle the live prompt", async () => {
   process.env.GROK_HOME = home;
   try {
     const agent = stubAliveAgent("tool-tail-watch");
-    agent.cwd = "/tmp/pi-web-tool-tail-cwd";
+    agent.cwd = "/tmp/devden-tool-tail-cwd";
     agent.sessionId = "sess-tool-tail";
     const updates = join(
       home,
@@ -554,7 +554,7 @@ test("a hung prompt settles when grok journals turn_completed", async () => {
   process.env.GROK_HOME = home;
   try {
     const agent = stubAliveAgent("prompt-file-check");
-    agent.cwd = "/tmp/pi-web-prompt-cwd";
+    agent.cwd = "/tmp/devden-prompt-cwd";
     agent.sessionId = "sess-prompt";
     const updates = join(
       home,
@@ -639,7 +639,7 @@ test("readJsonlFromOffset tails new rows without rereading the prefix", () => {
 test(
   "pumpSubagent emits nested tools and text from the child jsonl",
   withGrokHome(async (home) => {
-    const cwd = "/tmp/pi-web-pump-cwd";
+    const cwd = "/tmp/devden-pump-cwd";
     const childId = "child-pump-1";
     const files = childLayout(home, cwd, "parent-1", childId);
     writeFileSync(
@@ -704,7 +704,7 @@ test(
 test(
   "parent ACP child tools are hidden once the jsonl pump has their ids",
   withGrokHome(async (home) => {
-    const cwd = "/tmp/pi-web-hide-cwd";
+    const cwd = "/tmp/devden-hide-cwd";
     const childId = "child-hide-1";
     const files = childLayout(home, cwd, "parent-1", childId);
     writeFileSync(
@@ -832,7 +832,7 @@ test("waitForSubagentFollows wakes every waiter when the last follow ends", asyn
 test(
   "parent ACP chunks during a follow do not start an idle turn",
   withGrokHome(async (home) => {
-    const cwd = "/tmp/pi-web-noidle-cwd";
+    const cwd = "/tmp/devden-noidle-cwd";
     const childId = "child-noidle-1";
     childLayout(home, cwd, "parent-1", childId);
     const agent = stubAliveAgent("no-idle-while-follow");
@@ -855,7 +855,7 @@ test(
   withGrokHome(async (home) => {
     setStallMsForTesting(5 * 60_000);
     try {
-    const cwd = "/tmp/pi-web-output-cwd";
+    const cwd = "/tmp/devden-output-cwd";
     const childId = "child-output-1";
     const files = childLayout(home, cwd, "parent-1", childId);
     writeFileSync(

@@ -14,7 +14,7 @@ import {
 } from "./snapshots.js";
 
 function repo() {
-  const dir = mkdtempSync(join(tmpdir(), "pi-web-snap-"));
+  const dir = mkdtempSync(join(tmpdir(), "devden-snap-"));
   const git = (...args) =>
     execFileSync("git", ["-C", dir, ...args], { encoding: "utf8" });
   git("init", "-q", "-b", "main");
@@ -149,7 +149,7 @@ test("snapshotAfterFork skips a skewed pre-prompt snapshot when a later one exis
 });
 
 test("a directory that is not a repo fails without throwing", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "pi-web-snap-bare-"));
+  const dir = mkdtempSync(join(tmpdir(), "devden-snap-bare-"));
   assert.equal((await takeSnapshot(dir, "x")).ok, false);
   assert.equal((await restoreSnapshot(dir)).ok, false);
   rmSync(dir, { recursive: true, force: true });

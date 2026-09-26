@@ -45,7 +45,7 @@ export function asyncDirOf(result) {
 }
 
 // The extension's own ASYNC_DIR (shared/types.ts): PI_SUBAGENTS_TEMP_ROOT, or
-// <tmpdir>/pi-subagents-uid-<uid>. pi-web runs as the same user on the same
+// <tmpdir>/pi-subagents-uid-<uid>. devden runs as the same user on the same
 // host as pi, so recomputing it here lands on the same directory.
 function asyncRunsRoot() {
   const configured = process.env.PI_SUBAGENTS_TEMP_ROOT?.trim();
@@ -216,7 +216,7 @@ export function statusTerminal(status) {
 }
 
 /**
- * Turn a child's pi session log into the events pi-web already renders,
+ * Turn a child's pi session log into the events devden already renders,
  * skipping the `messagesBefore` it has already published.
  *
  * A child session is an ordinary pi log: `assistant` messages carrying
@@ -325,7 +325,7 @@ export function setStallMsForTesting(ms, settle, quiet) {
 /**
  * Tails every live subagent run for one pi session.
  *
- * `emit` receives ready-to-publish pi-web events; `drained()` resolves once the
+ * `emit` receives ready-to-publish devden events; `drained()` resolves once the
  * last follow finishes.
  */
 export class PiSubagentFollows {

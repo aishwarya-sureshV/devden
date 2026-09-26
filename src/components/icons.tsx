@@ -818,11 +818,18 @@ export function BackendLogo({
   backend,
   size = 24,
 }: {
-  backend: "pi" | "claude" | "grok" | "codex";
+  backend: string;
   size?: number;
 }) {
   if (backend === "claude") return <LogoClaude size={size} />;
   if (backend === "grok") return <LogoGrok size={size} />;
   if (backend === "codex") return <LogoCodex size={size} />;
-  return <LogoPi size={size} />;
+  if (backend === "pi") return <LogoPi size={size} />;
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" aria-hidden="true">
+      <text x="12" y="17" textAnchor="middle" fontSize="16" fill="currentColor">
+        ✦
+      </text>
+    </svg>
+  );
 }

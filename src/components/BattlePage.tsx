@@ -54,7 +54,11 @@ export function BattlePage({
     openConversation,
     seedTask,
     closeConversation,
+    backendCatalog,
   } = useStore();
+  const backendIds = backendCatalog.length
+    ? backendCatalog.map((item) => item.id)
+    : [...AGENT_BACKENDS];
   const [races, setRaces] = useState<RaceRecord[]>(() => loadRaces());
   const [task, setTask] = useState("");
   const [starting, setStarting] = useState(false);
@@ -74,6 +78,19 @@ export function BattlePage({
       on: true,
     })),
   );
+  useEffect(() => {
+    setSlots((current) => {
+      const have = new Set(current.map((slot) => slot.backend));
+      const extra = backendIds
+        .filter((backend) => !have.has(backend))
+        .map((backend) => ({
+          id: crypto.randomUUID(),
+          backend,
+          on: true,
+        }));
+      return extra.length ? [...current, ...extra] : current;
+    });
+  }, [backendIds.join("\0")]);
   const updateSlot = (id: string, next: Partial<Slot>) =>
     setSlots((current) =>
       current.map((slot) => (slot.id === id ? { ...slot, ...next } : slot)),

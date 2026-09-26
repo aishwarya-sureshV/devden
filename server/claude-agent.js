@@ -3,7 +3,7 @@
  *
  * Each workbench session owns one long-lived `claude -p` process. The adapter
  * translates Claude's stream-json events into the event vocabulary already
- * consumed by pi-web's Timeline, while exposing the same public surface as
+ * consumed by devden's Timeline, while exposing the same public surface as
  * PiAgentProcess.
  */
 import { execFile, execFileSync, spawn } from "node:child_process";
@@ -140,7 +140,7 @@ let CLAUDE_ALIASES = claudeAliasesFor(CLAUDE_MODELS);
 
 // Rescanned only when the resolved `claude` binary's path or mtime changes,
 // i.e. when the CLI updates — the models endpoint picks the new list up
-// within its 5-min cache TTL, no pi-web restart needed. A failed or
+// within its 5-min cache TTL, no devden restart needed. A failed or
 // unfamiliar bundle keeps the previous list.
 let claudeModelScan = { path: "", mtimeMs: -1 };
 
@@ -628,17 +628,17 @@ function loadClaudeUsage() {
 }
 
 // Claude Code refreshes its OAuth tokens only when the CLI actually runs, and
-// the refresh token behind them has a hard expiry measured in weeks. A pi-web
+// the refresh token behind them has a hard expiry measured in weeks. A devden
 // host that sits idle past it — or a freshly deployed one that nobody has
 // opened yet — is logged out for real, and the only way back is an interactive
 // `claude` + /login on that machine. So re-run the usage check on a timer: it
 // spawns the CLI, which renews the token as a side effect, and a failure here
 // is the earliest warning that the session is gone rather than a mid-turn one.
-// Validated, not just coerced: a non-numeric override (PI_WEB_..._MS=6h)
+// Validated, not just coerced: a non-numeric override (DEVDEN_..._MS=6h)
 // yields NaN, which setInterval silently treats as 1ms -- spawning the CLI
 // a thousand times a second.
 const AUTH_KEEPALIVE_MS = (() => {
-  const ms = Number(process.env.PI_WEB_CLAUDE_KEEPALIVE_MS);
+  const ms = Number(process.env.DEVDEN_CLAUDE_KEEPALIVE_MS);
   return Number.isFinite(ms) && ms > 0 ? ms : 6 * 60 * 60 * 1000;
 })();
 
@@ -651,7 +651,7 @@ export function startClaudeAuthKeepalive() {
           `[claude] auth keepalive failed: ${result?.error || "unknown error"}`,
         );
         console.warn(
-          "[claude] run `claude auth login` on this host — pi-web strips" +
+          "[claude] run `claude auth login` on this host — devden strips" +
             " ANTHROPIC_API_KEY and Claude Desktop host-auth, so there is" +
             " no fallback credential.",
         );
@@ -663,7 +663,7 @@ export function startClaudeAuthKeepalive() {
 }
 
 function resolveClaudeExecutable() {
-  return process.env.PI_WEB_CLAUDE_BIN || "claude";
+  return process.env.DEVDEN_CLAUDE_BIN || "claude";
 }
 
 export function subscriptionEnvironment() {
@@ -687,7 +687,7 @@ export function subscriptionEnvironment() {
     "CLAUDE_CODE_USE_BEDROCK",
     "CLAUDE_CODE_USE_VERTEX",
     "CLAUDE_CODE_USE_FOUNDRY",
-    // If pi-web was started from Claude Desktop / Claude Code, these make the
+    // If devden was started from Claude Desktop / Claude Code, these make the
     // child CLI treat this process as an SDK host that will refresh OAuth.
     // There is no such host, so you get "OAuth session expired and could not
     // be refreshed" even when a stored login exists. Refresh tokens are
@@ -1186,9 +1186,9 @@ export class ClaudeAgentProcess {
     if (this.thinkingLevel) args.push("--effort", this.thinkingLevel);
     args.push(...extraArgs);
 
-    const child = spawn(resolveClaudeExecutable(), args, {
+    const child = spawn(this.executable || resolveClaudeExecutable(), args, {
       cwd: this.cwd,
-      env: subscriptionEnvironment(),
+      env: { ...subscriptionEnvironment(), ...(this.envExtra || {}) },
       stdio: ["pipe", "pipe", "pipe"],
       detached: process.platform !== "win32",
     });
@@ -1592,7 +1592,7 @@ export class ClaudeAgentProcess {
         error: "Claude process is not running",
       });
     this.controlRequestSeq += 1;
-    const requestId = `pi-web-${Date.now()}-${this.controlRequestSeq}`;
+    const requestId = `devden-${Date.now()}-${this.controlRequestSeq}`;
     return new Promise((resolve) => {
       const timer = setTimeout(() => {
         this.pendingControlRequests.delete(requestId);
@@ -1972,7 +1972,7 @@ export class ClaudeAgentProcess {
         response: {
           subtype: "error",
           request_id: event.request_id,
-          error: `pi-web does not implement control request "${request.subtype}"`,
+          error: `devden does not implement control request "${request.subtype}"`,
         },
       });
       return;

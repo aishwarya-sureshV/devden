@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 /**
- * pi-web deployer: spawned detached by the server's POST /api/deploy.
+ * devden deployer: spawned detached by the server's POST /api/deploy.
  *
- * The project deployed is PI_WEB_DEPLOY_CWD — the workbench session's own
- * project, not pi-web, unless pi-web is what you happen to be working on.
+ * The project deployed is DEVDEN_DEPLOY_CWD — the workbench session's own
+ * project, not devden, unless devden is what you happen to be working on.
  *
  * Flow:
  *   1. cloud mode only: `git pull --ff-only` + `npm install` (local mode
@@ -23,17 +23,17 @@ import { readFileSync, writeFileSync, renameSync } from "node:fs";
 import { join } from "node:path";
 
 // The project being deployed — the workbench session's cwd, which is only
-// pi-web itself when you are deploying pi-web.
-const ROOT = process.env.PI_WEB_DEPLOY_CWD || process.cwd();
-const STATE_PATH = process.env.PI_WEB_DEPLOY_STATE;
-const MODE = process.env.PI_WEB_DEPLOY_MODE === "cloud" ? "cloud" : "local";
-const SERVER_PID = Number(process.env.PI_WEB_SERVER_PID || 0);
+// devden itself when you are deploying devden.
+const ROOT = process.env.DEVDEN_DEPLOY_CWD || process.cwd();
+const STATE_PATH = process.env.DEVDEN_DEPLOY_STATE;
+const MODE = process.env.DEVDEN_DEPLOY_MODE === "cloud" ? "cloud" : "local";
+const SERVER_PID = Number(process.env.DEVDEN_SERVER_PID || 0);
 const STEP_TIMEOUT_MS = 10 * 60_000;
 const MAX_LOG_CHARS = 6000;
 
 if (!STATE_PATH) {
   console.error(
-    "[deploy] PI_WEB_DEPLOY_STATE is not set — cannot report status.",
+    "[deploy] DEVDEN_DEPLOY_STATE is not set — cannot report status.",
   );
   process.exit(1);
 }
@@ -41,7 +41,7 @@ if (!STATE_PATH) {
 const startedAt = Date.now();
 const steps = [];
 
-// When pi-web was started through npm, npm_execpath points at npm-cli.js and
+// When devden was started through npm, npm_execpath points at npm-cli.js and
 // we can run it via process.execPath. Otherwise fall back to bare `npm` on
 // PATH (systemd, `node scripts/supervise.mjs` directly, etc.).
 const npmCommand = process.env.npm_execpath ? process.execPath : "npm";

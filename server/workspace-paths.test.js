@@ -15,7 +15,7 @@ import {
 } from "./workspace-paths.js";
 
 async function scratch() {
-  const dir = await mkdtemp(join(tmpdir(), "pi-web-confine-"));
+  const dir = await mkdtemp(join(tmpdir(), "devden-confine-"));
   return {
     dir,
     async cleanup() {

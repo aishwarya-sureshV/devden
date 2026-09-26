@@ -123,3 +123,53 @@ test("one queued message can be dropped without touching the others", async () =
     ["keep me"],
   );
 });
+
+test("a prompt typed while an ask waits queues instead of replacing it", async () => {
+  const agent = fakeAgent();
+  agent.askPending = true; // the settled turn ended with an ```ask fence
+  await agent.enqueue("my own idea, do this instead");
+
+  assert.deepEqual(agent.sent, [], "it must not become a fresh prompt");
+  assert.equal(agent.queuedMessages.length, 1, "it waits behind the answer");
+});
+
+test("the settle that ended in an ask does not flush the queue", async () => {
+  const agent = fakeAgent();
+  agent.busy = true;
+  await agent.enqueue("queued mid-turn");
+  agent.busy = false;
+  agent.askPending = true; // the turn settled by asking the user
+  agent.sendNextQueued();
+
+  assert.deepEqual(agent.sent, [], "a queued prompt cannot answer the ask");
+  assert.equal(agent.queuedMessages.length, 1);
+});
+
+test("the answer turn delivers the queued prompt after it settles", async () => {
+  const agent = fakeAgent();
+  agent.askPending = true;
+  await agent.enqueue("queued while waiting");
+
+  // The ask card's answer arrives as a prompt: the hold releases...
+  await agent.prompt("the answer: option two");
+  assert.deepEqual(agent.sent, ["the answer: option two"]);
+  assert.equal(agent.askPending, false, "delivery clears the pending ask");
+
+  // ...and the answer turn's settle flushes what queued behind it.
+  agent.sendNextQueued();
+  assert.deepEqual(agent.sent, [
+    "the answer: option two",
+    "queued while waiting",
+  ]);
+  assert.equal(agent.queuedMessages.length, 0);
+});
+
+test("queue Send now overrides a pending ask explicitly", async () => {
+  const agent = fakeAgent();
+  agent.askPending = true;
+  await agent.enqueue("send this now, forget the question");
+
+  await agent.steerQueued(); // idle -> sendNow, the manual override
+  assert.deepEqual(agent.sent, ["send this now, forget the question"]);
+  assert.equal(agent.askPending, false, "delivery cleared the hold");
+});

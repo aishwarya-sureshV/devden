@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
+  askIncoming,
   firstAsk,
   hasAskBlock,
   isAskMessage,
@@ -114,5 +115,46 @@ describe("messageAsk / isAskMessage", () => {
   it("leaves ordinary prose alone", () => {
     assert.equal(isAskMessage("A question? And **markdown**."), false);
     assert.equal(messageAsk("A question? And **markdown**."), null);
+  });
+
+  it("reads a json fence whose body is the questions payload", () => {
+    const text = ["```json", bare, "```"].join("\n");
+    assert.deepEqual(
+      messageAsk(text)?.map((row) => row.question),
+      ["Which?"],
+    );
+    assert.equal(isAskMessage(text), true);
+    assert.equal(isAskMessage("```JSON\n" + bare + "\n```"), true);
+  });
+
+  it("leaves a json fence that is not an ask alone", () => {
+    assert.equal(messageAsk('```json\n{"foo":1}\n```'), null);
+    assert.equal(isAskMessage('```json\n{"foo":1}\n```'), false);
+    assert.equal(messageAsk("```json\n" + bare), null);
+  });
+
+  it("reads an unclosed ask fence whose payload has a glm-5.3 xml tail", () => {
+    const text = ["```ask", bare, "</arg_value></tool_call>"].join("\n");
+    assert.deepEqual(
+      messageAsk(text)?.map((row) => row.question),
+      ["Which?"],
+    );
+    assert.equal(isAskMessage(text), true);
+  });
+});
+
+describe("askIncoming", () => {
+  it("flags a json fence that has started the questions object", () => {
+    assert.equal(askIncoming('```json\n{"questions":['), true);
+    assert.equal(askIncoming('{"questions":['), true);
+    assert.equal(askIncoming("```ask\n{"), true);
+  });
+
+  it("is quiet once the payload parses, and for ordinary json", () => {
+    const bare = JSON.stringify({
+      questions: [{ question: "Which?", options: ["a"] }],
+    });
+    assert.equal(askIncoming(["```json", bare, "```"].join("\n")), false);
+    assert.equal(askIncoming('```json\n{"foo":1}\n```'), false);
   });
 });

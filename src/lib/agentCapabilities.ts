@@ -1,4 +1,4 @@
-import type { AgentBackend } from "./api";
+import type { AgentBackend, BuiltinBackend } from "./api";
 
 /**
  * Mirrors server/agent-registry.js. A test compares the two so a new
@@ -38,7 +38,7 @@ const DEFAULT_CAPABILITIES: AgentCapabilities = {
   warmStart: false,
 };
 
-const BACKEND_CAPABILITIES: Record<AgentBackend, AgentCapabilities> = {
+const BACKEND_CAPABILITIES: Record<BuiltinBackend, AgentCapabilities> = {
   pi: {
     ...DEFAULT_CAPABILITIES,
     setSessionName: true,
@@ -65,6 +65,22 @@ const BACKEND_CAPABILITIES: Record<AgentBackend, AgentCapabilities> = {
   },
 };
 
+const customCapabilities = new Map<string, AgentCapabilities>();
+
+/** Saved CLIs report their flags from /api/backends. Built-ins stay in the table above. */
+export function installCapabilityOverrides(
+  list: Array<{ id: string; builtin?: boolean; capabilities: AgentCapabilities }>,
+) {
+  customCapabilities.clear();
+  for (const item of list) {
+    if (item.builtin === false) customCapabilities.set(item.id, item.capabilities);
+  }
+}
+
 export function capabilitiesFor(backend: AgentBackend): AgentCapabilities {
-  return BACKEND_CAPABILITIES[backend] ?? DEFAULT_CAPABILITIES;
+  return (
+    customCapabilities.get(backend) ??
+    BACKEND_CAPABILITIES[backend as BuiltinBackend] ??
+    DEFAULT_CAPABILITIES
+  );
 }

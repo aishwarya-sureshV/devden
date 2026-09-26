@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * pi-web server supervisor: runs server/index.js in a restart loop.
+ * devden server supervisor: runs server/index.js in a restart loop.
  *
  * Why: `npm run dev` uses `concurrently -k`, which kills vite if the API
  * server exits. The one-click Deploy button restarts the API server after a

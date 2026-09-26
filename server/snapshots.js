@@ -18,7 +18,7 @@ import { join } from "node:path";
 
 const execFileAsync = promisify(execFile);
 
-const REF_PREFIX = "refs/pi-web/snapshots";
+const REF_PREFIX = "refs/devden/snapshots";
 /** Snapshots per repo. Each is one small commit; this is clutter control. */
 const KEEP = 50;
 /** A snapshot is taken microseconds before the message it belongs to is
@@ -50,13 +50,13 @@ async function scratchEnv(dir) {
   const gitDir = await git(dir, ["rev-parse", "--absolute-git-dir"]);
   if (!gitDir.ok) return null;
   return {
-    GIT_INDEX_FILE: join(gitDir.out, "pi-web-snapshot.index"),
+    GIT_INDEX_FILE: join(gitDir.out, "devden-snapshot.index"),
     // commit-tree refuses to run without an identity, and a repo with no
     // user.name configured would otherwise never snapshot.
-    GIT_AUTHOR_NAME: "pi-web",
-    GIT_AUTHOR_EMAIL: "pi-web@localhost",
-    GIT_COMMITTER_NAME: "pi-web",
-    GIT_COMMITTER_EMAIL: "pi-web@localhost",
+    GIT_AUTHOR_NAME: "devden",
+    GIT_AUTHOR_EMAIL: "devden@localhost",
+    GIT_COMMITTER_NAME: "devden",
+    GIT_COMMITTER_EMAIL: "devden@localhost",
   };
 }
 
@@ -75,7 +75,7 @@ export async function takeSnapshot(cwd, label = "") {
   if (head.ok) args.push("-p", head.out);
   args.push(
     "-m",
-    `pi-web snapshot: ${label.replace(/\s+/g, " ").slice(0, 120) || "turn"}`,
+    `devden snapshot: ${label.replace(/\s+/g, " ").slice(0, 120) || "turn"}`,
   );
   const commit = await git(cwd, args, env);
   if (!commit.ok) return { ok: false, error: commit.error };
@@ -146,7 +146,7 @@ export async function listSnapshots(cwd) {
         at,
         ref,
         commit,
-        label: subject.replace(/^pi-web snapshot: /, ""),
+        label: subject.replace(/^devden snapshot: /, ""),
       };
     })
     .filter(Boolean)

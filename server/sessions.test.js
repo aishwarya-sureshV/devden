@@ -15,6 +15,7 @@ import {
   deleteSession,
   loadGrokChildMessages,
   loadSessionLog,
+  grokTurnWindows,
   messagesFromGrokLog,
   readSessionMessages,
   stripTrailingCompactTurn,
@@ -28,7 +29,7 @@ describe("session path confinement", () => {
   });
 
   it("rejects jsonl files outside the session roots", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "pi-web-sessions-test-"));
+    const dir = await mkdtemp(join(tmpdir(), "devden-sessions-test-"));
     try {
       const outside = join(dir, "not-a-session.jsonl");
       await writeFile(outside, "{}");
@@ -71,7 +72,7 @@ describe("grok history conversion", () => {
       content: [
         {
           type: "text",
-          text: "<user_query>\n[pi-web harness instruction — ignore]\nbe nice\n[end pi-web harness instruction]\nfix the bug\n</user_query>",
+          text: "<user_query>\n[devden harness instruction — ignore]\nbe nice\n[end devden harness instruction]\nfix the bug\n</user_query>",
         },
       ],
     },
@@ -109,6 +110,26 @@ describe("grok history conversion", () => {
     assert.deepEqual(messages[1].content[2].arguments, { target_file: "a.js" });
     assert.equal(messages[2].toolName, "read_file");
     assert.equal(messages[2].content[0].text, "1→hello");
+  });
+
+  it("stamps a grok turn with when it started and when it ended", () => {
+    const windows = grokTurnWindows(
+      [
+        { type: "turn_started", ts: "2026-09-26T13:25:00.000Z" },
+        { type: "phase_changed", ts: "2026-09-26T13:25:10.000Z" },
+        { type: "turn_ended", ts: "2026-09-26T13:27:00.000Z" },
+        { type: "phase_changed", ts: "2026-09-26T13:28:00.000Z" },
+      ]
+        .map((entry) => JSON.stringify(entry))
+        .join("\n"),
+    );
+    assert.deepEqual(windows, [
+      { start: Date.parse("2026-09-26T13:25:00.000Z"), end: Date.parse("2026-09-26T13:27:00.000Z") },
+    ]);
+    const messages = messagesFromGrokLog(log, undefined, windows);
+    assert.equal(messages[0].timestamp, windows[0].start);
+    assert.equal(messages[1].timestamp, windows[0].end);
+    assert.equal(messages[2].timestamp, windows[0].end);
   });
 
   it("keeps the surviving turn of a compacted session (no prompt_index)", () => {
@@ -430,7 +451,7 @@ describe("claude history conversion", () => {
 
 describe("claude subagent hydration", () => {
   it("splices a child transcript under the Agent call that spawned it", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "pi-web-claude-sub-"));
+    const dir = await mkdtemp(join(tmpdir(), "devden-claude-sub-"));
     try {
       const sessionPath = join(dir, "s1.jsonl");
       const child = join(dir, "s1", "subagents");
@@ -506,7 +527,7 @@ describe("claude subagent hydration", () => {
   });
 
   it("is a no-op for a session with no subagents dir", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "pi-web-claude-nosub-"));
+    const dir = await mkdtemp(join(tmpdir(), "devden-claude-nosub-"));
     try {
       const sessionPath = join(dir, "s2.jsonl");
       const log = `${JSON.stringify({

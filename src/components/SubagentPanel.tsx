@@ -24,7 +24,7 @@ function persistWidth(width: number): number {
     MAX_WIDTH,
     Math.max(MIN_WIDTH, Math.round(width)),
   );
-  localStorage.setItem("pi-web.subagent-width", String(next));
+  localStorage.setItem("devden.subagent-width", String(next));
   return next;
 }
 
@@ -49,7 +49,7 @@ export function SubagentPanel({
 }) {
   const run = runs.find((candidate) => candidate.id === activeId) ?? runs[0];
   const [width, setWidth] = useState(() => {
-    const stored = Number(localStorage.getItem("pi-web.subagent-width"));
+    const stored = Number(localStorage.getItem("devden.subagent-width"));
     return Number.isFinite(stored)
       ? Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, stored))
       : 360;

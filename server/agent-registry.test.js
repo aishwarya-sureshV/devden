@@ -40,8 +40,8 @@ describe("agent-registry", () => {
     assert.equal(sessionScope("GROK"), "pi");
   });
 
-  it("lists every backend with a capability document", () => {
-    const listed = listBackends();
+  it("lists every backend with a capability document", async () => {
+    const listed = await listBackends();
     assert.deepEqual(
       listed.map((entry) => entry.id),
       AGENT_BACKENDS,
@@ -50,6 +50,7 @@ describe("agent-registry", () => {
       assert.equal(typeof entry.capabilities.steer, "boolean");
       assert.equal(typeof entry.capabilities.fork, "boolean");
       assert.equal(typeof entry.capabilities.queue, "boolean");
+      assert.ok(["ok", "missing", "unknown"].includes(entry.auth));
     }
     assert.equal(capabilitiesFor("grok").steer, false);
     assert.equal(capabilitiesFor("grok").fork, true);

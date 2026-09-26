@@ -1,5 +1,5 @@
 /**
- * pi-web server: static file serving (production build), JSON command API,
+ * devden server: static file serving (production build), JSON command API,
  * and a Server-Sent Events stream that fans out pi RPC events to the browser.
  *
  * Endpoints:
@@ -79,6 +79,7 @@ import { spawn, execFile, execSync } from "node:child_process";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import { logFault } from "./log-fault.js";
+import { hasAskBlock } from "./ask-block.js";
 import { createTerminalTabs } from "./terminal-tabs.js";
 import { leaseVerdict } from "./lease-sweep.js";
 import { WebSocketServer } from "ws";
@@ -95,11 +96,14 @@ import { CodexAgentPool } from "./codex-agent.js";
 import { closeSharedCodex } from "./codex-app-server.js";
 import {
   AGENT_BACKENDS,
+  allBackendIds,
   backendName,
   capabilitiesFor,
   listBackends,
   sessionScope,
 } from "./agent-registry.js";
+import { clearDetectionCache } from "./agent-detect.js";
+import { devdenHome, readSetup, writeSetup } from "./setup-state.js";
 import {
   agentIsAlive,
   callAgentMethod,
@@ -164,14 +168,14 @@ const __dirname = fileURLToPath(new URL(".", import.meta.url));
 const ROOT = join(__dirname, "..");
 
 const DIST = join(ROOT, "dist");
-const PORT = Number(process.env.PI_WEB_PORT || 4319);
-const HOST = process.env.PI_WEB_HOST || "127.0.0.1";
-const ACCESS_TOKEN = String(process.env.PI_WEB_TOKEN || "").trim();
+const PORT = Number(process.env.DEVDEN_PORT || 4319);
+const HOST = process.env.DEVDEN_HOST || "127.0.0.1";
+const ACCESS_TOKEN = String(process.env.DEVDEN_TOKEN || "").trim();
 const execFileAsync = promisify(execFile);
 
 /**
  * Workspace roots for the file-explorer endpoints. Starts from the launch
- * directory plus PI_WEB_WORKSPACE_ROOTS; session cwds are added as agents
+ * directory plus DEVDEN_WORKSPACE_ROOTS; session cwds are added as agents
  * start so saved sessions from other projects stay browsable. Mutations
  * (write/rename/delete/copy/move) and external-app actions are confined to
  * these roots; read-only browsing is confined to the user's home directory.
@@ -551,10 +555,10 @@ const BUILD_ID = existsSync(join(DIST, "index.html"))
  */
 const BOOT_MS = Date.now();
 const DEPLOY_MODE =
-  process.env.PI_WEB_DEPLOY_MODE === "cloud" ? "cloud" : "local";
+  process.env.DEVDEN_DEPLOY_MODE === "cloud" ? "cloud" : "local";
 
 /**
- * Deploy targets the project the session is working in, not pi-web. Every
+ * Deploy targets the project the session is working in, not devden. Every
  * deploy fact (state file, git head, dirty count) is therefore per-project:
  * the state file lives beside the project it describes, so two projects
  * deployed from the same workbench never overwrite each other's history.
@@ -571,7 +575,7 @@ function deployProjectRoot(requested) {
 }
 
 function deployStatePath(projectRoot) {
-  return join(projectRoot, ".pi-web-deploy.json");
+  return join(projectRoot, ".devden-deploy.json");
 }
 
 function readDeployState(projectRoot = ROOT) {
@@ -964,7 +968,7 @@ function poolFor(backend) {
  *  running row even when that session is not an open tab. */
 function streamingSessionPaths() {
   const paths = new Set(runningSessionPaths());
-  for (const name of AGENT_BACKENDS) {
+  for (const name of allBackendIds()) {
     const pool = poolFor(name);
     for (const agent of pool.agents.values()) {
       // A dead agent is not streaming, whatever it last believed. `status`
@@ -1194,6 +1198,7 @@ function watch(sessionKey, requestedBackend) {
       // catches it, and an uncaught throw ends the process. Swallow it as a
       // dropped event instead: one bad payload is not worth a dead server.
       try {
+        trackAskPending(agent, event);
         publishRuntimeEvent(sessionKey, backend, event);
       } catch (error) {
         logFault("dropped event", event?.type, error);
@@ -1201,6 +1206,28 @@ function watch(sessionKey, requestedBackend) {
     });
   }
   return agent;
+}
+
+/**
+ * Whether a settled turn ended by asking the user something (an ```ask fence
+ * in its final assistant reply). While set, the queue holds typed prompts so
+ * a follow-up typed before the answer cannot replace the pending question —
+ * the answer goes first, and the answer turn's settle flushes the queue.
+ * Cleared the moment any turn starts, so a fork/check-in/auto-resume cannot
+ * strand the hold. Event shapes per backend mirror the GOAL DONE check in
+ * publishRuntimeEvent: message_end (pi/Claude/Grok), turn_end (Codex).
+ */
+function trackAskPending(agent, event) {
+  if (event?.type === "agent_start") {
+    agent.askPending = false;
+    return;
+  }
+  if (
+    (event?.type === "message_end" || event?.type === "turn_end") &&
+    event.message?.role === "assistant"
+  ) {
+    agent.askPending = hasAskBlock(assistantText(event.message));
+  }
 }
 
 function isAllowedOrigin(origin) {
@@ -1218,7 +1245,7 @@ function isAllowedOrigin(origin) {
       host === "[::1]"
     )
       return true;
-    return origin === process.env.PI_WEB_UI_ORIGIN;
+    return origin === process.env.DEVDEN_UI_ORIGIN;
   } catch {
     return false;
   }
@@ -1732,7 +1759,7 @@ function requestHasAccess(req, url) {
       }
     }
     if (
-      cookie.split(";").some((part) => part.trim() === `pi-web-token=${token}`)
+      cookie.split(";").some((part) => part.trim() === `devden-token=${token}`)
     )
       return true;
   }
@@ -1752,7 +1779,7 @@ function requestHasAccess(req, url) {
 
 function denyAccess(res) {
   res.writeHead(401, {
-    "WWW-Authenticate": 'Basic realm="pi-web"',
+    "WWW-Authenticate": 'Basic realm="devden"',
     "Content-Type": "text/plain; charset=utf-8",
     "Cache-Control": "no-store",
     ...corsHeaders(res.req || { headers: {} }),
@@ -1816,7 +1843,7 @@ async function route(req, res) {
   const qrTunnel = getRemoteTunnel();
   if (qrTunnel && url.searchParams.get("token") === qrTunnel.token) {
     res.writeHead(302, {
-      "Set-Cookie": `pi-web-token=${qrTunnel.token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=604800`,
+      "Set-Cookie": `devden-token=${qrTunnel.token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=604800`,
       Location: pathname,
       "Cache-Control": "no-store",
     });
@@ -1836,7 +1863,21 @@ async function route(req, res) {
   }
 
   if (pathname === "/api/backends" && req.method === "GET") {
-    return sendJson(res, 200, { ok: true, backends: listBackends() });
+    return sendJson(res, 200, { ok: true, backends: await listBackends() });
+  }
+
+  if (pathname === "/api/backends/recheck" && req.method === "POST") {
+    clearDetectionCache();
+    return sendJson(res, 200, { ok: true, backends: await listBackends() });
+  }
+
+  if (pathname === "/api/onboarding" && req.method === "GET") {
+    return sendJson(res, 200, { ok: true, ...readSetup() });
+  }
+
+  if (pathname === "/api/onboarding" && req.method === "POST") {
+    const body = await readBody(req);
+    return sendJson(res, 200, { ok: true, ...writeSetup(body) });
   }
 
   /** The mac-native folder picker. A browser file input can never return an
@@ -1892,7 +1933,7 @@ async function route(req, res) {
     // value; otherwise the client relies on the ticket + Authorization header.
     if (/^[A-Za-z0-9._-]+$/.test(matched)) {
       headers["Set-Cookie"] =
-        `pi-web-token=${matched}; HttpOnly; SameSite=Strict; Path=/; Max-Age=604800`;
+        `devden-token=${matched}; HttpOnly; SameSite=Strict; Path=/; Max-Age=604800`;
     }
     res.writeHead(200, headers);
     res.end(JSON.stringify({ ok: true, ticket }));
@@ -1964,7 +2005,7 @@ async function route(req, res) {
       mode: DEPLOY_MODE,
       project: projectRoot,
       projectName: basename(projectRoot),
-      // Only a deploy of pi-web itself restarts this server and reloads the
+      // Only a deploy of devden itself restarts this server and reloads the
       // page; any other project is just built in place.
       self: projectRoot === ROOT,
       head: currentGitHead(projectRoot),
@@ -2028,14 +2069,14 @@ async function route(req, res) {
           stdio: "ignore",
           env: {
             ...process.env,
-            PI_WEB_DEPLOY_MODE: requestedMode,
-            PI_WEB_DEPLOY_CWD: projectRoot,
-            PI_WEB_DEPLOY_STATE: deployStatePath(projectRoot),
+            DEVDEN_DEPLOY_MODE: requestedMode,
+            DEVDEN_DEPLOY_CWD: projectRoot,
+            DEVDEN_DEPLOY_STATE: deployStatePath(projectRoot),
             // Restarting this server only makes sense when the project being
             // deployed IS this server.
             ...(projectRoot === ROOT
-              ? { PI_WEB_SERVER_PID: String(process.pid) }
-              : { PI_WEB_SERVER_PID: "" }),
+              ? { DEVDEN_SERVER_PID: String(process.pid) }
+              : { DEVDEN_SERVER_PID: "" }),
           },
         },
       );
@@ -2230,7 +2271,7 @@ async function route(req, res) {
     return sendJson(res, 200, { ok: true, title });
   }
 
-  // Auto-saved conversation transcripts. Kept in ~/.pi-web/transcripts rather
+  // Auto-saved conversation transcripts. Kept in ~/.devden/transcripts rather
   // than the workspace on purpose: this writes after every turn, and a file
   // that reappears in `git status` on every reply is worse than no feature.
   if (pathname === "/api/transcript" && req.method === "PUT") {
@@ -2238,7 +2279,7 @@ async function route(req, res) {
     const name = safeTranscriptName(body.name);
     if (!name)
       return sendJson(res, 400, { ok: false, error: "Bad transcript name." });
-    const dir = join(homedir(), ".pi-web", "transcripts");
+    const dir = join(devdenHome(), "transcripts");
     const path = join(dir, name);
     try {
       await mkdir(dir, { recursive: true });
@@ -2577,8 +2618,16 @@ async function route(req, res) {
     });
     const promptIsBusy =
       hasMethod(promptTarget, "isBusy") && promptTarget.isBusy();
+    // A settled turn that ended by asking the user something holds the floor:
+    // a prompt typed while the question waits is queued behind the answer
+    // instead of replacing it. The ask card's submit flags itself as the
+    // answer (answersAsk) and goes straight through; the queue chip's
+    // "Send now" is the manual override. Steering is untouched — it always
+    // interrupts.
+    const askHoldsFloor =
+      Boolean(promptTarget.askPending) && body.answersAsk !== true;
     const result = await runLoggedCommand(sessionKey, "prompt", body, () =>
-      promptIsBusy && hasMethod(promptTarget, "enqueue")
+      (promptIsBusy || askHoldsFloor) && hasMethod(promptTarget, "enqueue")
         ? promptTarget.enqueue(message, images)
         : promptTarget.prompt(message, images),
     );
@@ -2851,7 +2900,7 @@ async function route(req, res) {
       /[^a-zA-Z0-9._ -]/g,
       "_",
     );
-    const directory = join(tmpdir(), "pi-web-uploads", safeSession);
+    const directory = join(tmpdir(), "devden-uploads", safeSession);
     await mkdir(directory, { recursive: true });
     const path = join(directory, `${Date.now()}-${safeName}`);
     await writeFile(path, bytes);
@@ -4268,7 +4317,7 @@ terminalSockets.on("connection", (socket, _request, url) => {
 });
 
 server.listen(PORT, HOST, () => {
-  console.log(`pi-web ready: http://${HOST}:${PORT}`);
+  console.log(`devden ready: http://${HOST}:${PORT}`);
   // Warm the session-summary cache so the first sidebar load (and the first
   // backend switch after a restart) reads stats, not 175MB of JSONL.
   for (const backend of AGENT_BACKENDS)

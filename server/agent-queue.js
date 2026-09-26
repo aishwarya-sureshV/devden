@@ -5,7 +5,10 @@
  * on an in-flight turn (pi/claude/grok/codex), never merely because a
  * process exists. Delivery and cancel stay identical.
  */
-export function attachQueue(agent, { isBusy, sendNow, steerNow, requeueOnFailure = true }) {
+export function attachQueue(
+  agent,
+  { isBusy, sendNow, steerNow, requeueOnFailure = true },
+) {
   if (!Array.isArray(agent.queuedMessages)) agent.queuedMessages = [];
   if (!Number.isFinite(agent.queueSeq)) agent.queueSeq = 0;
   agent.isBusy = function isBusyBound() {
@@ -26,10 +29,15 @@ export function attachQueue(agent, { isBusy, sendNow, steerNow, requeueOnFailure
   // A new turn means the user is driving again, so a hold that the aborted
   // turn's settle never consumed (codex skips the flush on a failed turn)
   // must not survive to eat a later, legitimate one.
-  const ownPrompt = typeof agent.prompt === "function" ? agent.prompt : undefined;
+  const ownPrompt =
+    typeof agent.prompt === "function" ? agent.prompt : undefined;
   if (ownPrompt)
     agent.prompt = function promptReleasingHold(message, images) {
       this.queueHeld = false;
+      // A prompt being delivered is what resolves a pending ask (the ask
+      // card's answer, a queue "Send now", a server-side check-in): the
+      // question no longer holds the floor.
+      this.askPending = false;
       return ownPrompt.call(this, message, images);
     };
 
@@ -53,10 +61,15 @@ export function attachQueue(agent, { isBusy, sendNow, steerNow, requeueOnFailure
     const text = String(message ?? "");
     if (!text.trim())
       return Promise.resolve({ ok: false, error: "Empty message" });
-    if (!isBusy.call(this))
-      return sendNow.call(this, text, images).then((result) =>
-        result.ok ? { ok: true, data: { queued: false } } : result,
-      );
+    // A settled turn that ended by asking the user something keeps the
+    // floor: a prompt typed while the question waits queues behind the
+    // answer instead of replacing it. The answer turn's settle flushes it.
+    if (!isBusy.call(this) && !this.askPending)
+      return sendNow
+        .call(this, text, images)
+        .then((result) =>
+          result.ok ? { ok: true, data: { queued: false } } : result,
+        );
     this.queueSeq += 1;
     this.queuedMessages.push({
       id: `q-${Date.now()}-${this.queueSeq}`,
@@ -91,6 +104,13 @@ export function attachQueue(agent, { isBusy, sendNow, steerNow, requeueOnFailure
     if (this.queueHeld) {
       // One-shot: this is the interrupted turn's settle going by.
       this.queueHeld = false;
+      return;
+    }
+    if (this.askPending) {
+      // The turn that just settled ended by asking the user something.
+      // Delivering queued prompts now would answer a question nobody asked
+      // (and drop the user's pending question); they wait for the answer
+      // turn's settle, or for an explicit queue "Send now".
       return;
     }
     const next = this.queuedMessages.shift();

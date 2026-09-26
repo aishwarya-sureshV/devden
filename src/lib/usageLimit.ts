@@ -38,6 +38,7 @@ export function limitScopeLabel(scope: LimitScope): string {
 // *retryable*. The retryable family is deliberately absent here: a transient
 // 429 clears on its own, so Resume would only repeat it, and a
 // "subagent limit reached" is not a quota at all.
+// Keep in lockstep with server/usage-limit.js — the queue hold uses that copy.
 const LIMIT_ERROR_PATTERNS = [
   // "Usage limit reached · continuing automatically" (Claude),
   // "Monthly usage limit reached" (pi), "usage credit limit reached" (Claude).
@@ -102,29 +103,23 @@ export interface LimitTurn {
 }
 
 /**
- * The most recent turn that ended on a usage-limit error, or undefined.
- *
- * Only the last user message counts. A newer prompt means the user moved on:
- * the earlier turn is closed and its pill is gone (if the new turn also dies on
- * the limit, it arms a fresh one). That is also how the pill is dismissed --
- * send anything, or Resume and let the turn produce output, and it clears.
+ * A usage-limit notice that ended this user message's turn, or undefined.
+ * `end` is the next user message, so a later turn's work cannot look like
+ * this one carried on. `started` is assistant or tool output before the wall.
  */
-export function pendingLimitTurn(
+function limitCutoff(
   items: readonly TimelineItem[],
-  isLocalCommand: (text: string) => boolean = () => false,
-): LimitTurn | undefined {
-  let lastUser = -1;
-  for (let index = items.length - 1; index >= 0; index -= 1) {
-    if (items[index]?.kind === "user") {
-      lastUser = index;
-      break;
-    }
-  }
-  const user = items[lastUser];
+  from: number,
+  end: number,
+  isLocalCommand: (text: string) => boolean,
+): (LimitTurn & { started: boolean }) | undefined {
+  const user = items[from];
   if (!user || user.kind !== "user" || isLocalCommand(user.text))
     return undefined;
-  for (let index = lastUser + 1; index < items.length; index += 1) {
+  let started = false;
+  for (let index = from + 1; index < end; index += 1) {
     const item = items[index];
+    if (item?.kind === "assistant" || item?.kind === "tool") started = true;
     // Tone is not the signal: a backend that reports its wall on plain stderr
     // lands as a warning, and the text is what says a quota ran out.
     if (item?.kind !== "notice" || !isUsageLimitError(item.text)) continue;
@@ -133,12 +128,43 @@ export function pendingLimitTurn(
     // was cut off, so there is nothing to resume. Keep scanning: a later wall
     // in the same turn may be the one that actually stopped it.
     const carriedOn = items
-      .slice(index + 1)
+      .slice(index + 1, end)
       .some((later) => later.kind === "assistant" || later.kind === "tool");
     if (carriedOn) continue;
-    return { request: user.text.trim(), noticeId: item.id };
+    return { request: user.text.trim(), noticeId: item.id, started };
   }
   return undefined;
+}
+
+/**
+ * The turn Resume should pick back up, or undefined.
+ *
+ * A newer prompt normally closes the earlier turn: the user moved on, and
+ * the pill goes with it (send anything, or Resume and let the turn produce
+ * output). The exception is a follow-up that was released only because the
+ * limit had already killed the previous turn. That prompt never reached a
+ * model that could work, so Resume still belongs to the turn that was cut off.
+ */
+export function pendingLimitTurn(
+  items: readonly TimelineItem[],
+  isLocalCommand: (text: string) => boolean = () => false,
+): LimitTurn | undefined {
+  const users: number[] = [];
+  for (let index = 0; index < items.length; index += 1) {
+    if (items[index]?.kind === "user") users.push(index);
+  }
+  let chosen: LimitTurn | undefined;
+  for (let i = users.length - 1; i >= 0; i -= 1) {
+    const end = i + 1 < users.length ? users[i + 1]! : items.length;
+    const cut = limitCutoff(items, users[i]!, end, isLocalCommand);
+    if (!cut) return chosen;
+    chosen = { request: cut.request, noticeId: cut.noticeId };
+    // This turn actually started. It is the one the limit cut off.
+    if (cut.started) return chosen;
+    // No work before the wall: the prompt was handed to a model that was
+    // already out of quota. Keep walking back to the turn it interrupted.
+  }
+  return chosen;
 }
 
 /** "6:50 PM" today, "Mon 9:00 AM" beyond it. */
@@ -162,7 +188,7 @@ export function formatResetAt(at: number, now = Date.now()): string {
  */
 export function limitResumePrompt(request: string, scope: LimitScope): string {
   return [
-    "[pi-web harness instruction — the account's usage limit cut your last turn off; the user did not send this]",
+    "[devden harness instruction — the account's usage limit cut your last turn off; the user did not send this]",
     `Your previous turn was cut off mid-execution by the ${limitScopeLabel(scope).toLowerCase()}, so it never finished and never reported back.`,
     request ? `The request you were working on was:\n\n${request}\n` : "",
     "Do not start over and do not repeat work that already succeeded.",
@@ -170,7 +196,7 @@ export function limitResumePrompt(request: string, scope: LimitScope): string {
     "checks you had run — to establish what actually landed before the interruption.",
     "Then say in one or two lines where things stood, and carry on from exactly that point until the",
     "original request is complete.",
-    "[end pi-web harness instruction]",
+    "[end devden harness instruction]",
   ]
     .filter(Boolean)
     .join(" ");

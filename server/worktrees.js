@@ -86,7 +86,7 @@ async function excludeWorktreeDir(repo) {
   try {
     const current = await readFile(exclude, "utf8");
     if (current.split("\n").some((line) => line.trim() === `${DIR}/`)) return;
-    await appendFile(exclude, `\n# pi-web session worktrees\n${DIR}/\n`);
+    await appendFile(exclude, `\n# devden session worktrees\n${DIR}/\n`);
   } catch {
     /* no info/exclude (a worktree's own gitdir): nothing to keep clean */
   }
@@ -186,7 +186,7 @@ export async function createWorktree(dir, label, options = {}) {
   await excludeWorktreeDir(repo);
   // The commit the task branched from, so the review diff can show the whole
   // task rather than only what is still uncommitted.
-  await git(repo, ["config", `pi-web.worktree.${slug}.base`, start]);
+  await git(repo, ["config", `devden.worktree.${slug}.base`, start]);
   const seeded = await seed(repo, path);
   return { ok: true, data: { path, branch, base: start, repo, seeded } };
 }
@@ -226,7 +226,7 @@ export async function baseOf(dir) {
   if (!repo) return null;
   const stored = await git(repo, [
     "config",
-    `pi-web.worktree.${basename(dir)}.base`,
+    `devden.worktree.${basename(dir)}.base`,
   ]);
   if (stored.ok && stored.out) return stored.out;
   // Not one of ours, or the config was pruned: fall back to where this branch
@@ -271,7 +271,7 @@ export async function removeWorktree(dir, target, force = false) {
   await git(repo, [
     "config",
     "--unset",
-    `pi-web.worktree.${basename(target)}.base`,
+    `devden.worktree.${basename(target)}.base`,
   ]);
   return { ok: true, data: { path: target, branch: tree.branch } };
 }

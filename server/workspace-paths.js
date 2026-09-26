@@ -79,13 +79,13 @@ export function confinePath(requested, roots) {
 
 /**
  * The default workspace root set: the directory the server was launched in,
- * plus any explicit roots from PI_WEB_WORKSPACE_ROOTS (colon-separated).
+ * plus any explicit roots from DEVDEN_WORKSPACE_ROOTS (colon-separated).
  * Session cwds are added to the live set as agents start, so opening a saved
  * session from another project keeps working.
  */
 export function defaultWorkspaceRoots() {
   const roots = [process.cwd()];
-  for (const entry of String(process.env.PI_WEB_WORKSPACE_ROOTS || "").split(
+  for (const entry of String(process.env.DEVDEN_WORKSPACE_ROOTS || "").split(
     ":",
   )) {
     const trimmed = entry.trim();

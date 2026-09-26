@@ -233,7 +233,7 @@ test("a queue-operation enqueue finishes a held background Agent", () => {
 });
 
 test("a session-log task-notification finishes a held Agent the stream missed", async () => {
-  const dir = await mkdtemp(join(tmpdir(), "pi-web-claude-bg-"));
+  const dir = await mkdtemp(join(tmpdir(), "devden-claude-bg-"));
   const sessionFile = join(dir, "s.jsonl");
   await writeFile(sessionFile, "");
   const agent = new ClaudeAgentProcess("claude-jsonl-end");

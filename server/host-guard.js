@@ -17,8 +17,8 @@ export const GUARD_TOOLS = ["bash", "sh", "zsh", "dash", "ksh", "curl", "wget"];
 export const SSE_ONESHOT_MS = 5_000;
 
 export function defaultGuardContext(env = process.env) {
-  const port = Number(env.PI_WEB_HOST_GUARD_PORT || env.PI_WEB_PORT || 4319);
-  const pids = String(env.PI_WEB_HOST_GUARD_PIDS || "")
+  const port = Number(env.DEVDEN_HOST_GUARD_PORT || env.DEVDEN_PORT || 4319);
+  const pids = String(env.DEVDEN_HOST_GUARD_PIDS || "")
     .split(",")
     .map((value) => Number(value.trim()))
     .filter((pid) => Number.isFinite(pid) && pid > 0);
@@ -66,7 +66,7 @@ export function blockedCommandReason(command, ctx = defaultGuardContext()) {
   }
 
   if (
-    /(?:pkill|killall)\b[\s\S]*(supervise\.mjs|server\/index\.js|\bpi-web\b)/i.test(
+    /(?:pkill|killall)\b[\s\S]*(supervise\.mjs|server\/index\.js|\bdevden\b)/i.test(
       text,
     )
   ) {
@@ -94,7 +94,7 @@ function isStreamingFetchWithoutTimeout(text) {
 }
 
 export function ensureGuardBin() {
-  const bin = join(tmpdir(), `pi-web-host-guard-${process.pid}`);
+  const bin = join(tmpdir(), `devden-host-guard-${process.pid}`);
   mkdirSync(bin, { recursive: true });
   const stub = `#!/bin/sh\nexec "${process.execPath}" "${WRAP}" "$(basename "$0")" "$@"\n`;
   for (const name of GUARD_TOOLS) {
@@ -108,7 +108,7 @@ export function withHostGuardEnv(base = process.env) {
   const bin = ensureGuardBin();
   const incomingPath = String(base.PATH || process.env.PATH || "");
   const originalPath = String(
-    base.PI_WEB_HOST_GUARD_PATH ||
+    base.DEVDEN_HOST_GUARD_PATH ||
       incomingPath
         .split(":")
         .filter((dir) => dir && dir !== bin)
@@ -123,20 +123,20 @@ export function withHostGuardEnv(base = process.env) {
     GUARD_TOOLS.includes(shellName) ? shellName : "bash",
   );
   const pids =
-    base.PI_WEB_HOST_GUARD_PIDS ||
+    base.DEVDEN_HOST_GUARD_PIDS ||
     [process.pid, process.ppid].filter(Boolean).join(",");
   return {
     ...base,
     PATH: path,
     SHELL: wrappedShell,
-    PI_WEB_HOST_GUARD_PATH: originalPath,
-    PI_WEB_HOST_GUARD_PID: String(base.PI_WEB_HOST_GUARD_PID || process.pid),
-    PI_WEB_HOST_GUARD_PIDS: String(pids),
-    PI_WEB_HOST_GUARD_PORT: String(
+    DEVDEN_HOST_GUARD_PATH: originalPath,
+    DEVDEN_HOST_GUARD_PID: String(base.DEVDEN_HOST_GUARD_PID || process.pid),
+    DEVDEN_HOST_GUARD_PIDS: String(pids),
+    DEVDEN_HOST_GUARD_PORT: String(
       Number(
-        base.PI_WEB_HOST_GUARD_PORT ||
-          base.PI_WEB_PORT ||
-          process.env.PI_WEB_PORT ||
+        base.DEVDEN_HOST_GUARD_PORT ||
+          base.DEVDEN_PORT ||
+          process.env.DEVDEN_PORT ||
           4319,
       ),
     ),

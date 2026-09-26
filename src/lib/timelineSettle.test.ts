@@ -148,7 +148,7 @@ test("an assistant reply ending on a dangling tool call is not settled", () => {
       {
         role: "assistant",
         content: [
-          { type: "text", text: "Fully online — now let me expose pi-web" },
+          { type: "text", text: "Fully online — now let me expose devden" },
           { type: "toolCall", id: "c1", name: "bash", arguments: {} },
         ],
       },

@@ -9,7 +9,7 @@ import { spawn } from "node:child_process";
 import { homedir } from "node:os";
 import { withHostGuardEnv } from "./host-guard.js";
 
-const CLIENT_INFO = { name: "pi_web", title: "pi-web", version: "0.1.0" };
+const CLIENT_INFO = { name: "devden", title: "devden", version: "0.1.0" };
 const REQUEST_TIMEOUT_MS = 60_000;
 // The shared connection exists only to answer sidebar/catalog reads. Holding
 // a codex process open forever for that is wasteful, and respawning per read
@@ -17,7 +17,7 @@ const REQUEST_TIMEOUT_MS = 60_000;
 const SHARED_IDLE_MS = 120_000;
 
 export function resolveCodexExecutable() {
-  return process.env.PI_WEB_CODEX_BIN || "codex";
+  return process.env.DEVDEN_CODEX_BIN || "codex";
 }
 
 function rpcErrorMessage(value) {
@@ -34,7 +34,9 @@ function rpcErrorMessage(value) {
 }
 
 export class CodexAppServer {
-  constructor() {
+  constructor(options = {}) {
+    this.executable = options.executable;
+    this.envExtra = options.envExtra;
     this.child = undefined;
     this.buffer = "";
     this.nextId = 0;
@@ -62,11 +64,11 @@ export class CodexAppServer {
 
   async spawnAndInitialize() {
     const child = spawn(
-      resolveCodexExecutable(),
+      this.executable || resolveCodexExecutable(),
       ["app-server", "--listen", "stdio://"],
       {
         cwd: homedir(),
-        env: withHostGuardEnv(process.env),
+        env: withHostGuardEnv({ ...process.env, ...(this.envExtra || {}) }),
         stdio: ["pipe", "pipe", "pipe"],
       },
     );

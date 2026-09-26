@@ -1,16 +1,46 @@
-/** Types shared with the pi-web server. */
+/** Types shared with the devden server. */
 
 import type { SessionRoute } from "./route";
 
 export type RunStatus = "stopped" | "starting" | "ready" | "working" | "error";
 export const AGENT_BACKENDS = ["pi", "claude", "grok", "codex"] as const;
-export type AgentBackend = (typeof AGENT_BACKENDS)[number];
+export type BuiltinBackend = (typeof AGENT_BACKENDS)[number];
+/** Backend ids arrive as plain strings from the server; built-ins are the known ones. */
+export type AgentBackend = BuiltinBackend | (string & {});
+
+export type BackendAuth = "ok" | "missing" | "unknown";
+
+export interface BackendInfo {
+  id: string;
+  name: string;
+  command: string;
+  args: string[];
+  path: string | null;
+  pathLabel: string | null;
+  version: string | null;
+  auth: BackendAuth;
+  installCommand: string | null;
+  loginCommand: string | null;
+  capabilities: import("./agentCapabilities").AgentCapabilities;
+}
+
+let catalogIds: string[] | null = null;
+
+/** Ids from GET /api/backends. */
+export function installBackendCatalog(list: BackendInfo[]) {
+  catalogIds = list.map((item) => item.id);
+}
+
+export function agentBackendIds(): readonly string[] {
+  return catalogIds ?? AGENT_BACKENDS;
+}
 
 export function backendLabel(backend: AgentBackend): string {
   if (backend === "claude") return "Claude";
   if (backend === "grok") return "Grok";
   if (backend === "codex") return "Codex";
-  return "Pi";
+  if (backend === "pi") return "Pi";
+  return backend || "Pi";
 }
 
 /** Glyph + CSS color for the 2B sidebar agent mark. */
@@ -25,7 +55,9 @@ export function backendMark(backend: AgentBackend): {
     return { glyph: "✦", color: "var(--pw-accent)", blurb: "cloud" };
   if (backend === "codex")
     return { glyph: "◇", color: "var(--pw-fg-3)", blurb: "codex" };
-  return { glyph: "◆", color: "var(--pw-green)", blurb: "local shell agent" };
+  if (backend === "pi")
+    return { glyph: "◆", color: "var(--pw-green)", blurb: "local shell agent" };
+  return { glyph: "✦", color: "var(--pw-teal)", blurb: "acp" };
 }
 
 export interface ModelInfo {
@@ -388,7 +420,7 @@ export interface DeployStatusResponse {
   /** Absolute path of the project these facts describe. */
   project?: string;
   projectName?: string;
-  /** True when that project is pi-web itself, i.e. deploying restarts this server. */
+  /** True when that project is devden itself, i.e. deploying restarts this server. */
   self?: boolean;
   head: string | null;
   signature: string | null;
@@ -483,7 +515,7 @@ export class AuthError extends Error {
 
 let authToken: string | null = (() => {
   try {
-    return localStorage.getItem("pi-web.token");
+    return localStorage.getItem("devden.token");
   } catch {
     return null;
   }
@@ -493,8 +525,8 @@ let authToken: string | null = (() => {
 export function setAuthToken(token: string | null): void {
   authToken = token;
   try {
-    if (token) localStorage.setItem("pi-web.token", token);
-    else localStorage.removeItem("pi-web.token");
+    if (token) localStorage.setItem("devden.token", token);
+    else localStorage.removeItem("devden.token");
   } catch {
     /* storage unavailable; token stays in memory */
   }
@@ -532,6 +564,10 @@ async function post<T = unknown>(
 
 async function get<T = unknown>(url: string): Promise<T> {
   return request<T>(url);
+}
+
+async function del<T = unknown>(url: string): Promise<T> {
+  return request<T>(url, { method: "DELETE" });
 }
 
 async function put<T = unknown>(url: string, body: unknown): Promise<T> {
@@ -622,7 +658,7 @@ export const api = {
     ),
   workspaceSave: (path: string, content: string) =>
     put<WorkspaceFileResponse>("/api/workspace/file", { path, content }),
-  /** Auto-saved transcript, written to ~/.pi-web/transcripts (not the repo). */
+  /** Auto-saved transcript, written to ~/.devden/transcripts (not the repo). */
   writeTranscript: (name: string, content: string) =>
     put<{ ok: boolean; path?: string; error?: string }>("/api/transcript", {
       name,
@@ -733,6 +769,9 @@ export const api = {
       thinkingLevel?: string | null;
       accessMode?: "workspace-write" | "read-only";
       agentMode?: "standard" | "plan";
+      /** The ask card's submit: this message answers a pending ask, so the
+       * server delivers it even though an ask still holds the queue. */
+      answersAsk?: boolean;
     },
   ) => {
     const body: Record<string, unknown> = {
@@ -746,6 +785,7 @@ export const api = {
     if (options?.thinkingLevel) body.thinkingLevel = options.thinkingLevel;
     if (options?.accessMode) body.accessMode = options.accessMode;
     if (options?.agentMode) body.agentMode = options.agentMode;
+    if (options?.answersAsk) body.answersAsk = true;
     return post<{ ok: boolean; error?: string; sessionPath?: string }>(
       `/api/${key}/prompt`,
       body,
@@ -1097,13 +1137,22 @@ export const api = {
       token,
     }),
   backends: () =>
+    get<{ ok: boolean; backends: BackendInfo[] }>("/api/backends"),
+  recheckBackends: () =>
+    post<{ ok: boolean; backends: BackendInfo[] }>("/api/backends/recheck", {}),
+  onboarding: () =>
     get<{
       ok: boolean;
-      backends: Array<{
-        id: AgentBackend;
-        capabilities: import("./agentCapabilities").AgentCapabilities;
-      }>;
-    }>("/api/backends"),
+      done: boolean;
+      defaultBackend: string | null;
+      workspace: string | null;
+    }>("/api/onboarding"),
+  saveOnboarding: (body: {
+    done: boolean;
+    defaultBackend?: string | null;
+    workspace?: string | null;
+  }) =>
+    post<{ ok: boolean; done: boolean }>("/api/onboarding", body),
   authStatus: () => get<{ ok: boolean }>("/api/auth/status"),
   /** Renew the server-side lease for the given conversation keys. */
   heartbeat: (keys: string[]) =>
@@ -1152,7 +1201,7 @@ export function subscribeEvents(
           try {
             listener(event);
           } catch (error) {
-            console.error("[pi-web] event listener failed", error);
+            console.error("[devden] event listener failed", error);
           }
         }
       },

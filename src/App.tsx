@@ -18,11 +18,14 @@ import { BattlePage } from "./components/BattlePage";
 import { FleetPage } from "./components/FleetPage";
 import { TerminalPage } from "./components/TerminalPage";
 import { FishLogo } from "./components/icons";
+import { Onboarding } from "./components/Onboarding";
 import type { WorkbenchView } from "./lib/navigation";
 import { sessionPaneLayout } from "./lib/sessionLayout";
 import { TerminalRunsProvider } from "./lib/terminalRuns";
+import { applyCodeTheme, codeTheme } from "./lib/codeTheme";
 import "./styles/app.css";
 import "./styles/conversation.css";
+import "./styles/onboarding.css";
 
 /**
  * A dropped connection is invisible in the transcript: the agent's own
@@ -63,14 +66,14 @@ function Frame() {
   } = useStore();
   const [view, setView] = useState<WorkbenchView>("sessions");
   const [sidebarCollapsed, setSidebarCollapsed] = useState(
-    () => localStorage.getItem("pi-web.sidebar") === "collapsed",
+    () => localStorage.getItem("devden.sidebar") === "collapsed",
   );
   const [sidebarWidth, setSidebarWidth] = useState(() => {
-    const stored = Number(localStorage.getItem("pi-web.sidebar-width"));
+    const stored = Number(localStorage.getItem("devden.sidebar-width"));
     return Number.isFinite(stored) ? Math.min(480, Math.max(200, stored)) : 264;
   });
   const [splitSessions, setSplitSessions] = useState(
-    () => localStorage.getItem("pi-web.session-layout") === "split",
+    () => localStorage.getItem("devden.session-layout") === "split",
   );
   const [splitSessionKeys, setSplitSessionKeys] = useState<string[]>([]);
   // Narrow screens have no room for a permanent sidebar, so it becomes a
@@ -78,22 +81,22 @@ function Frame() {
   // no way to reach sessions, skills, the terminal or settings from a phone.
   const [navOpen, setNavOpen] = useState(false);
   const [theme, setTheme] = useState<"light" | "dark">(() =>
-    localStorage.getItem("pi-web.theme.v2") === "dark" ? "dark" : "light",
+    localStorage.getItem("devden.theme.v2") === "dark" ? "dark" : "light",
   );
   // Hidden by default. Reasoning streams are long and largely scratch work —
   // shown inline they bury the tool cards and the answer. Settings turns them
   // back on, and that choice sticks.
   const [showThinking, setShowThinking] = useState(
-    () => localStorage.getItem("pi-web.show-thinking") === "on",
+    () => localStorage.getItem("devden.show-thinking") === "on",
   );
   // Terminal lives in a right-docked pane next to the conversation; the
   // expand button swaps it to a full-width view without unmounting the PTYs.
   const [terminalPane, setTerminalPane] = useState(
-    () => localStorage.getItem("pi-web.terminal-pane") === "open",
+    () => localStorage.getItem("devden.terminal-pane") === "open",
   );
   const [terminalExpanded, setTerminalExpanded] = useState(false);
   const [terminalWidth, setTerminalWidth] = useState(() => {
-    const stored = Number(localStorage.getItem("pi-web.terminal-width"));
+    const stored = Number(localStorage.getItem("devden.terminal-width"));
     return Number.isFinite(stored) && stored > 0
       ? Math.min(760, Math.max(280, stored))
       : 420;
@@ -101,31 +104,33 @@ function Frame() {
 
   useEffect(() => {
     document.body.toggleAttribute("data-ds-dark-theme", theme === "dark");
-    localStorage.setItem("pi-web.theme.v2", theme);
+    localStorage.setItem("devden.theme.v2", theme);
   }, [theme]);
 
+  useEffect(() => applyCodeTheme(codeTheme()), []);
+
   useEffect(() => {
-    localStorage.setItem("pi-web.show-thinking", showThinking ? "on" : "off");
+    localStorage.setItem("devden.show-thinking", showThinking ? "on" : "off");
   }, [showThinking]);
 
   const toggleSidebar = () =>
     setSidebarCollapsed((collapsed) => {
       localStorage.setItem(
-        "pi-web.sidebar",
+        "devden.sidebar",
         collapsed ? "expanded" : "collapsed",
       );
       return !collapsed;
     });
 
   const openTerminalPane = useCallback(() => {
-    localStorage.setItem("pi-web.terminal-pane", "open");
+    localStorage.setItem("devden.terminal-pane", "open");
     setTerminalExpanded(false);
     setTerminalPane(true);
     setView("sessions");
   }, []);
 
   const closeTerminalPane = () => {
-    localStorage.setItem("pi-web.terminal-pane", "closed");
+    localStorage.setItem("devden.terminal-pane", "closed");
     setTerminalPane(false);
     setTerminalExpanded(false);
   };
@@ -154,7 +159,7 @@ function Frame() {
         Math.max(280, startWidth + (startX - moveEvent.clientX)),
       );
       setTerminalWidth(next);
-      localStorage.setItem("pi-web.terminal-width", String(next));
+      localStorage.setItem("devden.terminal-width", String(next));
     };
     const finish = () => {
       window.removeEventListener("pointermove", onMove);
@@ -173,20 +178,20 @@ function Frame() {
       focusSession(activeKey);
       return;
     }
-    localStorage.setItem("pi-web.session-layout", "split");
+    localStorage.setItem("devden.session-layout", "split");
     setSplitSessionKeys(tabs.map((tab) => tab.key));
     setSplitSessions(true);
   };
 
   const focusSession = (key: string) => {
-    localStorage.setItem("pi-web.session-layout", "focus");
+    localStorage.setItem("devden.session-layout", "focus");
     if (key) setActiveKey(key);
     setSplitSessions(false);
     setSplitSessionKeys([]);
   };
 
   const splitWithSession = (key: string) => {
-    localStorage.setItem("pi-web.session-layout", "split");
+    localStorage.setItem("devden.session-layout", "split");
     setSplitSessionKeys((current) => {
       const base = current.length > 0 ? current : [activeKey];
       return [...new Set([...base, key])].filter(Boolean);
@@ -226,7 +231,7 @@ function Frame() {
   const persistSidebarWidth = (width: number) => {
     const next = Math.min(480, Math.max(200, width));
     setSidebarWidth(next);
-    localStorage.setItem("pi-web.sidebar-width", String(next));
+    localStorage.setItem("devden.sidebar-width", String(next));
     return next;
   };
 
@@ -487,18 +492,31 @@ function EmptyCenter() {
   );
 }
 
+function SetupGate() {
+  const { setup } = useStore();
+  if (setup === "checking") {
+    return (
+      <div className="setup">
+        <p className="setup-wait">Checking this machine…</p>
+      </div>
+    );
+  }
+  if (setup === "needed") return <Onboarding />;
+  return <Frame />;
+}
+
 export function App() {
   return (
     <AuthGate>
       <StoreProvider>
-        <Frame />
+        <SetupGate />
       </StoreProvider>
     </AuthGate>
   );
 }
 
 /**
- * Token gate: when the server has PI_WEB_TOKEN set, every API call 401s until
+ * Token gate: when the server has DEVDEN_TOKEN set, every API call 401s until
  * the user enters the token. The token is exchanged for an HttpOnly cookie
  * (same-origin) and a one-time ticket (cross-origin EventSource/WebSocket),
  * then stored locally so later requests carry the Authorization header.
@@ -561,16 +579,16 @@ function AuthGate({ children }: { children: ReactNode }) {
     return (
       <div className="auth-gate">
         <form className="auth-gate__card" onSubmit={submit}>
-          <h1>pi-web is locked</h1>
+          <h1>devden is locked</h1>
           <p>
-            The server requires a token. Enter the value of PI_WEB_TOKEN to
+            The server requires a token. Enter the value of DEVDEN_TOKEN to
             continue.
           </p>
           <input
             type="password"
             value={token}
             onChange={(event) => setToken(event.target.value)}
-            placeholder="PI_WEB_TOKEN"
+            placeholder="DEVDEN_TOKEN"
             autoFocus
           />
           <button type="submit">Unlock</button>

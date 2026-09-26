@@ -74,7 +74,7 @@ export const BOARD_COLUMNS: {
   },
 ];
 
-const key = (cwd: string) => `pi-web:board:${cwd}`;
+const key = (cwd: string) => `devden:board:${cwd}`;
 
 export function loadBoard(cwd: string): BoardCard[] {
   try {
@@ -197,7 +197,7 @@ export const columnCards = (cards: BoardCard[], column: BoardColumn) => {
  * ponytail: downscaled data URLs in localStorage. Good for a handful of
  * screenshots per workspace; move to IndexedDB if a board needs dozens.
  */
-const shotKey = (id: string) => `pi-web:board:shot:${id}`;
+const shotKey = (id: string) => `devden:board:shot:${id}`;
 
 export function loadShot(id: string): string | null {
   try {
@@ -250,7 +250,7 @@ export async function shrinkImage(file: Blob): Promise<string> {
  * a mounted BoardPanel can reload instead of holding a stale list. The
  * `storage` event is no use here — it only fires in *other* tabs.
  */
-export const BOARD_EVENT = "pi-web:board";
+export const BOARD_EVENT = "devden:board";
 
 function announce(cwd: string) {
   window.dispatchEvent(new CustomEvent(BOARD_EVENT, { detail: { cwd } }));

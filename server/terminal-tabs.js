@@ -3,7 +3,7 @@
  *
  * Claude Code's terminal-panel MCP, ported: an agent hands a command to a
  * real shell tab instead of blocking its own bash tool on an 8-minute run,
- * then polls output. Tabs are owned by the pi-web server (not the agent
+ * then polls output. Tabs are owned by the devden server (not the agent
  * process) so they survive the agent dying and stream to the browser via the
  * same SSE event bus as every other runtime event.
  *

@@ -5,7 +5,7 @@
  * Background: `pi --provider grok-sdk` never surfaces tool calls -- confirmed
  * by capturing its raw RPC event stream directly (thinking/text content only,
  * even when explicitly told "use your bash tool now"). That's a bug in pi's
- * native grok-sdk adapter, not in pi-web, and pi's extension system can't
+ * native grok-sdk adapter, not in devden, and pi's extension system can't
  * redirect a built-in provider id to different request-building code.
  *
  * The real `grok` CLI (xAI's own harness, "grok-build") speaks ACP natively
@@ -30,7 +30,6 @@
  * "steer" does -- steer() rejects while a turn is in flight instead of
  * silently queuing or corrupting state.
  */
-import { spawn } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import {
   closeSync,
@@ -42,11 +41,7 @@ import {
 } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
-import { Readable, Writable } from "node:stream";
-import {
-  ClientSideConnection,
-  ndJsonStream,
-} from "@zed-industries/agent-client-protocol";
+import { GROK_ACP_ARGS, openAcpClient } from "./acp-agent.js";
 import { AgentPool } from "./agent-pool.js";
 import { ApprovalGate } from "./approval-gate.js";
 import { attachQueue } from "./agent-queue.js";
@@ -57,7 +52,6 @@ import {
   stripClarifyPrefix,
   withGrokPrefix,
 } from "./co-partner-prompt.js";
-import { withHostGuardEnv } from "./host-guard.js";
 import {
   GROK_PROXY_BASE,
   GROK_PROXY_HEADERS,
@@ -83,7 +77,6 @@ export { isSubagentToolName } from "./agent-subagent.js";
 export { parseSubagentId } from "./sessions.js";
 
 export const GROK_SESSIONS_ROOT = () => join(grokHome(), "sessions");
-const ACP_PROTOCOL_VERSION = 1;
 
 function resolveGrokExecutable() {
   return process.env.GROK_EXECUTABLE || "grok";
@@ -136,7 +129,7 @@ function acpTextOf(block) {
 // indicator instead of a generic thinking spinner during shell execution.
 const SHELL_TOOL_NAMES = new Set(["run_terminal_command"]);
 
-// How long a background-driven piece of a turn may go silent before pi-web
+// How long a background-driven piece of a turn may go silent before devden
 // treats it as dead. A healthy grok streams chunks continuously; silence means
 // the child crashed or stopped mid-report and the turn would otherwise wedge
 // the session on "running" forever — every later prompt queued behind it.
@@ -262,7 +255,7 @@ function childUpdatesPath(cwd, subagentId) {
 /** The session's own update journal — the ground truth for what grok has
  *  finished. grok journals its turn marker with a non-ACP method
  *  (`_x.ai/session/update`), so the turn_completed notification never
- *  reaches the standard ACP stream and pi-web must read the file. */
+ *  reaches the standard ACP stream and devden must read the file. */
 function sessionUpdatesPath(cwd, sessionId) {
   return join(
     GROK_SESSIONS_ROOT(),
@@ -534,74 +527,66 @@ class GrokAgentProcess {
 
     try {
       if (!this.hasConnection()) {
-        const child = spawn(resolveGrokExecutable(), ["agent", "stdio"], {
-          cwd: effectiveCwd,
-          env: withHostGuardEnv(process.env),
-          stdio: ["pipe", "pipe", "pipe"],
-        });
-        this.process = child;
-        child.stderr.on("data", (chunk) => {
-          // grok colours its logs; raw escapes render as "[2m...[0m" noise in
-          // the transcript, which is where its network errors surface.
-          const message = chunk
-            .toString("utf8")
-            // biome-ignore lint/suspicious/noControlCharactersInRegex: ANSI SGR
-            .replace(/\u001b\[[0-9;]*m/g, "")
-            .split(/\r?\n/)
-            // grok logs ERROR tool_error: tool_output_error for every failed
-            // tool (missing file, MCP -32602). The card already shows that.
-            .filter((line) => !/\btool_error:\s*tool_output_error\b/i.test(line))
-            .join("\n")
-            .trim();
-          if (message)
-            this.emit({ type: "stderr", sessionKey: this.sessionKey, message });
-        });
-        child.once("error", (error) => {
-          this.process = undefined;
-          this.connection = undefined;
-          this.setStatus("error", error.message);
-        });
-        child.once("exit", (code, signal) => {
-          this.process = undefined;
-          // index.js treats a truthy `connection` as "grok is alive" and skips
-          // the restart. Left set, every later prompt writes into a closed pipe
-          // and hangs forever -- the conversation looks frozen and no message
-          // can revive it.
-          this.connection = undefined;
-          if (this.turn?.idle) {
-            // The idle turn is fed by notifications from this child; with the
-            // child gone they never arrive. Close it so the composer does not
-            // stay "running" and the next prompt is not rejected with "already
-            // in progress".
-            this.finishIdleTurn();
-          } else if (this.turn) {
-            this.turn.reject?.(
-              new Error(`Grok exited (${signal ?? code ?? "unknown"})`),
-            );
-            this.turn = undefined;
-          }
-          // Parent death used to leave jsonl pumps running, so spawn_subagent
-          // stayed `running` and the main transcript kept hiding later tools.
-          this.stopSubagentFollows();
-          if (this.status !== "stopped") {
-            this.setStatus(
-              code && code !== 0 ? "error" : "stopped",
-              code && code !== 0 ? `Grok exited with code ${code}` : undefined,
-            );
-          }
-        });
-        await new Promise((resolve, reject) => {
-          child.once("spawn", resolve);
-          child.once("error", reject);
-        });
-
-        const stream = ndJsonStream(
-          Writable.toWeb(child.stdin),
-          Readable.toWeb(child.stdout),
-        );
         const self = this;
-        this.connection = new ClientSideConnection(
-          () => ({
+        const opened = await openAcpClient({
+          command: this.executable || resolveGrokExecutable(),
+          args: GROK_ACP_ARGS,
+          env: this.envExtra || {},
+          cwd: effectiveCwd,
+          onSpawn: (child) => {
+            this.process = child;
+          },
+          onStderr: (chunk) => {
+            // grok colours its logs; raw escapes render as "[2m...[0m" noise in
+            // the transcript, which is where its network errors surface.
+            const message = chunk
+              .toString("utf8")
+              // biome-ignore lint/suspicious/noControlCharactersInRegex: ANSI SGR
+              .replace(/\u001b\[[0-9;]*m/g, "")
+              .split(/\r?\n/)
+              // grok logs ERROR tool_error: tool_output_error for every failed
+              // tool (missing file, MCP -32602). The card already shows that.
+              .filter((line) => !/\btool_error:\s*tool_output_error\b/i.test(line))
+              .join("\n")
+              .trim();
+            if (message)
+              this.emit({ type: "stderr", sessionKey: this.sessionKey, message });
+          },
+          onError: (error) => {
+            this.process = undefined;
+            this.connection = undefined;
+            this.setStatus("error", error.message);
+          },
+          onExit: (code, signal) => {
+            this.process = undefined;
+            // index.js treats a truthy `connection` as "grok is alive" and skips
+            // the restart. Left set, every later prompt writes into a closed pipe
+            // and hangs forever -- the conversation looks frozen and no message
+            // can revive it.
+            this.connection = undefined;
+            if (this.turn?.idle) {
+              // The idle turn is fed by notifications from this child; with the
+              // child gone they never arrive. Close it so the composer does not
+              // stay "running" and the next prompt is not rejected with "already
+              // in progress".
+              this.finishIdleTurn();
+            } else if (this.turn) {
+              this.turn.reject?.(
+                new Error(`Grok exited (${signal ?? code ?? "unknown"})`),
+              );
+              this.turn = undefined;
+            }
+            // Parent death used to leave jsonl pumps running, so spawn_subagent
+            // stayed `running` and the main transcript kept hiding later tools.
+            this.stopSubagentFollows();
+            if (this.status !== "stopped") {
+              this.setStatus(
+                code && code !== 0 ? "error" : "stopped",
+                code && code !== 0 ? `Grok exited with code ${code}` : undefined,
+              );
+            }
+          },
+          handlers: () => ({
             async sessionUpdate(notification) {
               self.handleSessionUpdate(notification);
             },
@@ -676,25 +661,17 @@ class GrokAgentProcess {
             },
             async writeTextFile() {
               throw new Error(
-                "writeTextFile not supported by pi-web's grok client",
+                "writeTextFile not supported by devden's grok client",
               );
             },
             async readTextFile() {
               throw new Error(
-                "readTextFile not supported by pi-web's grok client",
+                "readTextFile not supported by devden's grok client",
               );
             },
           }),
-          stream,
-        );
-
-        await this.connection.initialize({
-          protocolVersion: ACP_PROTOCOL_VERSION,
-          clientCapabilities: {
-            fs: { readTextFile: false, writeTextFile: false },
-            terminal: false,
-          },
         });
+        this.connection = opened.connection;
       }
 
       // Prefetch so a later model picker / resolveEffort doesn't wait on

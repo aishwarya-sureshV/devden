@@ -7,6 +7,7 @@ import {
   type AgentBackend,
   type ModelInfo,
 } from "../lib/api";
+import { useStore } from "../lib/store";
 import {
   firstEnabled,
   newRouteStep,
@@ -38,6 +39,10 @@ export function RouteSetup({
   onPick: (template: RouteTemplate) => void;
   onChangeRoute: () => void;
 }) {
+  const { backendCatalog } = useStore();
+  const backendIds = backendCatalog.length
+    ? backendCatalog.map((item) => item.id)
+    : [...AGENT_BACKENDS];
   const [models, setModels] = useState<Partial<Record<AgentBackend, ModelInfo[]>>>(
     {},
   );
@@ -202,7 +207,7 @@ export function RouteSetup({
                     });
                   }}
                 >
-                  {AGENT_BACKENDS.map((backend) => (
+                  {backendIds.map((backend) => (
                     <option key={backend} value={backend}>
                       {backendLabel(backend).toLowerCase()}
                     </option>

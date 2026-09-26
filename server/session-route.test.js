@@ -37,7 +37,7 @@ describe("normalizeRoute", () => {
 
 describe("saveRoute / loadRoute", () => {
   it("round-trips by session file even under a new conversation key", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "pi-web-route-"));
+    const dir = await mkdtemp(join(tmpdir(), "devden-route-"));
     const saved = await saveRoute(
       "tab-1",
       "/tmp/session.jsonl",

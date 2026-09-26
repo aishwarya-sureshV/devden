@@ -235,6 +235,35 @@ test("a wall the agent carried on past does not arm the pill", () => {
   );
 });
 
+test("a follow-up sent into an exhausted limit resumes the cut-off turn", () => {
+  const assistant = (id: string, text: string): TimelineItem =>
+    ({ id, kind: "assistant", text, timestamp: 2 }) as unknown as TimelineItem;
+  // The queued prompt was released because the wall settled the turn. It
+  // never got model work, so Resume still belongs to the turn that was cut off.
+  assert.deepEqual(
+    pendingLimitTurn([
+      user("u1", "animate the todos"),
+      assistant("a1", "halfway through the todos"),
+      notice("n1", "you have reached your session usage limit"),
+      user("u2", "and todos must not be static"),
+      notice("n2", "you have reached your session usage limit"),
+    ]),
+    { request: "animate the todos", noticeId: "n1" },
+  );
+  // The follow-up actually started. That turn is the one to resume.
+  assert.equal(
+    pendingLimitTurn([
+      user("u1", "animate the todos"),
+      assistant("a1", "halfway through the todos"),
+      notice("n1", "you have reached your session usage limit"),
+      user("u2", "and todos must not be static"),
+      assistant("a2", "started the follow-up"),
+      notice("n2", "you have reached your session usage limit"),
+    ])?.request,
+    "and todos must not be static",
+  );
+});
+
 test("a clean turn after a wall does not arm the pill", () => {
   const timeline = new Timeline("t-clean");
   timeline.appendUser("do the thing");

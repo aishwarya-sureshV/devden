@@ -1,140 +1,133 @@
-# pi-web workbench
+# devden
 
-A DeepSeek-harness-style **web UI for local coding agents**. Typing `pi-web`
-in a terminal opens the pi-backed workbench, while `claude-web` opens the
-same workbench backed by Claude Code. The real `pi` command is never touched
-— `pi` in a terminal stays the classic TUI.
-
-- **Backend** (`server/`) spawns one agent process per conversation: `pi --mode
-  rpc`, Claude Code's long-lived stream-json mode, or grok's ACP `agent stdio`.
-  All three adapters fan events out to the browser over the same Server-Sent
-  Events stream. Session history is discovered independently from
-  `~/.pi/agent/sessions`, `~/.claude/projects`, and `~/.grok/sessions`.
-- **Frontend** (`src/`) is React + Vite and mirrors deepseek-harness's shell:
-  responsive three-column layout (collapsible sidebar | conversation | details),
-  its light/dark design tokens (`theme.css`/`app.css`), hero empty state with
-  glow, and the docked composer card (content width + 32px). Message rendering
-  is ported from AgentDeck's `AgentWorkbench`: collapsed tool cards for
-  reads/shell, expanded diff cards for `edit`/`write` with +/− stats and a
-  full-file viewer, reasoning-summary rows, a thinking loader and the thin
-  animated activity line. Each conversation also has a **Backend log** tab that
-  records the full live event stream, including command requests/responses, RPC
-  events, tool activity, status changes, stderr, and raw expandable JSON
-  payloads.
+A local web workbench for the coding agents already on your machine: **pi**, **Claude Code**, **Grok**, and **Codex**. One browser window, your existing logins, and the session history those tools already keep. `pi` in a terminal stays the classic TUI. `devden` is a separate command.
 
 ## Install
 
-```bash
-npm install -g pi-web   # once published; from a checkout: npm install -g .
-npx pi-web              # run it once without installing anything
-```
-
-`pi-web` is its own command. It does not replace, wrap, or intercept the real
-`pi` binary; the server resolves the backend from `PATH` at spawn time.
-
-## Use
+You need [Node.js](https://nodejs.org) and npm, on macOS or Linux, and at least one of those agents on your `PATH` and signed in. The first screen shows which ones are ready.
 
 ```bash
-pi-web        # open the web workbench (starts the local server if needed)
-claude-web    # open the web workbench, backed by Claude Code
-pi-web --stop # stop the workbench server
-pi            # untouched — the real terminal TUI, as always
+git clone https://github.com/aishwarya-sureshV/devden.git
+cd devden
+npm install
+npm install -g .
+devden
 ```
 
-If you followed the old install ritual and symlinked `/opt/homebrew/bin/pi` at
-this repo, restore the stock binary once:
+That starts a server on `127.0.0.1:4319` and opens the workbench. Run it again later and it reuses the server that is already up.
+
+```bash
+claude-web     # same workbench; new sessions start on Claude Code
+devden --stop  # stop the server
+```
+
+Install from this checkout. The npm package named `pi-web` is a different project (`ravshansbox/pi-web`).
+
+If an older install of this repo replaced your Homebrew `pi` binary, put the stock one back:
 
 ```bash
 ln -sfn ../lib/node_modules/@earendil-works/pi-coding-agent/dist/cli.js /opt/homebrew/bin/pi
 ```
 
-Environment:
+## What you will not find in other workbenches
 
-- `PI_WEB_PORT` (default `4319`), `PI_WEB_HOST` (default `127.0.0.1`)
-- `PI_WEB_PI_BIN` — path/name of the pi binary to spawn (default `pi`)
-- `PI_WEB_CLAUDE_BIN` — path/name of the Claude Code binary to spawn (default `claude`)
-- `PI_WEB_TOKEN` — optional bearer token. When set, every API call, the SSE
-  stream, and the terminal WebSocket require it. The UI shows a lock screen;
-  entering the token exchanges it for an HttpOnly cookie (same-origin) and a
-  one-time ticket (cross-origin EventSource/WebSocket), so the token never
-  appears in a URL or a log line.
-- `PI_WEB_UI_ORIGIN` — exact origin of a hosted UI (e.g. a Cloudflare Pages
-  deployment) that may talk to the local API. Only this exact origin and
-  localhost are trusted; public signup namespaces like `*.pages.dev` are never
-  accepted by suffix match.
-- `PI_WEB_WORKSPACE_ROOTS` — colon-separated extra directories the file
-  explorer may read and edit, beyond the launch directory and open session
-  cwds. Mutations (write/rename/delete/copy/move) and the git endpoint are
-  confined to these roots; read-only browsing is confined to the user's home.
-- `PI_WEB_LOG` — where the launcher writes the server log (default
-  `${TMPDIR:-/tmp}/pi-web.log`).
+**Race the agents on one task.** Battle sends the same prompt to several agents at once. Each one works in its own git worktree, so they cannot overwrite each other. Columns stream live. A scoreboard ticks tokens, files changed, and tests. The same agent can enter twice on two different models. Finished races stay in the browser as a leaderboard.
 
-The optional `backend` URL query parameter selects the agent for new sessions:
-`backend=claude` selects Claude Code, `backend=grok` selects grok, while an
-absent or unknown value defaults to `pi` for compatibility with existing links
-and bookmarks. Claude Code is spawned without API-key environment variables so
-it uses the user's existing Claude.ai subscription login. Ollama models are
-auto-discovered from the local daemon and synced to `~/.pi/agent/models.json`.
-The `api` query parameter overrides the API origin, but only local origins
-(`localhost`/`127.0.0.1`/`[::1]`) are accepted.
+**Open it on your phone.** Type `/remote` in any conversation. The server downloads `cloudflared` once (~35 MB, cached in `~/.devden/bin`, or the existing `~/.pi-web` folder if that is already there), opens an outbound Cloudflare tunnel, and shows a QR code. Scan it. The link carries a one-time token that becomes a 7-day login cookie, so the phone has nothing to type. Add to Home Screen for a full-screen app. No account, no port forwarding, no phone app. It works over cellular. `/remote off` closes the tunnel and revokes the token. The laptop has to stay awake. The tunnel serves the built UI and builds `dist/` itself if that folder is missing.
 
-### `/remote` — the workbench on your phone
+**Four agents, one sidebar.** New work can start on pi, Claude Code, Grok, or Codex. Old sessions are read from each tool’s own store (`~/.pi/agent/sessions`, `~/.claude/projects`, `~/.grok/sessions`, and Codex). Claude Code uses your existing Claude.ai login. Ollama models running on this machine are picked up automatically and written into `~/.pi/agent/models.json`.
 
-Type `/remote` in any conversation (or pick it from the `/` command menu):
-the server downloads `cloudflared` on first use (~35 MB, cached in
-`~/.pi-web/bin`), opens an outbound-only Cloudflare quick tunnel to this
-machine, and shows a QR code. Scan it with a phone camera — the link carries
-a one-time token that the server swaps for a 7-day HttpOnly cookie, so the
-phone is logged in with nothing to type. Add to Home Screen for the
-full-screen app experience. `/remote off` closes the tunnel and revokes the
-token. No account, no port forwarding, no app on the phone; works over
-cellular. The machine running the server must stay awake, and the tunnel
-serves the built UI — `/remote` runs `npm run build` itself if `dist/` is
-missing.
+**It stops and asks.** An ambiguous request becomes a question card with concrete choices before the agent edits anything. In manual mode, every tool call waits on an approval card. Fleet is the page of conversations that have stopped and are waiting on your answer, ordered by who needs you, not by name.
 
-## Security model
+**Fork a turn, rewind a file, refresh without losing the run.** Fork cuts a new session at a message you choose. When the folder is a git repo, that fork can get its own worktree. Edit an earlier message and resend, and the conversation rewinds to that point. Claude sessions can also rewind the files. Refreshing the page does not kill the agent. The browser heartbeats its open conversations, and the new page adopts the process that is still running.
 
-- `/remote` tunnels are token-gated: the public `trycloudflare.com` URL is
-  worthless without the QR's token, which is minted per tunnel, accepted once
-  in the query (then swapped for a cookie and redirected to a clean URL), and
-  revoked when the tunnel stops. While a tunnel is up, non-loopback requests
-  require that token even when `PI_WEB_TOKEN` is unset; genuinely local
-  requests (including same-machine proxies like `tailscale serve`) stay open.
-  Traffic proxied by cloudflared arrives from 127.0.0.1, so it is identified
-  by Cloudflare's edge headers (`cf-connecting-ip`/`x-forwarded-for`) rather
-  than its socket address. Quick tunnels do not support SSE (a documented
-  Cloudflare limitation), so pages loaded through a tunnel receive the event
-  stream over the `/api/events-ws` WebSocket instead.
+**A board that starts real work.** Each workspace has a kanban. Dispatch a card and it becomes a normal agent session in that folder. Notes sit beside the sessions (text and dropped images, stored in the browser). A trajectory of the turn and a Backend log show the live event stream, including tool calls and the raw JSON.
 
-- The server binds `127.0.0.1` and validates the `Origin` header on every
-  request **and** the terminal WebSocket upgrade against an exact-host
-  allowlist (localhost + `PI_WEB_UI_ORIGIN`). WebSockets are not subject to
-  CORS, so the server checks Origin itself.
-- Workspace file mutations and the git endpoint are confined to the workspace
-  roots (launch directory + open session cwds + `PI_WEB_WORKSPACE_ROOTS`),
-  mirroring the realpath + root-containment discipline of `sessions.js`.
-- Process lifetime is owned by a server-side lease: the page heartbeats its
-  open conversations and the server reaps agents whose page went away. A page
-  refresh never stops the agent — the new page adopts the live process.
+## Also in the workbench
+
+- Collapsed cards for reads and shell commands. Edits open as a diff with add/delete counts and a full-file view.
+- A file tree and editor scoped to the folder you launched in, the open sessions, and any extra roots you set.
+- A real terminal in the page. The agent can run a command in a tab you can watch.
+- Subagents show up as their own cards while they run.
+- Usage for the backends that report it.
+- Export a session, including a handoff prompt for the next agent.
+- Deploy the project the conversation is working in. Local builds the working tree as it is. Cloud fast-forwards git, installs, and builds. The devden server restarts only when that project is devden itself.
+- Light and dark theme.
+
+## Links
+
+Add `?backend=claude`, `?backend=grok`, or `?backend=codex` to start a new session on that agent. Anything else, including no parameter, starts on pi. `?api=` can point the page at another API origin, and only `localhost`, `127.0.0.1`, and `[::1]` are accepted.
+
+## Configuration
+
+| Variable | Default | What it does |
+| --- | --- | --- |
+| `DEVDEN_PORT` | `4319` | API port |
+| `DEVDEN_HOST` | `127.0.0.1` | Bind address |
+| `DEVDEN_PI_BIN` | `pi` | pi binary to spawn |
+| `DEVDEN_CLAUDE_BIN` | `claude` | Claude Code binary to spawn |
+| `DEVDEN_TOKEN` | unset | Bearer token. When set, the API, the event stream, and the terminal socket require it. The lock screen trades it for an HttpOnly cookie and a one-time ticket, so the token never lands in a URL or a log line. |
+| `DEVDEN_UI_ORIGIN` | unset | Exact origin of a hosted UI that may call this API. Localhost is always allowed. Suffixes such as `*.pages.dev` are not. |
+| `DEVDEN_WORKSPACE_ROOTS` | unset | Colon-separated extra directories the explorer may edit. Writes, renames, deletes, copies, moves, and git stay inside these roots plus the launch directory and open session folders. Read-only browsing stays inside your home directory. |
+| `DEVDEN_LOG` | `$TMPDIR/devden.log` | Launcher log |
+
+## Security
+
+The server binds to loopback and checks the `Origin` header on every request and on the terminal WebSocket. WebSockets ignore CORS, so the server does that check itself.
+
+A `/remote` tunnel is useless without its QR token. The token is minted for that tunnel, accepted once, swapped for a cookie, and revoked when the tunnel stops. While a tunnel is up, requests that are not from this machine need the token even if `DEVDEN_TOKEN` is unset. Traffic from cloudflared arrives on `127.0.0.1`, so the server uses Cloudflare’s `cf-connecting-ip` and `x-forwarded-for` headers to tell it apart from a local browser. Quick tunnels do not support server-sent events, so a page loaded through the tunnel receives events on the `/api/events-ws` WebSocket instead.
 
 ## Develop
 
 ```bash
-npm run dev        # vite (5319, proxies /api) + server (4319)
+npm run dev        # Vite on 5319 (proxies /api) and the API on 4319
 npm run build      # production bundle in dist/
-npm run preview    # serve the built app via the API server
+npm run preview    # serve the built app from the API server
 npm run typecheck
-npm test           # node:test — server confinement + frontend helpers
-npm run check:grok # verify the grok ACP adapter against the installed CLI
+npm test           # node:test
+npm run check:grok # grok ACP adapter against the installed CLI
 ```
 
-The server also serves `dist/` in production, so after `npm run build` the
-`pi-web` launcher needs no dev server.
+Check `http://127.0.0.1:4319/api/health` before starting another server. Port 4319 is the live event stream for anyone using the workbench. Server JavaScript changes apply the next time that process starts. After `npm run build`, the `devden` launcher serves `dist/` and does not need Vite.
 
-## How it's wired
+`devden` and `claude-web` are the `bin` entries in `package.json`. Both share `bin/lib/devden-launcher.sh`. The server spawns each agent by name from `PATH`.
 
-`pi-web` and `claude-web` are npm-installed commands (`"bin"` in
-`package.json`). Neither touches the real `pi` or `claude` executable — the
-server spawns each backend by name, resolved from `PATH` (overridable via
-`PI_WEB_PI_BIN` / `PI_WEB_CLAUDE_BIN`). Both launchers share
-`bin/lib/pi-web-launcher.sh`.
+## Keeping your local changes across `npm update`
+
+`node_modules` is disposable: every `npm install` / `npm update` replaces the package and **wipes any edits you made inside it**. If you've customized devden files directly in `node_modules`, use [patch-package](https://github.com/ds300/patch-package) to make your changes survive updates. It works with npm and yarn, and requires no Git.
+
+### Setup (one time)
+
+```bash
+npm install --save-dev patch-package
+```
+
+Then add to the `scripts` section of your `package.json` (create `scripts` if missing):
+
+```json
+{
+  "scripts": {
+    "postinstall": "patch-package"
+  }
+}
+```
+
+### Save your changes (after editing files in `node_modules/devden`)
+
+```bash
+npx patch-package devden
+```
+
+This creates `patches/devden+<version>.patch` **in your project root** (outside `node_modules`, so it's safe). Commit it if you use Git.
+
+### What happens on update
+
+Run `npm update` (or `npm install devden@latest`) as usual. The `postinstall` script re-applies your patch automatically — your changes and the new upstream version end up together.
+
+### If a patch fails
+
+If the new devden version changed the same lines you patched, you'll see the patch fail during install. Re-apply:
+
+1. re-apply your edits to `node_modules/devden`,
+2. delete `patches/devden+<old-version>.patch`,
+3. run `npx patch-package devden` again to regenerate it for the new version.

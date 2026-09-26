@@ -17,7 +17,8 @@ initial `ls`/`grep` round-trips (measured: ~47% of first-turn tool calls).
 - `server/index.js` — API entry: routes, SSE (`/api/events`), static serving. Fan-out hub for the server.
 - `server/agent-registry.js` / `agent-pool.js` / `agent-queue.js` — session registry, process pool, and queued-message handling for running agents.
 - `server/agent-subagent.js` + `pi-subagent.js` / `claude-subagent` / `grok-subagent` — subagent spawn/follow plumbing per backend.
-- `server/pi-agent.js`, `claude-agent.js`, `grok-agent.js`, `codex-agent.js` — the four backend adapters (process spawn, RPC/ACP wiring, system-prompt assembly).
+- `server/pi-agent.js`, `claude-agent.js`, `grok-agent.js`, `codex-agent.js` — the four backend adapters (process spawn, RPC/ACP wiring, system-prompt assembly). `server/acp-agent.js` is the ACP stdio opener grok launches through.
+- First-run setup: `src/components/Onboarding.tsx` + `src/styles/onboarding.css`. Detection (path, version, auth) is `server/agent-detect.js`.
 - `server/pi-extensions/` — pi extensions loaded via `-e`: `manual-approve.ts` (manual mode), `background-tasks.ts` (bash_background/task_output/task_stop + run_in_terminal/read_terminal). `server/terminal-tabs.js` — server-owned terminal tabs those tools drive.
 - `server/co-partner-prompt.js` — shared harness prompts (narration, clarify gate, report).
 - `server/host-guard.js` — agent PATH/SHELL wrappers that refuse host-kill and uncapped `/api/events` curls.
@@ -34,7 +35,7 @@ initial `ls`/`grep` round-trips (measured: ~47% of first-turn tool calls).
 
 ## Ports
 
-- API server: `4319` (`PI_WEB_PORT`), vite dev server: `5319` (proxies `/api` → 4319).
+- API server: `4319` (`DEVDEN_PORT`), vite dev server: `5319` (proxies `/api` → 4319).
 - Health check: `curl -sf http://127.0.0.1:4319/api/health`.
 - The process on `4319` is this conversation's SSE transport. Server JS changes take effect on the next natural restart.
 - **Test servers & scripts**: use a scratch port, `trap 'kill $PID' EXIT` cleanup,

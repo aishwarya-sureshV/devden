@@ -46,7 +46,7 @@ export interface RaceRecord {
   cleanedAt?: number;
 }
 
-const STORAGE_KEY = "pi-web:races";
+const STORAGE_KEY = "devden:races";
 const MAX_RACES = 20;
 
 /** Races are rebuilt from ordinary sessions, so a corrupt entry is droppable. */

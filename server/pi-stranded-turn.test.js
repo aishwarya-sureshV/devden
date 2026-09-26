@@ -101,3 +101,46 @@ test("never settles a turn it was not armed for", async () => {
   assert.equal(settles, 0, "turn 1's backstop must not touch turn 2");
   assert.equal(agent.status, "working", "turn 2 must still be running");
 });
+
+test("a stalled model is warned, resumed, then given up on", async () => {
+  const agent = new PiAgentProcess("test-key");
+  const notices = [];
+  const prompts = [];
+  agent.onEvent((event) => {
+    if (event.type === "notice") notices.push(event.tone);
+  });
+  agent.getState = async () => ({ isStreaming: false });
+  // abort lands the aborted turn's settle, as pi does.
+  agent.abort = async () => agent.settleTurn();
+  agent.prompt = async (message) => {
+    prompts.push(message);
+    agent.status = "working";
+  };
+  agent.status = "working";
+
+  agent.onModelStall(); // 1 min: warn only
+  assert.deepEqual(notices, ["warning"]);
+  assert.equal(prompts.length, 0);
+
+  for (let i = 0; i < 2; i += 1) {
+    agent.stallWarned = true; // 5 min mark of each resumed turn
+    await agent.retryStalledTurn();
+  }
+  assert.equal(prompts.length, 2, "resumes up to the retry cap");
+
+  await agent.retryStalledTurn();
+  assert.equal(prompts.length, 2, "no resume past the cap");
+  assert.equal(notices.at(-1), "error");
+  assert.equal(agent.status, "ready");
+  agent.disarmStallWatchdog();
+});
+
+test("silence inside a running tool never trips the stall watchdog", () => {
+  const agent = new PiAgentProcess("test-key");
+  agent.status = "working";
+  agent.noteTurnActivity({ type: "tool_execution_start", toolCallId: "t1" });
+  assert.equal(agent.stallTimer, undefined);
+  agent.noteTurnActivity({ type: "tool_execution_end", toolCallId: "t1" });
+  assert.ok(agent.stallTimer, "model's turn again: watchdog armed");
+  agent.disarmStallWatchdog();
+});

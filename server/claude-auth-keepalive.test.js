@@ -8,7 +8,7 @@ import {
   subscriptionEnvironment,
 } from "./claude-agent.js";
 
-const dir = mkdtempSync(join(tmpdir(), "pi-web-keepalive-"));
+const dir = mkdtempSync(join(tmpdir(), "devden-keepalive-"));
 
 function fakeClaude(name, body) {
   const path = join(dir, name);
@@ -22,7 +22,7 @@ async function tick(bin) {
   const warnings = [];
   const original = console.warn;
   console.warn = (message) => warnings.push(String(message));
-  process.env.PI_WEB_CLAUDE_BIN = bin;
+  process.env.DEVDEN_CLAUDE_BIN = bin;
   try {
     clearInterval(startClaudeAuthKeepalive());
     await new Promise((resolve) => setTimeout(resolve, 1500));

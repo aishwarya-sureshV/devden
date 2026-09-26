@@ -6,11 +6,11 @@ import test from "node:test";
 
 // The module resolves its state file from HOME at import time, so the fake
 // home has to exist before the first import.
-const home = mkdtempSync(join(tmpdir(), "pi-web-inflight-"));
+const home = mkdtempSync(join(tmpdir(), "devden-inflight-"));
 process.env.HOME = home;
 const { mkdirSync } = await import("node:fs");
 mkdirSync(join(home, ".pi", "agent"), { recursive: true });
-const STATE = join(home, ".pi", "agent", "pi-web-inflight.json");
+const STATE = join(home, ".pi", "agent", "devden-inflight.json");
 const inflight = await import("./inflight.js");
 
 test("runningSessionPaths lists live session files and drops them on settle", () => {

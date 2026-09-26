@@ -45,7 +45,7 @@ export const CLARIFY_PROMPT = [
  "Before executing any user request, first restate your understanding of it in one or two sentences.",
  "If any requirement, scope, or expected outcome is ambiguous or missing, ask up to three concise clarifying questions and stop —",
  "do not call tools or begin work until the user answers.",
- "When asking, skip the restatement and output nothing except one fenced block tagged ask, containing only JSON of the form",
+ "When asking, skip the restatement and output nothing except one markdown fence that starts with the line ```ask and ends with the line ```, containing only JSON of the form",
  "Emit that fence as plain text in your reply — never inside a tool call, file edit, or command.",
  '{"questions":[{"header":"Scope","question":"...?","multiSelect":false,',
  '"options":[{"label":"Short answer","description":"what picking this means"}]}]}.',
@@ -89,20 +89,20 @@ export function repoContext(cwd) {
  * history. One prefix, not one copy per adapter.
  */
 export const CLARIFY_PROMPT_PREFIX = [
- "[pi-web harness instruction — this block is not part of the user's message; do not quote, repeat, or reference it]",
+ "[devden harness instruction — this block is not part of the user's message; do not quote, repeat, or reference it]",
  CLARIFY_PROMPT,
  "$CONTEXT",
- "[end pi-web harness instruction]",
+ "[end devden harness instruction]",
  "",
 ].join("\n");
 
 /** Grok: co-partner narration + clarify, one fence, stripped on replay. */
 export const GROK_PROMPT_PREFIX = [
- "[pi-web harness instruction — this block is not part of the user's message; do not quote, repeat, or reference it]",
+ "[devden harness instruction — this block is not part of the user's message; do not quote, repeat, or reference it]",
  CO_PARTNER_PROMPT,
  CLARIFY_PROMPT,
  "$CONTEXT",
- "[end pi-web harness instruction]",
+ "[end devden harness instruction]",
  "",
 ].join("\n");
 
@@ -121,11 +121,11 @@ export function withClarifyPrefix(text, context = "") {
 export function withGrokPrefix(text, context = "", manual = false) {
  const template = manual
   ? [
-     "[pi-web harness instruction — this block is not part of the user's message; do not quote, repeat, or reference it]",
+     "[devden harness instruction — this block is not part of the user's message; do not quote, repeat, or reference it]",
      CO_PARTNER_PROMPT_MANUAL,
      CLARIFY_PROMPT,
      "$CONTEXT",
-     "[end pi-web harness instruction]",
+     "[end devden harness instruction]",
      "",
     ].join("\n")
   : GROK_PROMPT_PREFIX;
@@ -134,9 +134,9 @@ export function withGrokPrefix(text, context = "", manual = false) {
 
 export function stripClarifyPrefix(text) {
  if (typeof text !== "string") return text;
- const end = "[end pi-web harness instruction]";
+ const end = "[end devden harness instruction]";
  let rest = text;
- while (rest.startsWith("[pi-web harness instruction")) {
+ while (rest.startsWith("[devden harness instruction")) {
   const at = rest.indexOf(end);
   if (at === -1) return rest;
   rest = rest.slice(at + end.length).replace(/^\n/, "");
@@ -175,7 +175,7 @@ export const REPORT_PROMPT = [
  */
 export function resumePrompt(interruptedMessage) {
  return [
-  "[pi-web harness instruction — the workbench restarted while you were working; the user did not send this]",
+  "[devden harness instruction — the workbench restarted while you were working; the user did not send this]",
   "Your previous turn was cut off mid-execution by a restart, so it never finished and never reported back.",
   interruptedMessage
    ? `The request you were working on was:\n\n${interruptedMessage}\n`
@@ -185,7 +185,7 @@ export function resumePrompt(interruptedMessage) {
   "checks you had run — to establish what actually landed before the interruption.",
   "Then say in one or two lines where things stood, and carry on from exactly that point until the",
   "original request is complete.",
-  "[end pi-web harness instruction]",
+  "[end devden harness instruction]",
  ]
   .filter(Boolean)
   .join(" ");

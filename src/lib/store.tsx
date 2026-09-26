@@ -17,16 +17,21 @@ import {
   AGENT_BACKENDS,
   api,
   backendLabel,
+  installBackendCatalog,
   subscribeEvents,
   type AgentEvent,
   type AgentBackend,
+  type BackendInfo,
   type ModelInfo,
   type ResumeSession,
   type SessionHistoryMessage,
   type SessionMutationResponse,
   type SessionState,
 } from "./api";
-import { capabilitiesFor } from "./agentCapabilities";
+import {
+  capabilitiesFor,
+  installCapabilityOverrides,
+} from "./agentCapabilities";
 import { persistedTurnLooksSettled, Timeline } from "./timeline";
 import { notify } from "./notify";
 import { savedSessionTitle } from "./sessionTitle";
@@ -137,6 +142,11 @@ interface StoreValue {
   /** Backend used for new sessions. Existing tabs keep the backend they opened with. */
   defaultBackend: AgentBackend;
   setDefaultBackend: (backend: AgentBackend) => void;
+  /** First-run setup. "done" opens the workbench. */
+  setup: "checking" | "needed" | "done";
+  finishSetup: (workspace?: string) => void;
+  /** Built-ins plus saved CLIs, from /api/backends. Empty until that returns. */
+  backendCatalog: BackendInfo[];
   /** Every workspace this browser knows about: open tabs + saved sessions of every agent. */
   knownWorkspaces: string[];
   setPreferredModel: (
@@ -194,7 +204,7 @@ interface PersistedOpenSession {
 
 // One list for every agent, not one per backend: a split view holding a pi
 // session next to a claude one has to come back the same way after a reload.
-const OPEN_SESSIONS_KEY = "pi-web.open-sessions.v2";
+const OPEN_SESSIONS_KEY = "devden.open-sessions.v2";
 const BACKENDS = AGENT_BACKENDS;
 
 /**
@@ -267,12 +277,29 @@ function dedupeOpenSessions(
   return [...byPath.values(), ...pathless];
 }
 
+/** A tab whose conversation has not started: no session file, no messages,
+ *  no guest review. Backend switches in the picker may retarget these to the
+ *  newly chosen agent — a started session keeps the agent it began with. */
+function isUnstartedTab(tab: ConversationTab): boolean {
+  return (
+    tab.isFresh &&
+    !tab.sessionPath &&
+    !tab.guest &&
+    !tab.timeline.items.some(
+      (item) =>
+        item.kind === "user" ||
+        item.kind === "assistant" ||
+        item.kind === "tool",
+    )
+  );
+}
+
 /** The v1 per-backend snapshots, merged once so an upgrade keeps open tabs. */
 function readLegacyOpenSessions(): PersistedOpenSession[] {
   return BACKENDS.flatMap((backend) => {
     try {
       const value = JSON.parse(
-        localStorage.getItem(`pi-web.open-sessions.v1.${backend}`) ?? "[]",
+        localStorage.getItem(`devden.open-sessions.v1.${backend}`) ?? "[]",
       );
       return Array.isArray(value)
         ? value.filter(
@@ -328,12 +355,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const initialBackend = ((): AgentBackend => {
     const requested =
       new URLSearchParams(window.location.search).get("backend") ??
-      localStorage.getItem("pi-web.backend");
-    return requested === "claude" ||
-      requested === "grok" ||
-      requested === "codex"
-      ? requested
-      : "pi";
+      localStorage.getItem("devden.backend");
+    if (requested && /^[a-z][a-z0-9-]{0,40}$/.test(requested)) return requested;
+    return "pi";
   })();
   const [defaultBackend, setDefaultBackendState] =
     useState<AgentBackend>(initialBackend);
@@ -341,12 +365,71 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const setDefaultBackend = useCallback((backend: AgentBackend) => {
     defaultBackendRef.current = backend;
     setDefaultBackendState(backend);
+    // Unstarted tabs follow the picker: a fresh empty conversation has not
+    // spawned a process yet (backends start lazily on first prompt), so
+    // re-pointing it at the newly chosen backend makes the composer show that
+    // backend's name and default model immediately. Started sessions keep
+    // theirs. The timeline state's model/thinkingLevel were picked for the
+    // old backend (e.g. Sonnet under claude) — re-point them too, or the
+    // composer chip shows the new backend's name next to the old backend's
+    // model. Timeline writes go before setTabs: the updater must stay pure.
+    for (const tab of tabsRef.current) {
+      if (!isUnstartedTab(tab)) continue;
+      const preferred =
+        preferredModels.current.get(modelPreferenceKey(backend, tab.cwd)) ??
+        BACKEND_DEFAULT_MODEL[backend];
+      if (tab.timeline.state)
+        tab.timeline.setState({
+          ...tab.timeline.state,
+          model: preferred ?? null,
+          thinkingLevel: BACKEND_DEFAULT_EFFORT[backend],
+        });
+    }
+    setTabs((current) =>
+      current.map((tab) => (isUnstartedTab(tab) ? { ...tab, backend } : tab)),
+    );
     try {
-      localStorage.setItem("pi-web.backend", backend);
+      localStorage.setItem("devden.backend", backend);
     } catch {
       /* private mode; the choice lasts this session only */
     }
   }, []);
+  const [setup, setSetup] = useState<"checking" | "needed" | "done">(
+    "checking",
+  );
+  const setupWorkspace = useRef("");
+  const [backendCatalog, setBackendCatalog] = useState<BackendInfo[]>([]);
+  const finishSetup = useCallback((workspace?: string) => {
+    if (workspace) setupWorkspace.current = workspace;
+    setSetup("done");
+  }, []);
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .onboarding()
+      .then((result) => {
+        if (cancelled) return;
+        if (result.defaultBackend) setDefaultBackend(result.defaultBackend);
+        // Only an explicit `done: false` opens onboarding; an older server
+        // without /api/onboarding must not lock the workbench.
+        setSetup(result?.done === false ? "needed" : "done");
+      })
+      .catch(() => {
+        if (!cancelled) setSetup("done");
+      });
+    api
+      .backends()
+      .then((result) => {
+        if (cancelled || !result?.backends) return;
+        installBackendCatalog(result.backends);
+        installCapabilityOverrides(result.backends);
+        setBackendCatalog(result.backends);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [setDefaultBackend]);
   const didOpenInitialSession = useRef(false);
   const didRenderRestoredSessions = useRef(false);
   /** Bumped when the page becomes visible, so the snapshot persist effect
@@ -418,13 +501,28 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     // Every agent's sessions, not just the current one: the sidebar shows
     // them together and each carries its own backend, so opening one always
     // resumes it on the agent that wrote it.
-    void Promise.all([
-      api.sessions("recent", "all"),
-      api.sessions("archived", "all"),
-    ])
+    // The merged `backend=all` call 500s when one lister throws while the
+    // array is built (a non-promise `.catch`), and that used to leave the
+    // sidebar on "No saved sessions yet." Each built-in still answers alone.
+    const load = async (view: "recent" | "archived") => {
+      const merged = await api.sessions(view, "all").catch(() => null);
+      if (merged?.ok && Array.isArray(merged.sessions)) return merged.sessions;
+      const parts = await Promise.all(
+        AGENT_BACKENDS.map((backend) =>
+          api.sessions(view, backend).catch(() => null),
+        ),
+      );
+      if (!parts.some((part) => part?.ok)) return null;
+      const sessions = parts.flatMap((part) =>
+        part?.ok && Array.isArray(part.sessions) ? part.sessions : [],
+      );
+      sessions.sort((a, b) => b.modifiedAt - a.modifiedAt);
+      return sessions;
+    };
+    void Promise.all([load("recent"), load("archived")])
       .then(([recent, archived]) => {
-        if (recent.ok) setResumeSessions(recent.sessions);
-        if (archived.ok) setArchivedSessions(archived.sessions);
+        if (recent) setResumeSessions(recent);
+        if (archived) setArchivedSessions(archived);
       })
       .catch(() => {
         /* keep whatever is already listed */
@@ -473,7 +571,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         try {
           timeline?.handle(event);
         } catch (error) {
-          console.error("[pi-web] timeline event failed", event.type, error);
+          console.error("[devden] timeline event failed", event.type, error);
         }
         if (event.type === "agent_settled") {
           notify(
@@ -1291,8 +1389,17 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   );
 
   useEffect(() => {
+    if (setup !== "done") return;
     if (didOpenInitialSession.current) return;
     didOpenInitialSession.current = true;
+    if (setupWorkspace.current) {
+      void openConversation(
+        setupWorkspace.current,
+        undefined,
+        defaultBackendRef.current,
+      );
+      return;
+    }
 
     // Only the pane that was on screen comes back, split view included.
     // Split restore used to reopen every persisted entry, so a workbench
@@ -1338,7 +1445,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       if (session.active) activeRestoredKey = key;
     }
     if (activeRestoredKey) setActiveKey(activeRestoredKey);
-  }, [openConversation, openDefaultConversation, resumeConversation]);
+  }, [setup, openConversation, openDefaultConversation, resumeConversation]);
 
   useEffect(() => {
     if (!didOpenInitialSession.current) return;
@@ -1613,6 +1720,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     sessionsLoaded,
     defaultBackend,
     setDefaultBackend,
+    setup,
+    finishSetup,
+    backendCatalog,
     knownWorkspaces,
     setPreferredModel,
     workspaceReveal,

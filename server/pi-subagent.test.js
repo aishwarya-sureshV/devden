@@ -278,7 +278,7 @@ describe("claiming a run", () => {
 
 describe("PiSubagentFollows", () => {
   const withRun = async (status, run) => {
-    const dir = mkdtempSync(join(tmpdir(), "pi-web-subrun-"));
+    const dir = mkdtempSync(join(tmpdir(), "devden-subrun-"));
     try {
       const sessionFile = join(dir, "session.jsonl");
       writeFileSync(sessionFile, CHILD_SESSION);
@@ -326,7 +326,7 @@ describe("PiSubagentFollows", () => {
   it("waits for the child a workflow wrapper launched, not the wrapper", async () => {
     // The real topology: a spawn lays down two sibling run dirs. The wrapper
     // says `complete` a second in; the child is still working.
-    const root = mkdtempSync(join(tmpdir(), "pi-web-subruns-"));
+    const root = mkdtempSync(join(tmpdir(), "devden-subruns-"));
     try {
       const wrapper = join(root, "wrapper-run");
       const child = join(root, "child-run");
@@ -393,7 +393,7 @@ describe("PiSubagentFollows", () => {
   });
 
   it("surfaces a child blocked on a supervisor reply, tagged to its run", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "pi-web-attention-"));
+    const dir = mkdtempSync(join(tmpdir(), "devden-attention-"));
     try {
       const sessionFile = join(dir, "session.jsonl");
       writeFileSync(sessionFile, CHILD_SESSION);
@@ -464,7 +464,7 @@ describe("PiSubagentFollows", () => {
   });
 
   it("picks up a transcript written after the run was closed out", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "pi-web-late-"));
+    const dir = mkdtempSync(join(tmpdir(), "devden-late-"));
     try {
       const sessionFile = join(dir, "session.jsonl");
       // Terminal, but the child has not named its transcript yet — exactly
@@ -518,7 +518,7 @@ describe("PiSubagentFollows", () => {
     try {
       const emitted = [];
       const follows = new PiSubagentFollows((event) => emitted.push(event));
-      follows.start("spawn-1", join(tmpdir(), "pi-web-missing-run"), "receipt");
+      follows.start("spawn-1", join(tmpdir(), "devden-missing-run"), "receipt");
       await follows.drained();
       assert.equal(follows.size, 0);
       assert.equal(emitted.at(-1).isError, true);

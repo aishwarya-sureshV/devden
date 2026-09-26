@@ -1,13 +1,13 @@
 /**
- * Manual-mode tool approval for pi, loaded by pi-web with `pi -e <this file>`
+ * Manual-mode tool approval for pi, loaded by devden with `pi -e <this file>`
  * only when a session runs in manual mode.
  *
  * Categorized like Claude Code's prompts: read-only tools (read, grep, find,
  * ls) run without asking; everything else (bash, edit, write, MCP/custom
  * tools) goes through ctx.ui.select. In RPC mode that becomes an
- * `extension_ui_request` on stdout; pi-web answers with an
+ * `extension_ui_request` on stdout; devden answers with an
  * `extension_ui_response`, so the user's pick arrives over the wire. The
- * detail rides inside the title (pi's select has no detail field); pi-web
+ * detail rides inside the title (pi's select has no detail field); devden
  * splits it back off at the first newline.
  *
  * For file edits the detail shows the proposed change, not raw JSON, so the
@@ -18,7 +18,7 @@
  * should.
  */
 
-/** Minimal structural slice of pi's extension API — pi-web does not depend
+/** Minimal structural slice of pi's extension API — devden does not depend
  *  on the pi package, and jiti strips types when the CLI loads this file. */
 interface ManualApproveToolCallEvent {
   toolName: string;

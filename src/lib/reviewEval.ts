@@ -289,7 +289,7 @@ export const REVIEW_EVAL_CASES: ReviewEvalCase[] = [
     id: "bug-04",
     bucket: "bug",
     title: "Wrong predicate: includes instead of exact backend",
-    why: "\"pi\" matches \"pi-web\". Trigger: backend pi-web. Consequence: wrong agent.",
+    why: "\"pi\" matches \"devden\". Trigger: backend devden. Consequence: wrong agent.",
     userRequest: "Use the pi backend only when backend is exactly \"pi\".",
     sourceDiff: diff(
       "src/backend.ts",

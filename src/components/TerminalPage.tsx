@@ -377,7 +377,7 @@ function TerminalSession({
       if (hasAuthToken()) {
         try {
           const result = await api.auth(
-            hasAuthToken() ? (localStorage.getItem("pi-web.token") ?? "") : "",
+            hasAuthToken() ? (localStorage.getItem("devden.token") ?? "") : "",
           );
           if (result.ok && result.ticket)
             url = `${url}&ticket=${encodeURIComponent(result.ticket)}`;

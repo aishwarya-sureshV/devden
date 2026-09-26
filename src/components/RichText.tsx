@@ -6,11 +6,8 @@ import { CopyButton } from "./CopyButton";
 import { AskCard } from "./AskCard";
 import { SkillDraftCard } from "./SkillDraftCard";
 import { IconPlay } from "./icons";
-import { hasAskBlock, messageAsk, parseAsk } from "../lib/askBlock";
+import { askIncoming, messageAsk, parseAsk } from "../lib/askBlock";
 import { parseSkillDraft } from "../lib/skilldraft";
-
-/** Start of a fence-less questions payload still streaming in. */
-const BARE_ASK_START = /^\s*\{\s*"questions"\s*:/;
 
 type Segment =
   | { type: "prose"; text: string }
@@ -27,7 +24,8 @@ export const RichText = memo(function RichText({
 }) {
   // An ask turn is the card: hide format-talk, closing reports, and a
   // second fence the model echoed in the same message. messageAsk also
-  // catches a model that dropped the fence markers but kept the payload.
+  // catches a model that dropped the fence markers, or tagged the fence
+  // json, but kept the payload.
   const questions = messageAsk(text);
   if (questions) {
     return (
@@ -36,9 +34,9 @@ export const RichText = memo(function RichText({
       </div>
     );
   }
-  // Half-arrived ask (open fence, or bare JSON still streaming) shows the
-  // pending card instead of raw protocol text.
-  if (live && (hasAskBlock(text) || BARE_ASK_START.test(text))) {
+  // Half-arrived ask (open fence, json fence, or bare JSON still streaming)
+  // shows the pending card instead of raw protocol text.
+  if (live && askIncoming(text)) {
     return (
       <div className={`rich-text${live ? " rich-text--live" : ""}`}>
         <div className="ask-card ask-card--pending" aria-busy="true">

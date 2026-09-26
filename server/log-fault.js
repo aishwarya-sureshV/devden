@@ -14,7 +14,7 @@ const ROOT = join(fileURLToPath(new URL(".", import.meta.url)), "..");
  * beside the project, gitignored by *.log.
  */
 export function logFault(kind, ...detail) {
-  console.error(`[pi-web] ${kind}`, ...detail);
+  console.error(`[devden] ${kind}`, ...detail);
   try {
     const text = detail
       .map((part) =>

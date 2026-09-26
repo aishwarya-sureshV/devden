@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Claude Code launcher for pi-web. This is additive: it never intercepts or
+# Claude Code launcher for devden. This is additive: it never intercepts or
 # forwards the real `claude` command.
 set -euo pipefail
 
 LAUNCHER_NAME="claude-web"
-# shellcheck source=lib/pi-web-launcher.sh
-source "$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/pi-web-launcher.sh"
-resolve_pi_web_root
+# shellcheck source=lib/devden-launcher.sh
+source "$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/devden-launcher.sh"
+resolve_devden_root
 
 ensure_build
 refresh_stale_server

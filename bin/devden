@@ -1,30 +1,30 @@
 #!/usr/bin/env bash
-# pi-web launcher: opens the pi-backed web workbench. It is its own command
+# devden launcher: opens the pi-backed web workbench. It is its own command
 # and never touches or intercepts the real `pi` binary — `pi` stays the TUI.
 set -euo pipefail
 
-LAUNCHER_NAME="pi-web"
-# shellcheck source=lib/pi-web-launcher.sh
-source "$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/pi-web-launcher.sh"
-resolve_pi_web_root
+LAUNCHER_NAME="devden"
+# shellcheck source=lib/devden-launcher.sh
+source "$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/devden-launcher.sh"
+resolve_devden_root
 
 if [[ "${1:-}" == "--stop" ]]; then
   server_pid="$(lsof -tiTCP:"$PORT" -sTCP:LISTEN 2>/dev/null | head -1 || true)"
   if [[ -z "$server_pid" ]]; then
-    echo "pi-web: not running"
+    echo "devden: not running"
     exit 0
   fi
   server_command="$(ps -p "$server_pid" -o command= 2>/dev/null || true)"
   if [[ "$server_command" != *"server/index.js"* ]]; then
-    echo "pi-web: port $PORT is in use by another application" >&2
+    echo "devden: port $PORT is in use by another application" >&2
     exit 1
   fi
   kill -TERM "$server_pid" 2>/dev/null || true
   for _ in $(seq 1 20); do
-    lsof -tiTCP:"$PORT" -sTCP:LISTEN >/dev/null 2>&1 || { echo "pi-web: stopped"; exit 0; }
+    lsof -tiTCP:"$PORT" -sTCP:LISTEN >/dev/null 2>&1 || { echo "devden: stopped"; exit 0; }
     sleep 0.1
   done
-  echo "pi-web: did not release port $PORT" >&2
+  echo "devden: did not release port $PORT" >&2
   exit 1
 fi
 

@@ -1,236 +1,373 @@
 /* Terminal Agent UI reference palette. The application keeps its existing
    semantic token names while both appearances use the supplied literal colors. */
 :root {
- --dsw-font-family:
-  "JetBrains Mono", "SF Mono", ui-monospace, Menlo, Consolas, monospace;
- --ds-font-family-code:
-  "JetBrains Mono", "SF Mono", ui-monospace, Menlo, Consolas, monospace;
- --ds-ease-in-out: cubic-bezier(0.4, 0, 0.2, 1);
- --ds-transition-duration: 0.2s;
- --ds-transition-duration-fast: 0.1s;
- --ds-transition-duration-slow: 0.3s;
+  --dsw-font-family:
+    "JetBrains Mono", "SF Mono", ui-monospace, Menlo, Consolas, monospace;
+  --ds-font-family-code:
+    "JetBrains Mono", "SF Mono", ui-monospace, Menlo, Consolas, monospace;
+  --ds-ease-in-out: cubic-bezier(0.4, 0, 0.2, 1);
+  --ds-transition-duration: 0.2s;
+  --ds-transition-duration-fast: 0.1s;
+  --ds-transition-duration-slow: 0.3s;
 
- --pw-panel: #fbf8f3;
- --pw-rail: #f7f3ec;
- --pw-card: #fbf9f3;
- --pw-card-strong: #fffdf7;
- /* Above --pw-fg, which is the ramp's floor: an open session's title should
+  --pw-panel: #fbf8f3;
+  --pw-rail: #f7f3ec;
+  --pw-card: #fbf9f3;
+  --pw-card-strong: #fffdf7;
+  /* Above --pw-fg, which is the ramp's floor: an open session's title should
     out-rank every other row, and fg was already the darkest text colour. */
- --pw-fg-strong: #0a0805;
- --pw-fg: #1d1913;
- --pw-fg-2: #3a3329;
- --pw-fg-3: #544b3d;
- --pw-fg-4: #655b4b;
- --pw-fg-5: #756957;
- --pw-accent: #a1541a;
- --pw-accent-dim: #9c7a51;
- --pw-accent-tint: rgba(161, 84, 26, 0.07);
- --pw-accent-tint-2: rgba(161, 84, 26, 0.1);
- --pw-accent-line: rgba(161, 84, 26, 0.32);
- --pw-teal: #2c6b67;
- --pw-teal-tint: rgba(44, 107, 103, 0.07);
- --pw-teal-line: rgba(44, 107, 103, 0.22);
- --pw-green: #3d7440;
- --pw-red: #a4392e;
- --pw-yellow: #846214;
- --pw-orange: #c45c1a;
- --pw-user-bg: #fcf5e6;
- --pw-code: #4a4437;
- --pw-code-bg: #f6f3ec;
- --pw-code-comment: #8c8375;
- --pw-code-keyword: #1f6f6a;
- --pw-code-string: #3f6f39;
- --pw-code-number: #b05d13;
- --pw-code-func: #3c362d;
- --pw-code-type: #5a6f3f;
- --pw-code-bool: #1f6f6a;
- --pw-code-decorator: #7a4e7c;
- --pw-stripe: rgba(38, 32, 24, 0.09);
- --pw-add-bg: rgba(63, 111, 57, 0.1);
- --pw-add-fg: #33602e;
- --pw-add-line: rgba(63, 111, 57, 0.5);
- --pw-add-sign: #3f6f39;
- --pw-del-bg: rgba(164, 57, 46, 0.09);
- --pw-del-fg: #8d3a30;
- --pw-del-line: rgba(164, 57, 46, 0.5);
- --pw-del-sign: #a4392e;
- --pw-pop: #fffdf7;
- --pw-sunken: #ece6dc;
- --pw-chip: #efe8dc;
+  --pw-fg-strong: #0a0805;
+  --pw-fg: #1d1913;
+  --pw-fg-2: #3a3329;
+  --pw-fg-3: #544b3d;
+  --pw-fg-4: #655b4b;
+  --pw-fg-5: #756957;
+  --pw-accent: #a1541a;
+  --pw-accent-dim: #9c7a51;
+  --pw-accent-tint: rgba(161, 84, 26, 0.07);
+  --pw-accent-tint-2: rgba(161, 84, 26, 0.1);
+  --pw-accent-line: rgba(161, 84, 26, 0.32);
+  --pw-teal: #2c6b67;
+  --pw-teal-tint: rgba(44, 107, 103, 0.07);
+  --pw-teal-line: rgba(44, 107, 103, 0.22);
+  --pw-green: #3d7440;
+  --pw-red: #a4392e;
+  --pw-yellow: #846214;
+  --pw-yellow-soft: #f1dfb2;
+  --pw-orange: #c45c1a;
+  --pw-user-bg: #fcf5e6;
+  --pw-code: #4a4437;
+  --pw-code-bg: #f6f3ec;
+  --pw-code-comment: #8c8375;
+  --pw-code-keyword: #1f6f6a;
+  --pw-code-string: #3f6f39;
+  --pw-code-number: #b05d13;
+  --pw-code-func: #3c362d;
+  --pw-code-type: #5a6f3f;
+  --pw-code-bool: #1f6f6a;
+  --pw-code-decorator: #7a4e7c;
+  --pw-stripe: rgba(38, 32, 24, 0.09);
+  --pw-add-bg: rgba(63, 111, 57, 0.1);
+  --pw-add-fg: #33602e;
+  --pw-add-line: rgba(63, 111, 57, 0.5);
+  --pw-add-sign: #3f6f39;
+  --pw-del-bg: rgba(164, 57, 46, 0.09);
+  --pw-del-fg: #8d3a30;
+  --pw-del-line: rgba(164, 57, 46, 0.5);
+  --pw-del-sign: #a4392e;
+  --pw-pop: #fffdf7;
+  --pw-sunken: #ece6dc;
+  --pw-chip: #efe8dc;
 
- --dsw-alias-bg-base: #f4f1e9;
- --dsw-alias-bg-layer-1: var(--pw-card);
- --dsw-alias-bg-layer-2: var(--pw-card-strong);
- --dsw-alias-bg-layer-3: var(--pw-panel);
- --dsw-alias-bg-overlay: var(--pw-card-strong);
- --dsw-alias-bg-mask-3: rgba(38, 32, 24, 0.48);
- --dsw-alias-bg-skeleton: rgba(38, 32, 24, 0.04);
- --dsw-alias-border-l1: rgba(38, 32, 24, 0.07);
- --dsw-alias-border-l2: rgba(38, 32, 24, 0.1);
- --dsw-alias-border-l2-darkmode-thin: rgba(38, 32, 24, 0.1);
- --dsw-alias-border-l3: rgba(38, 32, 24, 0.17);
- --dsw-alias-border-l4: rgba(38, 32, 24, 0.22);
- --dsw-alias-brand-primary: var(--pw-fg);
- --dsw-alias-label-primary: var(--pw-fg);
- --dsw-alias-label-primary-dimmed: var(--pw-fg-2);
- --dsw-alias-label-secondary: var(--pw-fg-3);
- --dsw-alias-label-caption: var(--pw-fg-4);
- --dsw-alias-label-dimmed: var(--pw-fg-5);
- --dsw-alias-label-primary-accent: var(--pw-accent);
- --dsw-alias-label-primary-inverted: var(--pw-card-strong);
- --dsw-alias-label-tertiary: var(--pw-fg-4);
- --dsw-alias-interactive-bg-hover: var(--pw-accent-tint);
- --dsw-alias-interactive-bg-hover-solid: #f3ede0;
- --dsw-alias-button-elevated-fill: var(--pw-card-strong);
- --dsw-alias-button-floating-hover: #f3ede0;
- --dsw-alias-button-ghost-active-fill: var(--pw-accent-tint);
- --dsw-alias-button-ghost-active-hover: var(--pw-accent-tint-2);
- --dsw-alias-state-business-primary: var(--pw-accent);
- --dsw-alias-state-business-tertiary: var(--pw-accent-tint-2);
- --dsw-alias-state-error-primary: var(--pw-red);
- --dsw-specific-input-major: var(--pw-card-strong);
- --dsw-specific-selector: var(--pw-card);
- --dsw-specific-bubble: var(--pw-user-bg);
- --dsw-specific-user-accent: var(--pw-accent);
- --dsw-specific-sidebar-fill: var(--pw-rail);
- --dsw-specific-sidebar-nav-item-active: var(--pw-accent-tint-2);
- --dsw-specific-sidebar-nav-item-hover: var(--pw-accent-tint);
- --ds-status-success: var(--pw-green);
- --ds-status-error: var(--pw-red);
- --ds-status-warning: var(--pw-yellow);
- --ds-activity: var(--pw-accent);
- --dsw-shadow-lv2: 0 4px 14px rgba(38, 32, 24, 0.06);
+  --dsw-alias-bg-base: #f4f1e9;
+  --dsw-alias-bg-layer-1: var(--pw-card);
+  --dsw-alias-bg-layer-2: var(--pw-card-strong);
+  --dsw-alias-bg-layer-3: var(--pw-panel);
+  --dsw-alias-bg-overlay: var(--pw-card-strong);
+  --dsw-alias-bg-mask-3: rgba(38, 32, 24, 0.48);
+  --dsw-alias-bg-skeleton: rgba(38, 32, 24, 0.04);
+  --dsw-alias-border-l1: rgba(38, 32, 24, 0.07);
+  --dsw-alias-border-l2: rgba(38, 32, 24, 0.1);
+  --dsw-alias-border-l2-darkmode-thin: rgba(38, 32, 24, 0.1);
+  --dsw-alias-border-l3: rgba(38, 32, 24, 0.17);
+  --dsw-alias-border-l4: rgba(38, 32, 24, 0.22);
+  --dsw-alias-brand-primary: var(--pw-fg);
+  --dsw-alias-label-primary: var(--pw-fg);
+  --dsw-alias-label-primary-dimmed: var(--pw-fg-2);
+  --dsw-alias-label-secondary: var(--pw-fg-3);
+  --dsw-alias-label-caption: var(--pw-fg-4);
+  --dsw-alias-label-dimmed: var(--pw-fg-5);
+  --dsw-alias-label-primary-accent: var(--pw-accent);
+  --dsw-alias-label-primary-inverted: var(--pw-card-strong);
+  --dsw-alias-label-tertiary: var(--pw-fg-4);
+  --dsw-alias-interactive-bg-hover: var(--pw-accent-tint);
+  --dsw-alias-interactive-bg-hover-solid: #f3ede0;
+  --dsw-alias-button-elevated-fill: var(--pw-card-strong);
+  --dsw-alias-button-floating-hover: #f3ede0;
+  --dsw-alias-button-ghost-active-fill: var(--pw-accent-tint);
+  --dsw-alias-button-ghost-active-hover: var(--pw-accent-tint-2);
+  --dsw-alias-state-business-primary: var(--pw-accent);
+  --dsw-alias-state-business-tertiary: var(--pw-accent-tint-2);
+  --dsw-alias-state-error-primary: var(--pw-red);
+  --dsw-specific-input-major: var(--pw-card-strong);
+  --dsw-specific-selector: var(--pw-card);
+  --dsw-specific-bubble: var(--pw-user-bg);
+  --dsw-specific-user-accent: var(--pw-accent);
+  --dsw-specific-sidebar-fill: var(--pw-rail);
+  --dsw-specific-sidebar-nav-item-active: var(--pw-accent-tint-2);
+  --dsw-specific-sidebar-nav-item-hover: var(--pw-accent-tint);
+  --ds-status-success: var(--pw-green);
+  --ds-status-error: var(--pw-red);
+  --ds-status-warning: var(--pw-yellow);
+  --ds-activity: var(--pw-accent);
+  --dsw-shadow-lv2: 0 4px 14px rgba(38, 32, 24, 0.06);
 }
 
 /* ---- DARK ---- */
 body[data-ds-dark-theme] {
- color-scheme: dark;
- --pw-panel: #12110f;
- --pw-rail: #100f0d;
- --pw-card: #131210;
- --pw-card-strong: #16150f;
- --pw-fg-strong: #ffffff;
- --pw-fg: #f0ebe2;
- --pw-fg-2: #d6cfc4;
- --pw-fg-3: #9a9189;
- --pw-fg-4: #6d655c;
- --pw-fg-5: #55504a;
- --pw-accent: #e8a765;
- --pw-accent-dim: #8b7358;
- --pw-accent-tint: rgba(232, 167, 101, 0.07);
- --pw-accent-tint-2: rgba(232, 167, 101, 0.13);
- --pw-accent-line: rgba(232, 167, 101, 0.22);
- --pw-teal: #7cc7c0;
- --pw-teal-tint: rgba(124, 199, 192, 0.07);
- --pw-teal-line: rgba(124, 199, 192, 0.2);
- --pw-green: #86b784;
- --pw-red: #d4796f;
- --pw-yellow: #d9b972;
- --pw-orange: #e3944a;
- --pw-user-bg: #17150f;
- --pw-code: #a8a099;
- --pw-code-bg: #12110e;
- --pw-code-comment: #6d655c;
- --pw-code-keyword: #7cc7c0;
- --pw-code-string: #86b784;
- --pw-code-number: #e8a765;
- --pw-code-func: #d6cfc4;
- --pw-code-type: #86b784;
- --pw-code-bool: #7cc7c0;
- --pw-code-decorator: #c59ac7;
- --pw-stripe: rgba(255, 255, 255, 0.07);
- --pw-add-bg: rgba(134, 183, 132, 0.09);
- --pw-add-fg: #cfe0ce;
- --pw-add-line: rgba(134, 183, 132, 0.6);
- --pw-add-sign: #86b784;
- --pw-del-bg: rgba(212, 121, 111, 0.08);
- --pw-del-fg: #c9938c;
- --pw-del-line: rgba(212, 121, 111, 0.6);
- --pw-del-sign: #d4796f;
- --pw-pop: #1b1a16;
- --pw-sunken: #0b0a09;
- --pw-chip: #16150f;
+  color-scheme: dark;
+  /* Subpixel rendering. Antialiased light glyphs bloom on this background. */
+  -webkit-font-smoothing: auto;
+  --pw-panel: #12110f;
+  --pw-rail: #100f0d;
+  --pw-card: #131210;
+  --pw-card-strong: #16150f;
+  --pw-fg-strong: #b7b0a5;
+  --pw-fg: #a89f94;
+  --pw-fg-2: #948c82;
+  --pw-fg-3: #7d766d;
+  --pw-fg-4: #6d655c;
+  --pw-fg-5: #55504a;
+  --pw-accent: #e8a765;
+  --pw-accent-dim: #8b7358;
+  --pw-accent-tint: rgba(232, 167, 101, 0.07);
+  --pw-accent-tint-2: rgba(232, 167, 101, 0.13);
+  --pw-accent-line: rgba(232, 167, 101, 0.22);
+  --pw-teal: #7cc7c0;
+  --pw-teal-tint: rgba(124, 199, 192, 0.07);
+  --pw-teal-line: rgba(124, 199, 192, 0.2);
+  --pw-green: #86b784;
+  --pw-red: #d4796f;
+  --pw-yellow: #d9b972;
+  --pw-yellow-soft: rgba(217, 185, 114, 0.22);
+  --pw-orange: #e3944a;
+  --pw-user-bg: #17150f;
+  --pw-code: #9a9288;
+  --pw-code-bg: #12110e;
+  --pw-code-comment: #6d655c;
+  --pw-code-keyword: #7cc7c0;
+  --pw-code-string: #86b784;
+  --pw-code-number: #e8a765;
+  --pw-code-func: #a89f94;
+  --pw-code-type: #86b784;
+  --pw-code-bool: #7cc7c0;
+  --pw-code-decorator: #c59ac7;
+  --pw-stripe: rgba(255, 255, 255, 0.07);
+  --pw-add-bg: rgba(134, 183, 132, 0.09);
+  --pw-add-fg: #b5c6b4;
+  --pw-add-line: rgba(134, 183, 132, 0.6);
+  --pw-add-sign: #86b784;
+  --pw-del-bg: rgba(212, 121, 111, 0.08);
+  --pw-del-fg: #c9938c;
+  --pw-del-line: rgba(212, 121, 111, 0.6);
+  --pw-del-sign: #d4796f;
+  --pw-pop: #1b1a16;
+  --pw-sunken: #0b0a09;
+  --pw-chip: #16150f;
 
- --dsw-alias-bg-base: #0e0d0b;
- --dsw-alias-bg-layer-1: var(--pw-card);
- --dsw-alias-bg-layer-2: var(--pw-card-strong);
- --dsw-alias-bg-layer-3: var(--pw-panel);
- --dsw-alias-bg-overlay: var(--pw-card-strong);
- --dsw-alias-bg-skeleton: rgba(255, 255, 255, 0.08);
- --dsw-alias-border-l1: rgba(255, 255, 255, 0.07);
- --dsw-alias-border-l2: rgba(255, 255, 255, 0.07);
- --dsw-alias-border-l2-darkmode-thin: rgba(255, 255, 255, 0.07);
- --dsw-alias-border-l3: rgba(255, 255, 255, 0.13);
- --dsw-alias-border-l4: rgba(255, 255, 255, 0.18);
- --dsw-alias-brand-primary: var(--pw-fg);
- --dsw-alias-label-primary: var(--pw-fg);
- --dsw-alias-label-primary-dimmed: var(--pw-fg-2);
- --dsw-alias-label-primary-inverted: #0e0d0b;
- --dsw-alias-label-primary-accent: var(--pw-accent);
- --dsw-alias-label-secondary: var(--pw-fg-3);
- --dsw-alias-label-tertiary: var(--pw-fg-4);
- --dsw-alias-label-caption: var(--pw-fg-4);
- --dsw-alias-label-dimmed: var(--pw-fg-5);
- --dsw-alias-interactive-bg-hover: var(--pw-accent-tint);
- --dsw-alias-interactive-bg-hover-solid: #1b1915;
- --dsw-alias-button-elevated-fill: var(--pw-card-strong);
- --dsw-alias-button-floating-hover: #1b1915;
- --dsw-alias-button-ghost-active-fill: var(--pw-accent-tint);
- --dsw-alias-button-ghost-active-hover: var(--pw-accent-tint-2);
- --dsw-alias-state-business-primary: var(--pw-accent);
- --dsw-alias-state-business-tertiary: var(--pw-accent-tint-2);
- --dsw-alias-state-error-primary: var(--pw-red);
- --dsw-specific-input-major: var(--pw-card-strong);
- --dsw-specific-selector: var(--pw-card);
- --dsw-specific-bubble: var(--pw-user-bg);
- --dsw-specific-user-accent: var(--pw-accent);
- --dsw-specific-sidebar-fill: var(--pw-rail);
- --dsw-specific-sidebar-nav-item-active: var(--pw-accent-tint-2);
- --dsw-specific-sidebar-nav-item-hover: var(--pw-accent-tint);
- --ds-status-success: var(--pw-green);
- --ds-status-error: var(--pw-red);
- --ds-status-warning: var(--pw-yellow);
- --ds-activity: var(--pw-accent);
- --dsw-shadow-lv2: 0 10px 28px -14px rgba(0, 0, 0, 0.8);
+  --dsw-alias-bg-base: #0e0d0b;
+  --dsw-alias-bg-layer-1: var(--pw-card);
+  --dsw-alias-bg-layer-2: var(--pw-card-strong);
+  --dsw-alias-bg-layer-3: var(--pw-panel);
+  --dsw-alias-bg-overlay: var(--pw-card-strong);
+  --dsw-alias-bg-skeleton: rgba(255, 255, 255, 0.08);
+  --dsw-alias-border-l1: rgba(255, 255, 255, 0.07);
+  --dsw-alias-border-l2: rgba(255, 255, 255, 0.07);
+  --dsw-alias-border-l2-darkmode-thin: rgba(255, 255, 255, 0.07);
+  --dsw-alias-border-l3: rgba(255, 255, 255, 0.13);
+  --dsw-alias-border-l4: rgba(255, 255, 255, 0.18);
+  --dsw-alias-brand-primary: var(--pw-fg);
+  --dsw-alias-label-primary: var(--pw-fg);
+  --dsw-alias-label-primary-dimmed: var(--pw-fg-2);
+  --dsw-alias-label-primary-inverted: #0e0d0b;
+  --dsw-alias-label-primary-accent: var(--pw-accent);
+  --dsw-alias-label-secondary: var(--pw-fg-3);
+  --dsw-alias-label-tertiary: var(--pw-fg-4);
+  --dsw-alias-label-caption: var(--pw-fg-4);
+  --dsw-alias-label-dimmed: var(--pw-fg-5);
+  --dsw-alias-interactive-bg-hover: var(--pw-accent-tint);
+  --dsw-alias-interactive-bg-hover-solid: #1b1915;
+  --dsw-alias-button-elevated-fill: var(--pw-card-strong);
+  --dsw-alias-button-floating-hover: #1b1915;
+  --dsw-alias-button-ghost-active-fill: var(--pw-accent-tint);
+  --dsw-alias-button-ghost-active-hover: var(--pw-accent-tint-2);
+  --dsw-alias-state-business-primary: var(--pw-accent);
+  --dsw-alias-state-business-tertiary: var(--pw-accent-tint-2);
+  --dsw-alias-state-error-primary: var(--pw-red);
+  --dsw-specific-input-major: var(--pw-card-strong);
+  --dsw-specific-selector: var(--pw-card);
+  --dsw-specific-bubble: var(--pw-user-bg);
+  --dsw-specific-user-accent: var(--pw-accent);
+  --dsw-specific-sidebar-fill: var(--pw-rail);
+  --dsw-specific-sidebar-nav-item-active: var(--pw-accent-tint-2);
+  --dsw-specific-sidebar-nav-item-hover: var(--pw-accent-tint);
+  --ds-status-success: var(--pw-green);
+  --ds-status-error: var(--pw-red);
+  --ds-status-warning: var(--pw-yellow);
+  --ds-activity: var(--pw-accent);
+  --dsw-shadow-lv2: 0 10px 28px -14px rgba(0, 0, 0, 0.8);
 }
 
 * {
- box-sizing: border-box;
+  box-sizing: border-box;
 }
 
 html,
 body,
 #root {
- height: 100%;
- margin: 0;
+  height: 100%;
+  margin: 0;
 }
 
 body {
- font-family: var(--dsw-font-family);
- background: var(--dsw-alias-bg-base);
- color: var(--dsw-alias-label-primary);
- font-size: 13px;
- line-height: 1.55;
- -webkit-font-smoothing: antialiased;
+  font-family: var(--dsw-font-family);
+  background: var(--dsw-alias-bg-base);
+  color: var(--dsw-alias-label-primary);
+  font-size: 13px;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
 }
 
 * {
- scrollbar-width: thin;
- scrollbar-color: var(--dsw-alias-border-l3) transparent;
+  scrollbar-width: thin;
+  scrollbar-color: var(--dsw-alias-border-l3) transparent;
 }
 *::-webkit-scrollbar {
- width: 8px;
- height: 8px;
+  width: 8px;
+  height: 8px;
 }
 *::-webkit-scrollbar-thumb {
- background: var(--dsw-alias-border-l3);
- border-radius: 4px;
+  background: var(--dsw-alias-border-l3);
+  border-radius: 4px;
 }
 *::-webkit-scrollbar-track {
- background: transparent;
+  background: transparent;
 }
 
 button {
- font-family: inherit;
- cursor: pointer;
+  font-family: inherit;
+  cursor: pointer;
+}
+
+/* ---- CODE THEMES ----
+   Picker state lives in src/lib/codeTheme.ts. Each theme carries one block
+   per appearance (light values first, dark under [data-ds-dark-theme]) and
+   only re-colors syntax via the --pw-code-* ramp the editor and read-only
+   highlighter already consume. Palettes are the canonical editor themes —
+   VS Code defaults from github.com/microsoft/vscode theme-defaults, the rest
+   from their theme specs. */
+
+body[data-code-theme="vscode"] {
+  --pw-code-bg: #ffffff;
+  --pw-code: #1a1a1a;
+  --pw-code-comment: #008000;
+  --pw-code-keyword: #0000ff;
+  --pw-code-string: #a31515;
+  --pw-code-number: #098658;
+  --pw-code-func: #795e26;
+  --pw-code-type: #267f99;
+  --pw-code-bool: #0000ff;
+  --pw-code-decorator: #001080;
+}
+body[data-code-theme="vscode"][data-ds-dark-theme] {
+  --pw-code-bg: #1e1e1e;
+  --pw-code: #d4d4d4;
+  --pw-code-comment: #6a9955;
+  --pw-code-keyword: #569cd6;
+  --pw-code-string: #ce9178;
+  --pw-code-number: #b5cea8;
+  --pw-code-func: #dcdcaa;
+  --pw-code-type: #4ec9b0;
+  --pw-code-bool: #569cd6;
+  --pw-code-decorator: #9cdcfe;
+}
+
+body[data-code-theme="github"] {
+  --pw-code-bg: #ffffff;
+  --pw-code: #24292f;
+  --pw-code-comment: #6e7781;
+  --pw-code-keyword: #cf222e;
+  --pw-code-string: #0a3069;
+  --pw-code-number: #0550ae;
+  --pw-code-func: #8250df;
+  --pw-code-type: #953800;
+  --pw-code-bool: #0550ae;
+  --pw-code-decorator: #0550ae;
+}
+body[data-code-theme="github"][data-ds-dark-theme] {
+  --pw-code-bg: #0d1117;
+  --pw-code: #e6edf3;
+  --pw-code-comment: #8b949e;
+  --pw-code-keyword: #ff7b72;
+  --pw-code-string: #a5d6ff;
+  --pw-code-number: #79c0ff;
+  --pw-code-func: #d2a8ff;
+  --pw-code-type: #ffa657;
+  --pw-code-bool: #79c0ff;
+  --pw-code-decorator: #ffa657;
+}
+
+body[data-code-theme="onedark"] {
+  --pw-code-bg: #fafafa;
+  --pw-code: #383a42;
+  --pw-code-comment: #a0a1a7;
+  --pw-code-keyword: #a626a4;
+  --pw-code-string: #50a14f;
+  --pw-code-number: #b76b01;
+  --pw-code-func: #4078f2;
+  --pw-code-type: #c18401;
+  --pw-code-bool: #b76b01;
+  --pw-code-decorator: #a626a4;
+}
+body[data-code-theme="onedark"][data-ds-dark-theme] {
+  --pw-code-bg: #282c34;
+  --pw-code: #abb2bf;
+  --pw-code-comment: #5c6370;
+  --pw-code-keyword: #c678dd;
+  --pw-code-string: #98c379;
+  --pw-code-number: #d19a66;
+  --pw-code-func: #61afef;
+  --pw-code-type: #e5c07b;
+  --pw-code-bool: #d19a66;
+  --pw-code-decorator: #c678dd;
+}
+
+body[data-code-theme="solarized"] {
+  --pw-code-bg: #fdf6e3;
+  --pw-code: #657b83;
+  --pw-code-comment: #93a1a1;
+  --pw-code-keyword: #859900;
+  --pw-code-string: #2aa198;
+  --pw-code-number: #d33682;
+  --pw-code-func: #268bd2;
+  --pw-code-type: #b58900;
+  --pw-code-bool: #2aa198;
+  --pw-code-decorator: #cb4b16;
+}
+body[data-code-theme="solarized"][data-ds-dark-theme] {
+  --pw-code-bg: #002b36;
+  --pw-code: #839496;
+  --pw-code-comment: #586e75;
+  --pw-code-keyword: #859900;
+  --pw-code-string: #2aa198;
+  --pw-code-number: #d33682;
+  --pw-code-func: #268bd2;
+  --pw-code-type: #b58900;
+  --pw-code-bool: #2aa198;
+  --pw-code-decorator: #cb4b16;
+}
+
+body[data-code-theme="tokyonight"] {
+  --pw-code-bg: #e1e2e7;
+  --pw-code: #343b58;
+  --pw-code-comment: #9699a3;
+  --pw-code-keyword: #7847bd;
+  --pw-code-string: #485e30;
+  --pw-code-number: #b15c00;
+  --pw-code-func: #2e7de9;
+  --pw-code-type: #007197;
+  --pw-code-bool: #b15c00;
+  --pw-code-decorator: #2e7de9;
+}
+body[data-code-theme="tokyonight"][data-ds-dark-theme] {
+  --pw-code-bg: #1a1b26;
+  --pw-code: #c0caf5;
+  --pw-code-comment: #565f89;
+  --pw-code-keyword: #bb9af7;
+  --pw-code-string: #9ece6a;
+  --pw-code-number: #ff9e64;
+  --pw-code-func: #7aa2f7;
+  --pw-code-type: #2ac3de;
+  --pw-code-bool: #ff9e64;
+  --pw-code-decorator: #7aa2f7;
 }

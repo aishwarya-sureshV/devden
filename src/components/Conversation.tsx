@@ -309,14 +309,18 @@ export function Conversation({
     openConversation,
     closeConversation,
     revealConversation,
+    backendCatalog,
   } = useStore();
+  const backendIds = backendCatalog.length
+    ? backendCatalog.map((item) => item.id)
+    : [...AGENT_BACKENDS];
   const [draft, setDraft] = useState("");
   // The draft survives page reloads: keyed by conversation identity (the
   // session file once it exists, else a fresh-conversation slot per backend
   // + cwd). When the identity resolves in place (fresh chat gained its
   // session file, fork, session switch) the in-progress draft is carried
   // over rather than overwritten from storage.
-  const draftKey = `pi-web.draft:${
+  const draftKey = `devden.draft:${
     tab.sessionPath ?? `new:${tab.backend}:${tab.cwd}`
   }`;
   const draftRef = useRef(draft);
@@ -421,7 +425,7 @@ export function Conversation({
   const [workspaceMounted, setWorkspaceMounted] = useState(false);
   const [workspacePlacement, setWorkspacePlacement] =
     useState<WorkspacePlacement>(() =>
-      localStorage.getItem("pi-web.workspace-placement") === "full"
+      localStorage.getItem("devden.workspace-placement") === "full"
         ? "full"
         : "side",
     );
@@ -447,6 +451,10 @@ export function Conversation({
   const modelMetadataRequestRef = useRef<Promise<void> | null>(null);
   const commandsLoadedRef = useRef(false);
   const modelMetadataLoadedRef = useRef(tab.backend === "claude");
+  // Stamps each models/levels fetch; a response landing after the tab's
+  // backend changed must be dropped, not shown as the new backend's models.
+  const metadataGenRef = useRef(0);
+  const metadataBackendRef = useRef(tab.backend);
 
   useEffect(() => {
     if (!overflowOpen) return;
@@ -569,14 +577,14 @@ export function Conversation({
     // A tab not yet mounted picks the draft up from storage on mount; the event
     // covers a fresh tab that is already open and so will not re-read storage.
     try {
-      localStorage.setItem(`pi-web.draft:new:${backend}:${tab.cwd}`, text);
+      localStorage.setItem(`devden.draft:new:${backend}:${tab.cwd}`, text);
     } catch {
       /* storage unavailable; the event path still seeds it */
     }
     const key = openConversation(tab.cwd, undefined, backend);
     onSessionSplit?.(key);
     window.dispatchEvent(
-      new CustomEvent("pi-web:seed-draft", { detail: { key, text } }),
+      new CustomEvent("devden:seed-draft", { detail: { key, text } }),
     );
   };
 
@@ -724,8 +732,8 @@ export function Conversation({
         .detail;
       if (detail?.key === tab.key) setDraft(detail.text);
     };
-    window.addEventListener("pi-web:seed-draft", onSeed);
-    return () => window.removeEventListener("pi-web:seed-draft", onSeed);
+    window.addEventListener("devden:seed-draft", onSeed);
+    return () => window.removeEventListener("devden:seed-draft", onSeed);
   }, [tab.key]);
   // Claude Code can count the context for real; every other backend gets the
   // character-based estimate. Refreshed between turns, since that is when the
@@ -762,7 +770,7 @@ export function Conversation({
   // not already running on — so the closed select stays as narrow as its mark
   // instead of listing every other agent at once.
   const handoffTarget =
-    AGENT_BACKENDS.find((backend) => backend !== tab.backend) ?? "claude";
+    backendIds.find((backend) => backend !== tab.backend) ?? "claude";
   // Reasoning summaries are intentionally not rendered in the chat view. The
   // data still flows through the timeline (Trajectory tab, context estimates),
   // but the transcript stays clean; thinking activity surfaces as the
@@ -900,7 +908,7 @@ export function Conversation({
     },
     onVersionChange: (messageItem, index) =>
       void selectUserVersion(messageItem, index),
-    onAnswer: (text) => void send(text),
+    onAnswer: (text) => void send(text, undefined, { answersAsk: true }),
     onOpenSubagent: (id) => {
       setHiddenSubagents((current) =>
         current.filter((openId) => openId !== id),
@@ -1059,11 +1067,15 @@ export function Conversation({
       status === "stopped"
     )
       return;
+    const gen = metadataGenRef.current;
     const request = Promise.all([
       api.models(tab.key, tab.backend),
       api.thinkingLevels(tab.key, tab.backend),
     ])
       .then(([modelResult, levelResult]) => {
+        // The tab's backend changed while this was in flight: drop the old
+        // backend's catalogs instead of showing them as the new one's.
+        if (gen !== metadataGenRef.current) return;
         if (
           modelResult.ok &&
           Array.isArray(modelResult.models) &&
@@ -1084,6 +1096,22 @@ export function Conversation({
       });
     modelMetadataRequestRef.current = request;
   }, [status, tab.backend, tab.key]);
+
+  // Backend switched under this tab (the sidebar picker retargets unstarted
+  // tabs): drop the old backend's model/effort lists and clear the guards
+  // BEFORE the warm effect below runs in this same commit — it would bail on
+  // the loaded-once flag otherwise and keep showing e.g. Sonnet under grok.
+  useEffect(() => {
+    if (metadataBackendRef.current === tab.backend) return;
+    metadataBackendRef.current = tab.backend;
+    metadataGenRef.current += 1;
+    modelMetadataLoadedRef.current = false;
+    // Free the slot: an in-flight fetch for the old backend is still
+    // tracked, and its response is dropped by the generation stamp above.
+    modelMetadataRequestRef.current = null;
+    setModels([]);
+    setLevels([]);
+  }, [tab.backend]);
 
   // Warm the model list as soon as the session is usable. The server caches
   // catalogs per backend, so this is one cheap request that turns the model
@@ -1126,7 +1154,7 @@ export function Conversation({
 
   const chooseWorkspacePlacement = useCallback(
     (next: WorkspacePlacement) => {
-      localStorage.setItem("pi-web.workspace-placement", next);
+      localStorage.setItem("devden.workspace-placement", next);
       setWorkspacePlacement(next);
       openWorkspace();
     },
@@ -1736,7 +1764,11 @@ export function Conversation({
     void send(seed.prompt, seed.attachments);
   }, [taskSeeds, tab.key, clearTaskSeed]);
 
-  const send = async (raw: string, seedAttachments?: Attachment[]) => {
+  const send = async (
+    raw: string,
+    seedAttachments?: Attachment[],
+    opts?: { answersAsk?: boolean },
+  ) => {
     if (awaitingRoute) return;
     const message = raw.trim();
     if (!message && attachments.length === 0 && !seedAttachments?.length)
@@ -2080,9 +2112,21 @@ export function Conversation({
       stickToBottom.current = true;
       // Mid-turn, Enter always queues. Cmd/Ctrl+Enter (and Steer now on the
       // queue chip) splice into the running turn on agents that support it.
+      // An unsettled ask (the newest settled reply is an unanswered ask card)
+      // holds the floor the same way: a prompt typed before the answer must
+      // queue behind it, not replace the pending question. The ask card's
+      // own submit (answersAsk) is the answer and goes straight through.
       const willSteer = Boolean(streaming) && canSteer && steerOnceRef.current;
       steerOnceRef.current = false;
-      const willQueue = Boolean(streaming) && !willSteer;
+      const lastReply = lastAssistantId
+        ? visibleItems.find(
+            (item): item is Extract<TimelineItem, { kind: "assistant" }> =>
+              item.id === lastAssistantId && item.kind === "assistant",
+          )
+        : undefined;
+      const askPending = !streaming && isAskMessage(lastReply?.text);
+      const willQueue =
+        !opts?.answersAsk && (Boolean(streaming) || askPending) && !willSteer;
       // A queued follow-up must not land in the transcript yet: it used to
       // sit in the middle of the still-printing turn, then its reply arrived
       // after the handover. The queue chip is the affordance until the
@@ -2129,7 +2173,10 @@ export function Conversation({
         ? willSteer
           ? await api.steer(tab.key, outboundMessage, images)
           : await api.enqueue(tab.key, outboundMessage, images)
-        : await api.prompt(tab.key, outboundMessage, promptOptions);
+        : await api.prompt(tab.key, outboundMessage, {
+            ...promptOptions,
+            answersAsk: opts?.answersAsk,
+          });
       // Laptop sleep / lease sweep can kill grok stdio while the tab still
       // thinks a turn is in flight and therefore enqueues. Restart on the
       // prompt path with the session file instead of failing closed.
@@ -2580,27 +2627,6 @@ export function Conversation({
             <span>View workspace</span>
           </button>
         )}
-        <div className="native-select native-select--chip native-select--mode">
-          <span className="native-select__icon">
-            <IconCube size={15} />
-          </span>
-          <select
-            aria-label="Agent mode"
-            value={agentMode}
-            disabled={configuring}
-            onChange={(event) =>
-              void switchAgentMode(event.target.value as AgentMode)
-            }
-          >
-            <option value="standard">Auto mode</option>
-            <option value="plan">Plan mode</option>
-            <option value="routed">Routed mode</option>
-            <option value="manual">Manual mode</option>
-          </select>
-          <span className="native-select__chev">
-            <IconChevronDown size={13} />
-          </span>
-        </div>
       </div>
     </div>
   );
@@ -2818,17 +2844,22 @@ export function Conversation({
               {/* After an interrupt the queue outlives the turn it was
                   waiting on: nothing is running, and these are held until
                   the user sends them. Saying "waiting for this turn to
-                  finish" there reads as a hang. */}
-              {streaming
-                ? canSteer
-                  ? "Waiting for this turn to finish."
-                  : "Waiting for this turn to finish — this agent cannot take a message mid-turn."
-                : "Queued — nothing is running. These are not sent yet."}
+                  finish" there reads as a hang. A usage-limit wall is the
+                  opposite: the turn did not finish, so the queue stays. */}
+              {limitVisible
+                ? "Waiting for the cut-off turn to finish."
+                : streaming
+                  ? canSteer
+                    ? "Waiting for this turn to finish."
+                    : "Waiting for this turn to finish — this agent cannot take a message mid-turn."
+                  : "Queued — nothing is running. These are not sent yet."}
             </span>
             {/* Mid-turn this is steering, which not every agent can do.
                 Idle it is just "send it now", which all of them can — and
-                without it an interrupted grok queue has no way out. */}
-            {(canSteer || !streaming) && (
+                without it an interrupted grok queue has no way out.
+                While the limit banner is up, sending now would start a new
+                prompt and Resume would follow that instead of the cut-off turn. */}
+            {!limitVisible && (canSteer || !streaming) && (
               <button
                 type="button"
                 className="queue-strip__steer"
@@ -3021,81 +3052,79 @@ export function Conversation({
             >
               <IconPlus />
             </button>
-            {hasItems && (
-              <div className="composer__mode" ref={modeMenuRef}>
-                <button
-                  type="button"
-                  className="composer__mode-trigger"
-                  aria-haspopup="menu"
-                  aria-expanded={modeMenuOpen}
-                  disabled={configuring || streaming}
-                  onClick={() => setModeMenuOpen((open) => !open)}
-                >
-                  {accessMode === "read-only"
-                    ? "Read-only"
-                    : agentMode === "plan"
-                      ? "Plan"
-                      : agentMode === "routed"
-                        ? "Routed"
-                        : agentMode === "manual"
-                          ? "Manual"
-                          : "Auto"}
-                  {tight ? "" : " mode"}
-                  <IconChevronDown size={11} />
-                </button>
-                {modeMenuOpen && (
-                  <div className="composer__mode-menu" role="menu">
-                    <span className="composer__mode-heading">Mode</span>
-                    {(
+            <div className="composer__mode" ref={modeMenuRef}>
+              <button
+                type="button"
+                className="composer__mode-trigger"
+                aria-haspopup="menu"
+                aria-expanded={modeMenuOpen}
+                disabled={configuring || streaming}
+                onClick={() => setModeMenuOpen((open) => !open)}
+              >
+                {accessMode === "read-only"
+                  ? "Read-only"
+                  : agentMode === "plan"
+                    ? "Plan"
+                    : agentMode === "routed"
+                      ? "Routed"
+                      : agentMode === "manual"
+                        ? "Manual"
+                        : "Auto"}
+                {tight ? "" : " mode"}
+                <IconChevronDown size={11} />
+              </button>
+              {modeMenuOpen && (
+                <div className="composer__mode-menu" role="menu">
+                  <span className="composer__mode-heading">Mode</span>
+                  {(
+                    [
+                      ["standard", "Auto", "This agent runs the whole turn"],
                       [
-                        ["standard", "Auto", "This agent runs the whole turn"],
-                        [
-                          "plan",
-                          "Plan",
-                          "Map the work first; nothing is written",
-                        ],
-                        [
-                          "routed",
-                          "Routed",
-                          "Pass the turn through a chain of agents",
-                        ],
-                        ["manual", "Manual", "Ask before each tool call"],
-                      ] as const
-                    ).map(([id, label, sub]) => {
-                      const selected =
-                        accessMode !== "read-only" && agentMode === id;
-                      return (
-                        <button
-                          type="button"
-                          role="menuitem"
-                          key={id}
-                          className={selected ? "is-active" : undefined}
-                          onClick={() => {
-                            setModeMenuOpen(false);
-                            // Read-only is no longer offered here, but a session
-                            // already sitting in it must still be able to leave.
-                            if (accessMode === "read-only") {
-                              void configureSession(
-                                "workspace-write",
-                                id as AgentMode,
-                              );
-                              return;
-                            }
-                            void switchAgentMode(id as AgentMode);
-                          }}
-                        >
-                          <span>
-                            <strong>{label}</strong>
-                            <em>{sub}</em>
-                          </span>
-                          {selected ? <span>✓</span> : null}
-                        </button>
-                      );
-                    })}
-                  </div>
-                )}
-              </div>
-            )}
+                        "plan",
+                        "Plan",
+                        "Map the work first; nothing is written",
+                      ],
+                      [
+                        "routed",
+                        "Routed",
+                        "Pass the turn through a chain of agents",
+                      ],
+                      ["manual", "Manual", "Ask before each tool call"],
+                    ] as const
+                  ).map(([id, label, sub]) => {
+                    const selected =
+                      accessMode !== "read-only" && agentMode === id;
+                    return (
+                      <button
+                        type="button"
+                        role="menuitem"
+                        key={id}
+                        className={selected ? "is-active" : undefined}
+                        onClick={() => {
+                          setModeMenuOpen(false);
+                          // Read-only is no longer offered here, but a session
+                          // already sitting in it must still be able to leave.
+                          if (accessMode === "read-only") {
+                            void configureSession(
+                              "workspace-write",
+                              id as AgentMode,
+                            );
+                            return;
+                          }
+                          void switchAgentMode(id as AgentMode);
+                        }}
+                      >
+                        <span>
+                          <strong>{label}</strong>
+                          <em>{sub}</em>
+                        </span>
+                        {selected ? <span>✓</span> : null}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
             {agentMode === "routed" && (
               <button
                 type="button"
@@ -3256,13 +3285,13 @@ export function Conversation({
               }}
             >
               <option value="">{backendLabel(handoffTarget)}</option>
-              {AGENT_BACKENDS.filter((backend) => backend !== tab.backend).map(
-                (backend) => (
+              {backendIds
+                .filter((backend) => backend !== tab.backend)
+                .map((backend) => (
                   <option key={backend} value={backend}>
                     {backendLabel(backend)}
                   </option>
-                ),
-              )}
+                ))}
             </select>
             <span className="native-select__chev">
               <IconChevronDown size={12} />
@@ -3357,7 +3386,9 @@ export function Conversation({
         variant="chip"
         onPick={(path) => configureSession(accessMode, agentMode, path)}
         onIsolate={isolateSession}
-        onViewWorkspace={openWorkspace}
+        // Split panes show one conversation each; the workspace is owned
+        // by the wide layout, so hide its menu entry here.
+        onViewWorkspace={undefined}
       />
     ) : null;
 
@@ -3610,7 +3641,9 @@ export function Conversation({
   return (
     <>
       <div className={`conversation-header${split ? ` is-${density}` : ""}`}>
-        {tight && (
+        {/* Wide split panes leave tight mode, but the title still lives here.
+            Gating this row on tight hid it whenever the sidebar collapsed. */}
+        {(tight || split) && (
           <div className="conversation-header__identity">
             {statusDot}
             {split ? (
@@ -3641,12 +3674,16 @@ export function Conversation({
                 {backendLabel(tab.backend)}
               </span>
             )}
-            <span className="conversation-header__spacer" aria-hidden />
-            {providerUsage && showsUsageSummary(providerUsage) && (
-              <UsageSummary usage={providerUsage} />
+            {tight && (
+              <>
+                <span className="conversation-header__spacer" aria-hidden />
+                {providerUsage && showsUsageSummary(providerUsage) && (
+                  <UsageSummary usage={providerUsage} />
+                )}
+                {density === "dense" && folderChip}
+                {overflowMenu}
+              </>
             )}
-            {density === "dense" && folderChip}
-            {overflowMenu}
           </div>
         )}
         <div className="conversation-header__row">
@@ -3997,7 +4034,7 @@ export function Conversation({
               <img
                 className="remote-qr__image"
                 src={remoteQr.qrDataUrl}
-                alt="QR code to open pi-web on your phone"
+                alt="QR code to open devden on your phone"
               />
               <p>
                 Scan with your phone camera — the link logs in automatically for

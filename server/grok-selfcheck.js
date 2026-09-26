@@ -3,7 +3,7 @@
  * Verifies grok-agent.js's ACP integration still works against whatever
  * `grok` CLI version is currently installed. Run this after any grok update
  * (grok has `auto_update = true` by default, so it can change out from under
- * pi-web silently) -- each check maps to a specific behavior grok-agent.js
+ * devden silently) -- each check maps to a specific behavior grok-agent.js
  * relies on that isn't part of grok's documented/stable surface, discovered
  * by live-probing rather than reading docs. A failure here points at the
  * exact place in grok-agent.js to look, instead of "Grok feels broken again."

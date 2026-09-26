@@ -1,5 +1,5 @@
 /**
- * Background tasks + terminal tabs for pi, loaded by pi-web with
+ * Background tasks + terminal tabs for pi, loaded by devden with
  * `pi -e <this file>` on every pi session.
  *
  * Port of the two Claude Code harness features that long-running work needs:
@@ -12,11 +12,11 @@
  *    poll or block-with-timeout. `task_stop` kills.
  *
  * 2. `run_in_terminal` / `read_terminal` — Claude's terminal-panel MCP. The
- *    command runs in a tab owned by the pi-web SERVER (it survives the agent
+ *    command runs in a tab owned by the devden SERVER (it survives the agent
  *    and streams to the browser), reached over the local HTTP API; env vars
- *    PI_WEB_PORT / PI_WEB_SESSION_KEY are injected by pi-agent.js at spawn.
+ *    DEVDEN_PORT / DEVDEN_SESSION_KEY are injected by pi-agent.js at spawn.
  *
- * Minimal structural pi API types — pi-web does not depend on the pi package,
+ * Minimal structural pi API types — devden does not depend on the pi package,
  * and jiti strips types when the CLI loads this file.
  */
 import { spawn } from "node:child_process";
@@ -29,7 +29,7 @@ interface BackgroundTasksApi {
   sendUserMessage(content: string, options?: { deliverAs?: string }): unknown;
 }
 
-const TASK_DIR = join(tmpdir(), "pi-web-tasks");
+const TASK_DIR = join(tmpdir(), "devden-tasks");
 const tasks = new Map<
   string,
   {
@@ -58,8 +58,8 @@ function tail(text: string, lines: number): string {
 
 /** The terminal-tab tools are a no-op without the bridge env vars. */
 function terminalBase(): string | undefined {
-  const port = process.env.PI_WEB_PORT;
-  const key = process.env.PI_WEB_SESSION_KEY;
+  const port = process.env.DEVDEN_PORT;
+  const key = process.env.DEVDEN_SESSION_KEY;
   if (!port || !key) return undefined;
   return `http://127.0.0.1:${port}/api/${encodeURIComponent(key)}/terminal`;
 }
@@ -274,7 +274,7 @@ export default function backgroundTasks(pi: BackgroundTasksApi) {
     name: "run_in_terminal",
     label: "Run in terminal tab",
     description:
-      "Run a command in a real terminal tab in the user's pi-web session and " +
+      "Run a command in a real terminal tab in the user's devden session and " +
       "return immediately with a tab id. The tab is visible to the user in " +
       "their browser and SURVIVES this agent process. Use when the command " +
       "is interactive, needs the user watching it (dev servers, watch modes, " +
@@ -303,7 +303,7 @@ export default function backgroundTasks(pi: BackgroundTasksApi) {
           content: [
             {
               type: "text",
-              text: "Terminal tabs are unavailable in this session (no pi-web bridge).",
+              text: "Terminal tabs are unavailable in this session (no devden bridge).",
             },
           ],
           details: {},

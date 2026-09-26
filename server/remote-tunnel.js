@@ -1,5 +1,5 @@
 /**
- * `/remote` — one-command phone access to a running pi-web server.
+ * `/remote` — one-command phone access to a running devden server.
  *
  * Spawns a Cloudflare quick tunnel (`cloudflared tunnel --url`) against the
  * local API port: an outbound-only HTTPS proxy with a public URL and no
@@ -7,7 +7,7 @@
  * per run and is gated by a token minted here (server/index.js enforces it),
  * so the public URL is worthless to anyone without the QR code.
  *
- * The cloudflared binary is downloaded on first use into ~/.pi-web/bin and
+ * The cloudflared binary is downloaded on first use into ~/.devden/bin and
  * cached forever — users never install anything by hand.
  */
 import { spawn, execFile } from "node:child_process";
@@ -21,12 +21,13 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { homedir, platform, arch } from "node:os";
+import { platform, arch } from "node:os";
 import { join } from "node:path";
+import { devdenHome } from "./setup-state.js";
 
 const execFileAsync = promisify(execFile);
 
-const BIN_DIR = join(homedir(), ".pi-web", "bin");
+const BIN_DIR = join(devdenHome(), "bin");
 const RELEASES =
   "https://github.com/cloudflare/cloudflared/releases/latest/download";
 const URL_TIMEOUT_MS = 30_000;

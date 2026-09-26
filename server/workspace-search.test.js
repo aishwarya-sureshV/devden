@@ -69,7 +69,7 @@ describe("definition ranking", () => {
 
 describe("against a real repository", () => {
   it("greps content and locates a definition", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "pi-web-search-"));
+    const dir = await mkdtemp(join(tmpdir(), "devden-search-"));
     try {
       await run("git", ["init", "-q"], { cwd: dir });
       await writeFile(join(dir, "lib.ts"), "export function widget() {\n  return 1\n}\n");
@@ -99,7 +99,7 @@ describe("against a real repository", () => {
 
 describe("scoping a search to a path", () => {
   it("narrows the grep itself, not its output", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "pi-web-scope-"));
+    const dir = await mkdtemp(join(tmpdir(), "devden-scope-"));
     try {
       await run("git", ["init", "-q"], { cwd: dir });
       await writeFile(join(dir, "lib.ts"), "export function widget() {\n  return 1\n}\n");

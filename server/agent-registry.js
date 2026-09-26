@@ -1,16 +1,23 @@
 /**
  * Single registry of coding-agent backends.
  *
- * A new agent is: add its id here, declare what it can do, and register a
- * pool in index.js. UI and session listing read this list instead of
- * repeating `["pi","claude","grok","codex"]`.
+ * The four built-ins stay a fixed list (session files live in their own
+ * directories). listBackends() adds detection
+ * results; the client reads that payload from /api/backends.
  */
+
+import { detectBuiltins } from "./agent-detect.js";
 
 export const AGENT_BACKENDS = ["pi", "claude", "grok", "codex"];
 
 export function backendName(value) {
-  if (value === "claude" || value === "grok" || value === "codex") return value;
+  if (value === "claude" || value === "grok" || value === "codex" || value === "pi")
+    return value;
   return "pi";
+}
+
+export function allBackendIds() {
+  return [...AGENT_BACKENDS];
 }
 
 /** Same as backendName, but "all" survives — session listing/search accept it. */
@@ -70,12 +77,28 @@ export const BACKEND_CAPABILITIES = {
 };
 
 export function capabilitiesFor(backend) {
+  if (BACKEND_CAPABILITIES[backend]) return BACKEND_CAPABILITIES[backend];
   return BACKEND_CAPABILITIES[backendName(backend)] ?? DEFAULT_CAPABILITIES;
 }
 
-export function listBackends() {
-  return AGENT_BACKENDS.map((id) => ({
-    id,
-    capabilities: capabilitiesFor(id),
-  }));
+export async function listBackends() {
+  const detected = await detectBuiltins();
+  const byId = new Map(detected.map((row) => [row.id, row]));
+  const builtins = AGENT_BACKENDS.map((id) => {
+    const row = byId.get(id);
+    return {
+      id,
+      name: id,
+      command: id,
+      args: id === "grok" ? ["agent", "stdio"] : [],
+      path: row?.path ?? null,
+      pathLabel: row?.pathLabel ?? null,
+      version: row?.version ?? null,
+      auth: row?.auth ?? "unknown",
+      installCommand: row?.installCommand ?? null,
+      loginCommand: row?.loginCommand ?? null,
+      capabilities: capabilitiesFor(id),
+    };
+  });
+  return builtins;
 }

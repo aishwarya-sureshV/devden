@@ -20,8 +20,8 @@ import {
   type StoredImage,
 } from "../lib/notes";
 
-const NOTES_KEY = "pi-web.notes";
-const IMAGES_KEY = "pi-web.notes.images";
+const NOTES_KEY = "devden.notes";
+const IMAGES_KEY = "devden.notes.images";
 
 function loadNotes(): Note[] {
   try {

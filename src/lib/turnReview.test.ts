@@ -283,7 +283,7 @@ test("mergeReviews keeps every finding, sorted blocker then major then minor", (
 });
 
 test("reviewPathsMatch equates absolute tool paths with git relative paths", () => {
-  const cwd = "/Users/aishwarya/dev/pi-web";
+  const cwd = "/Users/aishwarya/dev/devden";
   assert.equal(normalizeRepoPath(`${cwd}/src/a.ts`, cwd), "src/a.ts");
   assert.equal(normalizeRepoPath("./src/a.ts", cwd), "src/a.ts");
   assert.equal(

@@ -5,6 +5,7 @@ import {
   backendMark,
   type AgentBackend,
 } from "../lib/api";
+import { useStore } from "../lib/store";
 import type { TurnStats } from "../lib/turnReview";
 import { BackendLogo, IconChevronDown } from "./icons";
 
@@ -25,7 +26,11 @@ export function TurnCompleteBar({
   const [above, setAbove] = useState(true);
   const rootRef = useRef<HTMLDivElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
-  const reviewers = AGENT_BACKENDS.filter((item) => item !== backend);
+  const { backendCatalog } = useStore();
+  const reviewers = (backendCatalog.length
+    ? backendCatalog.map((item) => item.id)
+    : [...AGENT_BACKENDS]
+  ).filter((item) => item !== backend);
 
   useLayoutEffect(() => {
     if (!open || !rootRef.current || !menuRef.current) return;
