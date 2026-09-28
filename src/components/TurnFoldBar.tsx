@@ -40,6 +40,7 @@ export function TurnFoldBar({
   endedAt,
   toolCount,
   fileCount,
+  failedCount = 0,
   open,
   onToggle,
 }: {
@@ -47,6 +48,7 @@ export function TurnFoldBar({
   endedAt: number;
   toolCount: number;
   fileCount: number;
+  failedCount?: number;
   open: boolean;
   onToggle: () => void;
 }) {
@@ -78,6 +80,11 @@ export function TurnFoldBar({
           <IconChevronDown size={12} />
         </span>
         <span className="turn-fold__meta">{meta}</span>
+        {failedCount > 0 && (
+          <span className="turn-fold__failed">
+            {failedCount} failed
+          </span>
+        )}
         <span className="turn-fold__action">
           {open ? "Collapse" : "Expand output"}
         </span>

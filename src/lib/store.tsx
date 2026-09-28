@@ -142,6 +142,9 @@ interface StoreValue {
   /** Backend used for new sessions. Existing tabs keep the backend they opened with. */
   defaultBackend: AgentBackend;
   setDefaultBackend: (backend: AgentBackend) => void;
+  /** Re-point a started tab at another agent: the visible transcript stays,
+   *  the agent-side session starts fresh on the next prompt. */
+  setConversationBackend: (key: string, backend: AgentBackend) => void;
   /** First-run setup. "done" opens the workbench. */
   setup: "checking" | "needed" | "done";
   finishSetup: (workspace?: string) => void;
@@ -280,7 +283,7 @@ function dedupeOpenSessions(
 /** A tab whose conversation has not started: no session file, no messages,
  *  no guest review. Backend switches in the picker may retarget these to the
  *  newly chosen agent — a started session keeps the agent it began with. */
-function isUnstartedTab(tab: ConversationTab): boolean {
+export function isUnstartedTab(tab: ConversationTab): boolean {
   return (
     tab.isFresh &&
     !tab.sessionPath &&
@@ -394,6 +397,32 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       /* private mode; the choice lasts this session only */
     }
   }, []);
+  const setConversationBackend = useCallback(
+    (key: string, backend: AgentBackend) => {
+      const tab = tabsRef.current.find((candidate) => candidate.key === key);
+      if (!tab || tab.backend === backend) return;
+      const preferred =
+        preferredModels.current.get(modelPreferenceKey(backend, tab.cwd)) ??
+        BACKEND_DEFAULT_MODEL[backend];
+      // The old backend's session file means nothing to the new one; drop it
+      // so the next prompt starts a new agent session instead of resuming.
+      if (tab.timeline.state)
+        tab.timeline.setState({
+          ...tab.timeline.state,
+          model: preferred ?? null,
+          thinkingLevel: BACKEND_DEFAULT_EFFORT[backend],
+          sessionFile: undefined,
+        });
+      setTabs((current) =>
+        current.map((candidate) =>
+          candidate.key === key
+            ? { ...candidate, backend, sessionPath: undefined }
+            : candidate,
+        ),
+      );
+    },
+    [],
+  );
   const [setup, setSetup] = useState<"checking" | "needed" | "done">(
     "checking",
   );
@@ -1720,6 +1749,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     sessionsLoaded,
     defaultBackend,
     setDefaultBackend,
+    setConversationBackend,
     setup,
     finishSetup,
     backendCatalog,

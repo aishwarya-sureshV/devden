@@ -19,6 +19,17 @@ import { FleetPage } from "./components/FleetPage";
 import { TerminalPage } from "./components/TerminalPage";
 import { FishLogo } from "./components/icons";
 import { Onboarding } from "./components/Onboarding";
+import { Backdrop } from "./components/Backdrop";
+import { AppFooter } from "./components/AppFooter";
+import {
+  activePhoto,
+  cycleBackdrop,
+  getAppearance,
+  hasBackdrop,
+  highlightVars,
+  setAppearance,
+  subscribeAppearance,
+} from "./lib/appearance";
 import type { WorkbenchView } from "./lib/navigation";
 import { sessionPaneLayout } from "./lib/sessionLayout";
 import { TerminalRunsProvider } from "./lib/terminalRuns";
@@ -70,7 +81,7 @@ function Frame() {
   );
   const [sidebarWidth, setSidebarWidth] = useState(() => {
     const stored = Number(localStorage.getItem("devden.sidebar-width"));
-    return Number.isFinite(stored) ? Math.min(480, Math.max(200, stored)) : 264;
+    return Number.isFinite(stored) ? Math.min(480, Math.max(200, stored)) : 232;
   });
   const [splitSessions, setSplitSessions] = useState(
     () => localStorage.getItem("devden.session-layout") === "split",
@@ -80,9 +91,13 @@ function Frame() {
   // drawer. Without this the ≤760px layout hid the sidebar outright and left
   // no way to reach sessions, skills, the terminal or settings from a phone.
   const [navOpen, setNavOpen] = useState(false);
-  const [theme, setTheme] = useState<"light" | "dark">(() =>
-    localStorage.getItem("devden.theme.v2") === "dark" ? "dark" : "light",
-  );
+  // Appearance comes from the redesign's settings store: mode feeds the
+  // legacy data-ds-dark-theme attribute so both themes stay in sync.
+  const appearance = useSyncExternalStore(subscribeAppearance, getAppearance);
+  // Photo wallpapers are dark scenes — while one is active the app follows
+  // the dark glass skin: light-mode white frosting over them reads as milk.
+  // Shader scenes keep the user's light/dark choice (they render both).
+  const theme = activePhoto(appearance) ? "dark" : appearance.mode;
   // Hidden by default. Reasoning streams are long and largely scratch work —
   // shown inline they bury the tool cards and the answer. Settings turns them
   // back on, and that choice sticks.
@@ -106,6 +121,45 @@ function Frame() {
     document.body.toggleAttribute("data-ds-dark-theme", theme === "dark");
     localStorage.setItem("devden.theme.v2", theme);
   }, [theme]);
+
+  // Glass activation + pane tuning, driven by the appearance settings.
+  useEffect(() => {
+    document.body.toggleAttribute("data-glass", hasBackdrop());
+    document.body.style.setProperty("--g-blur", `${appearance.blur}px`);
+    document.body.style.setProperty("--g-tint-a", String(appearance.tint));
+    for (const [key, value] of Object.entries(
+      highlightVars(appearance.highlight),
+    ))
+      document.body.style.setProperty(key, value);
+  }, [appearance]);
+
+  // ⌘, opens settings; [ and ] cycle backdrop scenes, mockup-style.
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && event.key === ",") {
+        event.preventDefault();
+        setTerminalExpanded(false);
+        setView((current) =>
+          current === "settings" ? "sessions" : "settings",
+        );
+        return;
+      }
+      const target = event.target as HTMLElement | null;
+      if (
+        target &&
+        (target.tagName === "TEXTAREA" ||
+          target.tagName === "INPUT" ||
+          target.isContentEditable)
+      )
+        return;
+      // [ ] cycles whichever backdrop kind is active: scenes when a scene is
+      // on, wallpapers when a photo is on (or from the solid theme).
+      if (event.key === "[" || event.key === "]")
+        cycleBackdrop(event.key === "]" ? 1 : -1);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
 
   useEffect(() => applyCodeTheme(codeTheme()), []);
 
@@ -264,13 +318,33 @@ function Frame() {
     persistSidebarWidth(sidebarWidth + (event.key === "ArrowRight" ? 24 : -24));
   };
 
+  const effCollapsed = sidebarCollapsed;
+  const sidebarProps = {
+    onToggle: toggleSidebar,
+    theme,
+    onThemeToggle: () =>
+      setAppearance({ mode: theme === "dark" ? "light" : "dark" }),
+    view,
+    onViewChange: changeView,
+    splitSessions,
+    onSplitSessionsToggle: toggleSplitSessions,
+    onSessionFocus: focusSession,
+    onSessionSplit: splitWithSession,
+    openTabKeys: visibleTabs.map((tab) => tab.key),
+    terminalOpen: terminalPane && view === "sessions",
+    onTerminalToggle: toggleTerminalPane,
+    onResizePointerDown: startSidebarResize,
+    onResizeKeyDown: resizeSidebarWithKeyboard,
+  };
+
   return (
     <TerminalRunsProvider onNeedOpen={openTerminalPane}>
+      <Backdrop />
       <div
         className={`app-frame${navOpen ? " is-nav-open" : ""}`}
+        data-layout={appearance.layout}
         style={{
-          gridTemplateColumns: `${sidebarCollapsed ? 56 : sidebarWidth}px minmax(0, 1fr)`,
-          ["--pw-sidebar-width" as string]: `${sidebarCollapsed ? 56 : sidebarWidth}px`,
+          ["--pw-sidebar-width" as string]: `${effCollapsed ? 56 : sidebarWidth}px`,
         }}
         onClickCapture={(event) => {
           // Any click inside the drawer that isn't the resizer means the user
@@ -299,23 +373,9 @@ function Frame() {
           />
         )}
         <Sidebar
-          collapsed={sidebarCollapsed}
-          onToggle={toggleSidebar}
-          theme={theme}
-          onThemeToggle={() =>
-            setTheme((current) => (current === "dark" ? "light" : "dark"))
-          }
-          view={view}
-          onViewChange={changeView}
-          splitSessions={splitSessions}
-          onSplitSessionsToggle={toggleSplitSessions}
-          onSessionFocus={focusSession}
-          onSessionSplit={splitWithSession}
-          openTabKeys={visibleTabs.map((tab) => tab.key)}
-          terminalOpen={terminalPane && view === "sessions"}
-          onTerminalToggle={toggleTerminalPane}
-          onResizePointerDown={startSidebarResize}
-          onResizeKeyDown={resizeSidebarWithKeyboard}
+          {...sidebarProps}
+          collapsed={effCollapsed}
+          onOpenSettings={() => changeView("settings")}
         />
         <main className="center">
           <div
@@ -332,6 +392,8 @@ function Frame() {
                     onActivate={setActiveKey}
                     onClose={closeConversation}
                     onSessionSplit={splitWithSession}
+                    terminalOpen={terminalPane && view === "sessions"}
+                    onTerminalToggle={toggleTerminalPane}
                   />
                 ) : (
                   <EmptyCenter />
@@ -360,7 +422,7 @@ function Frame() {
               <WorkbenchPage
                 view={view}
                 theme={theme}
-                onThemeChange={setTheme}
+                onThemeChange={(mode) => setAppearance({ mode })}
                 showThinking={showThinking}
                 onShowThinkingChange={setShowThinking}
                 sessionKey={activeKey}
@@ -398,6 +460,7 @@ function Frame() {
             </aside>
           )}
         </main>
+        <AppFooter />
       </div>
     </TerminalRunsProvider>
   );
@@ -411,6 +474,8 @@ function SessionGrid({
   onActivate,
   onClose,
   onSessionSplit,
+  terminalOpen,
+  onTerminalToggle,
 }: {
   tabs: ConversationTab[];
   visibleTabs: ConversationTab[];
@@ -419,9 +484,15 @@ function SessionGrid({
   onActivate: (key: string) => void;
   onClose: (key: string) => void;
   onSessionSplit: (key: string) => void;
+  terminalOpen: boolean;
+  onTerminalToggle: () => void;
 }) {
   const split = visibleTabs.length > 1;
   const layout = sessionPaneLayout(visibleTabs.length);
+  // Four panes tile 2×2. Three panes are two on top and one underneath
+  // that spans both. Other counts keep the tiler.
+  const twoByTwo = split && visibleTabs.length === 4;
+  const threeStack = split && visibleTabs.length === 3;
   return (
     <div
       className={`session-grid${split ? " is-split" : ""}`}
@@ -429,7 +500,13 @@ function SessionGrid({
       style={
         split
           ? {
-              gridTemplateColumns: `repeat(${layout.track}, minmax(0, 1fr))`,
+              gridTemplateColumns:
+                threeStack || twoByTwo
+                  ? "repeat(2, minmax(0, 1fr))"
+                  : `repeat(${layout.track}, minmax(0, 1fr))`,
+              ...(threeStack || twoByTwo
+                ? { gridTemplateRows: "repeat(2, minmax(0, 1fr))" }
+                : {}),
             }
           : undefined
       }
@@ -447,7 +524,11 @@ function SessionGrid({
             aria-hidden={!visible}
             style={
               visible && split
-                ? { gridColumn: `span ${layout.spans[visibleIndex]}` }
+                ? threeStack
+                  ? visibleIndex === 2
+                    ? { gridColumn: "1 / -1" }
+                    : undefined
+                  : { gridColumn: `span ${layout.spans[visibleIndex]}` }
                 : undefined
             }
           >
@@ -463,6 +544,8 @@ function SessionGrid({
                 density={split ? layout.density : "full"}
                 onClose={visible && split ? () => onClose(tab.key) : undefined}
                 onSessionSplit={onSessionSplit}
+                terminalOpen={terminalOpen}
+                onTerminalToggle={onTerminalToggle}
               />
             </section>
           </div>

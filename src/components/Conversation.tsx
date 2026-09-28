@@ -31,11 +31,16 @@ import {
   useStore,
   useTimeline,
   BACKEND_DEFAULT_EFFORT,
+  isUnstartedTab,
   type Attachment,
   type ConversationTab,
   type TaskSeed,
 } from "../lib/store";
 import { LIVE_TEXT_STALL_MS, shouldShowThinkingRow } from "../lib/thinkingRow";
+import {
+  THINKING_QUIP_MS,
+  createThinkingQuips,
+} from "../lib/thinkingQuips";
 import { DeployButton } from "./DeployButton";
 import {
   contextualSessionTitle,
@@ -52,6 +57,7 @@ import {
   runtimeModelAnswer,
 } from "../lib/modelIdentity";
 import { capabilitiesFor } from "../lib/agentCapabilities";
+import { useBackendUsage, usageLeft } from "../lib/backendUsage";
 import {
   exhaustedWindow,
   isUsageLimitError,
@@ -109,7 +115,8 @@ import {
   type SubagentRun,
 } from "../lib/subagents";
 import { isAskMessage } from "../lib/askBlock";
-import { ToolCard } from "./ToolCard";
+import { formatWorkingClock } from "../lib/toolRow";
+import { ExploredRows, ToolCard } from "./ToolCard";
 import { SubagentCard, runningSubagentSummary } from "./SubagentCard";
 import { SubagentPanel } from "./SubagentPanel";
 import { RichText } from "./RichText";
@@ -146,6 +153,7 @@ import {
 } from "../lib/route";
 import { UsageSummary, showsUsageSummary } from "./UsageDisplay";
 import { ActiveRunIndicator } from "./ToolActivity";
+import { groupTranscriptRows } from "../lib/toolRow";
 import type { PaneDensity } from "../lib/sessionLayout";
 import {
   IconArrowUp,
@@ -158,13 +166,14 @@ import {
   IconDownload,
   IconFile,
   IconFork,
-  IconInfo,
   IconPencil,
   IconHistory,
   IconColumns,
   IconList,
   IconPlus,
+  IconTerminal,
   IconRefresh,
+  IconSearch,
   IconStop,
   IconUpload,
   FishLogo,
@@ -287,6 +296,8 @@ export function Conversation({
   density = "full",
   onClose,
   onSessionSplit,
+  terminalOpen = false,
+  onTerminalToggle,
 }: {
   tab: ConversationTab;
   showThinking?: boolean;
@@ -294,6 +305,8 @@ export function Conversation({
   density?: PaneDensity;
   onClose?: () => void;
   onSessionSplit?: (key: string) => void;
+  terminalOpen?: boolean;
+  onTerminalToggle?: () => void;
 }) {
   const timeline = useTimeline(tab.timeline)!;
   const {
@@ -310,6 +323,8 @@ export function Conversation({
     closeConversation,
     revealConversation,
     backendCatalog,
+    setDefaultBackend,
+    setConversationBackend,
   } = useStore();
   const backendIds = backendCatalog.length
     ? backendCatalog.map((item) => item.id)
@@ -362,6 +377,15 @@ export function Conversation({
     connectUrl: string;
   } | null>(null);
   const [modeMenuOpen, setModeMenuOpen] = useState(false);
+  const [modelMenuOpen, setModelMenuOpen] = useState(false);
+  const modelMenuRef = useRef<HTMLDivElement | null>(null);
+  // Model menu extras from the workbench redesign: search, keyboard
+  // navigation and the per-agent usage bars.
+  const [modelQuery, setModelQuery] = useState("");
+  const [modelIndex, setModelIndex] = useState(0);
+  const [agentNote, setAgentNote] = useState<AgentBackend | null>(null);
+  const modelSearchRef = useRef<HTMLInputElement | null>(null);
+  const backendUsage = useBackendUsage();
   // Compaction is a long, silent backend job: pi/claude re-summarize the whole
   // history before answering. Without a visible in-progress state the UI looked
   // idle, so /compact got sent again and again.
@@ -424,11 +448,9 @@ export function Conversation({
   const [boardOpen, setBoardOpen] = useState(false);
   const [workspaceMounted, setWorkspaceMounted] = useState(false);
   const [workspacePlacement, setWorkspacePlacement] =
-    useState<WorkspacePlacement>(() =>
-      localStorage.getItem("devden.workspace-placement") === "full"
-        ? "full"
-        : "side",
-    );
+    // Always opens docked beside the chat (conversation → files → editor);
+    // full screen is a per-visit expand, not a sticky preference.
+    useState<WorkspacePlacement>("side");
   const workspacePickerRef = useRef<WorkspacePickerHandle | null>(null);
   // Width-aware tight mode: any side pane (board, explorer, subagents, route
   // pane) or a narrow window shrinks the conversation column — apply the same
@@ -533,42 +555,75 @@ export function Conversation({
   );
   const todos = extractTodos(timeline.items, { turnComplete: !streaming });
 
-  // Auto-saved transcript. Written after every settled turn rather than when a
-  // limit is about to be hit: exhaustion can land mid-turn with no warning, and
-  // a turn killed that way produced nothing worth keeping anyway. Entirely
-  // mechanical -- no model is asked to summarise, so this costs no tokens.
+  // Auto-saved transcript. Written the moment a turn settles -- finished,
+  // aborted, or killed by limit exhaustion (all flip `streaming` off) -- so
+  // a backend switch or closed tab right after never sees a stale file.
+  // Entirely mechanical -- no model is asked to summarise, so no tokens.
   const [transcriptPath, setTranscriptPath] = useState<string | null>(null);
+  const saveTranscript = async (): Promise<string | null> => {
+    if (timeline.items.length === 0 || !tab.cwd) return transcriptPath;
+    const markdown = timelineToMarkdown(
+      timeline.items,
+      {
+        title: displayTitle,
+        backend: backendLabel(tab.backend),
+        model: state?.model?.name ?? state?.model?.id,
+        cwd: tab.cwd,
+        todos: todos
+          .filter(
+            (task) =>
+              task.status === "pending" || task.status === "in_progress",
+          )
+          .map((task) => task.subject),
+      },
+      { full: true },
+    );
+    const result = await api.writeTranscript(
+      transcriptFilename(tab.sessionPath ?? tab.key, displayTitle),
+      markdown,
+    );
+    if (!result.ok || !result.path) return transcriptPath;
+    setTranscriptPath(result.path);
+    return result.path;
+  };
+  const wasStreamingRef = useRef(streaming);
   useEffect(() => {
-    if (streaming || timeline.items.length === 0 || !tab.cwd) return;
-    const handle = window.setTimeout(() => {
-      const markdown = timelineToMarkdown(
-        timeline.items,
-        {
-          title: displayTitle,
-          backend: backendLabel(tab.backend),
-          model: state?.model?.name ?? state?.model?.id,
-          cwd: tab.cwd,
-          todos: todos
-            .filter(
-              (task) =>
-                task.status === "pending" || task.status === "in_progress",
-            )
-            .map((task) => task.subject),
-        },
-        { full: true },
-      );
-      void api
-        .writeTranscript(
-          transcriptFilename(tab.sessionPath ?? tab.key, displayTitle),
-          markdown,
-        )
-        .then((result) => {
-          if (result.ok && result.path) setTranscriptPath(result.path);
-        });
-    }, 2000);
+    const turnEnded = wasStreamingRef.current && !streaming;
+    wasStreamingRef.current = streaming;
+    if (streaming) return;
+    if (turnEnded) {
+      void saveTranscript();
+      return;
+    }
+    // Idle edits (history load, notices, rewinds): debounced, not urgent.
+    const handle = window.setTimeout(() => void saveTranscript(), 2000);
     return () => window.clearTimeout(handle);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [streaming, timeline.items, displayTitle, tab.key, tab.cwd, tab.backend]);
+
+  // Set by an in-place backend switch; the next prompt to the new agent
+  // carries it so the agent reads what the old one did before answering.
+  const pendingHandoffRef = useRef<string | null>(null);
+  const switchBackend = async (next: AgentBackend) => {
+    setModelMenuOpen(false);
+    if (next === tab.backend || streaming || configuring) return;
+    if (isUnstartedTab(tab)) {
+      setDefaultBackend(next);
+      return;
+    }
+    const from = backendLabel(tab.backend);
+    // Save now rather than trust the last write: the brief must point at a
+    // file that holds every turn so far.
+    const path = await saveTranscript();
+    // Free the old agent's process; the new one starts on the next prompt.
+    await api.stop(tab.key);
+    setConversationBackend(tab.key, next);
+    pendingHandoffRef.current = path ? handoffPrompt(path, from) : null;
+    timeline.appendNotice(
+      `Switched from ${from} to ${backendLabel(next)}. Your next message hands it this conversation's transcript.`,
+      "info",
+    );
+  };
 
   /** Hand this session to another agent: same folder, transcript as the brief. */
   const continueIn = (backend: AgentBackend) => {
@@ -773,8 +828,8 @@ export function Conversation({
     backendIds.find((backend) => backend !== tab.backend) ?? "claude";
   // Reasoning summaries are intentionally not rendered in the chat view. The
   // data still flows through the timeline (Trajectory tab, context estimates),
-  // but the transcript stays clean; thinking activity surfaces as the
-  // "is thinking" spinner while the agent streams.
+  // but the transcript stays clean; thinking activity surfaces as a
+  // rotating status while the agent streams.
   // Subagent calls render inside the Task card that spawned them, so they
   // must not also appear as siblings in the main transcript.
   const subagentChildren = new Map<
@@ -1010,10 +1065,16 @@ export function Conversation({
   const lastAssistantId = streaming
     ? undefined
     : lastAnswerableAssistantId(visibleItems);
-  const renderTimelineItem = (item: TimelineItem) => (
+  const renderTimelineItem = (
+    item: TimelineItem,
+    extras?: { repeat?: number; expandDiff?: boolean },
+  ) => (
     <TimelineRow
       key={item.id}
       item={item}
+      repeat={extras?.repeat}
+      expandDiff={extras?.expandDiff}
+      cwd={tab.cwd}
       onOpenFile={setViewer}
       onFork={stableRowHandlers.onFork}
       onRewindFiles={stableRowHandlers.onRewindFiles}
@@ -1154,7 +1215,6 @@ export function Conversation({
 
   const chooseWorkspacePlacement = useCallback(
     (next: WorkspacePlacement) => {
-      localStorage.setItem("devden.workspace-placement", next);
       setWorkspacePlacement(next);
       openWorkspace();
     },
@@ -1162,6 +1222,12 @@ export function Conversation({
   );
 
   const closeWorkspace = useCallback(() => setWorkspaceOpen(false), []);
+
+  // A session opening beside this one halves the pane; a docked explorer
+  // would crush the chat. Close it — the toggle reopens it as usual.
+  useEffect(() => {
+    if (split) setWorkspaceOpen(false);
+  }, [split]);
 
   const toggleWorkspace = () => {
     setWorkspaceOpen((open) => {
@@ -2083,7 +2149,7 @@ export function Conversation({
       // /skill sends the distill prompt to the agent itself — its own
       // history is the input, nothing to attach or re-read. The transcript
       // keeps the short "/skill" bubble instead of the canned prompt.
-      const outboundMessage = [
+      let outboundMessage = [
         (message === "/skill" ? DISTILL_SKILL_PROMPT : message) ||
           "Please inspect the attached file(s).",
         attachmentLines.length
@@ -2152,6 +2218,11 @@ export function Conversation({
         return;
       }
 
+      const handoff = willQueue ? null : pendingHandoffRef.current;
+      if (handoff) {
+        pendingHandoffRef.current = null;
+        outboundMessage = `${handoff}\n\n---\n\n${outboundMessage}`;
+      }
       const promptOptions = {
         images,
         cwd: tab.cwd,
@@ -2217,6 +2288,7 @@ export function Conversation({
         }
       } else {
         setAttachments(pickedAttachments);
+        if (handoff) pendingHandoffRef.current = handoff;
         if (!willQueue) timeline.clearPendingRun();
         timeline.appendNotice(result.error ?? "prompt failed", "error");
       }
@@ -2246,11 +2318,13 @@ export function Conversation({
         !modeMenuRef.current.contains(target)
       )
         setModeMenuOpen(false);
+      if (modelMenuOpen && !modelMenuRef.current?.contains(target))
+        setModelMenuOpen(false);
     };
     document.addEventListener("pointerdown", closeFloatingMenus);
     return () =>
       document.removeEventListener("pointerdown", closeFloatingMenus);
-  }, [commandMenuOpen, modeMenuOpen]);
+  }, [commandMenuOpen, modeMenuOpen, modelMenuOpen]);
 
   // slash filtering for the command menu opened by typing "/"
   const localCommands = LOCAL_COMMANDS.filter((command) => {
@@ -2428,7 +2502,12 @@ export function Conversation({
   }, []);
   useLayoutEffect(() => {
     autoGrow();
-  });
+    // deps: [draft] only — this used to run on every render (no deps array),
+    // so any unrelated re-render (a selection change from onSelect, an idle
+    // polling tick) re-zeroed the textarea's height and reset its internal
+    // scroll to the top, which looked like the caret jumping or the box
+    // scrolling up while typing. Content changes always go through setDraft.
+  }, [draft, autoGrow]);
 
   const modelOptions: ModelOption[] = models.map((m) => ({
     provider: m.provider,
@@ -2490,6 +2569,64 @@ export function Conversation({
       });
       void refreshUsage(true);
     });
+  };
+
+  // Search-filtered model list for the menu.
+  const visibleOptions = useMemo(() => {
+    const q = modelQuery.trim().toLowerCase();
+    if (!q) return modelOptions;
+    return modelOptions.filter((option) =>
+      `${option.label} ${option.provider}/${option.id}`
+        .toLowerCase()
+        .includes(q),
+    );
+  }, [modelOptions, modelQuery]);
+
+  // Fresh menu state on every open; keyboard focus lands in the search box.
+  useEffect(() => {
+    if (!modelMenuOpen) return;
+    setModelQuery("");
+    setModelIndex(0);
+    setAgentNote(null);
+    const input = modelSearchRef.current;
+    if (input) input.focus();
+  }, [modelMenuOpen]);
+
+  // ↑↓ move, ↵ select, esc close; ⇥ cycles the agent buttons without
+  // committing — a stray Tab must not switch backends mid-sentence.
+  const onModelMenuKey = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      const count = visibleOptions.length;
+      if (count === 0) return;
+      setModelIndex((index) =>
+        event.key === "ArrowDown"
+          ? (index + 1) % count
+          : (index - 1 + count) % count,
+      );
+    } else if (event.key === "Enter") {
+      const option = visibleOptions[modelIndex];
+      if (!option) return;
+      const value = `${option.provider}/${option.id}`;
+      setModelMenuOpen(false);
+      if (value !== currentModel) setModel(value);
+    } else if (event.key === "Escape") {
+      setModelMenuOpen(false);
+    } else if (event.key === "Tab") {
+      event.preventDefault();
+      const agents = [
+        ...(modelMenuRef.current?.querySelectorAll<HTMLButtonElement>(
+          ".composer__model-backends button",
+        ) ?? []),
+      ];
+      if (agents.length === 0) return;
+      const active = agents.indexOf(
+        document.activeElement as HTMLButtonElement,
+      );
+      agents[
+        (active + (event.shiftKey ? -1 : 1) + agents.length) % agents.length
+      ].focus();
+    }
   };
 
   const setEffort = (level: string) => {
@@ -3052,6 +3189,185 @@ export function Conversation({
             >
               <IconPlus />
             </button>
+            <div
+              className="native-model-controls"
+              ref={modelMenuRef}
+              onPointerDown={loadModelMetadata}
+              onFocus={loadModelMetadata}
+            >
+              <button
+                type="button"
+                className="native-model-controls__field native-model-controls__field--model"
+                aria-haspopup="menu"
+                aria-expanded={modelMenuOpen}
+                disabled={configuring || streaming}
+                title={
+                  streaming
+                    ? "Wait for the current response to finish before changing model"
+                    : `${backendLabel(tab.backend)} · ${currentModelLabel}`
+                }
+                onClick={() => setModelMenuOpen((open) => !open)}
+              >
+                <span className="native-model-controls__value">
+                  {backendLabel(tab.backend).toLowerCase()} ·{" "}
+                  {currentModelLabel}
+                </span>
+                <span className="native-select__chev">
+                  <IconChevronDown size={13} />
+                </span>
+              </button>
+              {modelMenuOpen && (
+                <div
+                  className="composer__mode-menu composer__model-menu"
+                  role="menu"
+                  onKeyDown={onModelMenuKey}
+                >
+                  <label className="composer__model-search">
+                    <IconSearch size={12} />
+                    <input
+                      ref={modelSearchRef}
+                      value={modelQuery}
+                      placeholder={`Search ${backendLabel(tab.backend)} models`}
+                      aria-label="Search models"
+                      onChange={(event) => {
+                        setModelQuery(event.target.value);
+                        setModelIndex(0);
+                      }}
+                    />
+                    <span className="composer__model-search-kbd">⇥ agent</span>
+                  </label>
+                  <div className="composer__model-columns">
+                    <div className="composer__model-backends">
+                      <span className="composer__mode-heading">Agent</span>
+                      {backendIds.map((backend) => {
+                        const { left } = usageLeft(backendUsage[backend]);
+                        return (
+                          <button
+                            type="button"
+                            role="menuitemradio"
+                            aria-checked={backend === tab.backend}
+                            key={backend}
+                            className={
+                              backend === tab.backend ? "is-active" : undefined
+                            }
+                            title={
+                              isUnstartedTab(tab)
+                                ? backendLabel(backend)
+                                : `Continue this conversation in ${backendLabel(backend)}`
+                            }
+                            onMouseEnter={() => setAgentNote(backend)}
+                            onClick={() => void switchBackend(backend)}
+                          >
+                            <span className="composer__model-agent-name">
+                              <span
+                                style={{ color: backendMark(backend).color }}
+                                aria-hidden
+                              >
+                                <BackendLogo backend={backend} size={13} />
+                              </span>
+                              {backendLabel(backend).toLowerCase()}
+                            </span>
+                            <span
+                              className={
+                                left !== null && left < 10
+                                  ? "composer__agent-usage is-critical"
+                                  : left !== null && left < 25
+                                    ? "composer__agent-usage is-low"
+                                    : "composer__agent-usage"
+                              }
+                              title={
+                                left === null
+                                  ? "no quota data"
+                                  : `${left}% left`
+                              }
+                            >
+                              <i>
+                                <b style={{ width: `${left ?? 0}%` }} />
+                              </i>
+                              <span>{left === null ? "—" : `${left}%`}</span>
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                    <div className="composer__model-models">
+                      <span className="composer__mode-heading">Model</span>
+                      <div className="composer__model-list">
+                        {visibleOptions.length === 0 && (
+                          <em className="composer__model-empty">
+                            {modelOptions.length === 0
+                              ? "Loading models…"
+                              : `No ${backendLabel(tab.backend)} models match`}
+                          </em>
+                        )}
+                        {visibleOptions.map((option, index) => {
+                          const value = `${option.provider}/${option.id}`;
+                          const selected = value === currentModel;
+                          return (
+                            <button
+                              type="button"
+                              role="menuitemradio"
+                              aria-checked={selected}
+                              key={value}
+                              className={
+                                selected
+                                  ? "is-active"
+                                  : index === modelIndex
+                                    ? "is-highlighted"
+                                    : undefined
+                              }
+                              onMouseEnter={() => setModelIndex(index)}
+                              onClick={() => {
+                                setModelMenuOpen(false);
+                                if (!selected) setModel(value);
+                              }}
+                            >
+                              <span>
+                                <strong>{option.label}</strong>
+                              </span>
+                              {selected ? (
+                                <span className="composer__model-check">✓</span>
+                              ) : null}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  </div>
+                  <div className="composer__model-footer">
+                    {agentNote &&
+                    agentNote !== tab.backend &&
+                    !isUnstartedTab(tab)
+                      ? `Next message hands this transcript to ${backendLabel(agentNote)}.`
+                      : "↑↓ move · ↵ select · esc close"}
+                  </div>
+                </div>
+              )}
+              <span
+                className="native-model-controls__field native-model-controls__field--effort"
+                title={`Effort: ${effort}`}
+              >
+                <span className="native-model-controls__value">{effort}</span>
+                <span className="native-select__chev">
+                  <IconChevronDown size={13} />
+                </span>
+                <select
+                  aria-label="Effort"
+                  value={effort}
+                  disabled={configuring || streaming}
+                  onChange={(event) => setEffort(event.target.value)}
+                >
+                  {!levels.includes(effort) && (
+                    <option value={effort}>{effort}</option>
+                  )}
+                  {levels.map((level) => (
+                    <option key={level} value={level}>
+                      {level}
+                    </option>
+                  ))}
+                </select>
+              </span>
+            </div>
             <div className="composer__mode" ref={modeMenuRef}>
               <button
                 type="button"
@@ -3147,86 +3463,6 @@ export function Conversation({
                 <span className="usage-summary__rule" aria-hidden="true" />
               </>
             )}
-            <div
-              className="native-model-controls"
-              onPointerDown={loadModelMetadata}
-              onFocus={loadModelMetadata}
-            >
-              <span
-                className="native-model-controls__field native-model-controls__field--model"
-                title={`${backendLabel(tab.backend)} · ${currentModelLabel}`}
-              >
-                <span className="native-model-controls__value">
-                  {backendLabel(tab.backend).toLowerCase()} ·{" "}
-                  {currentModelLabel}
-                </span>
-                <span className="native-select__chev">
-                  <IconChevronDown size={13} />
-                </span>
-                <select
-                  aria-label="Model"
-                  value={currentModel}
-                  disabled={configuring || streaming}
-                  title={
-                    streaming
-                      ? "Wait for the current response to finish before changing model"
-                      : "Change model for the next message"
-                  }
-                  onChange={(event) => setModel(event.target.value)}
-                >
-                  {!currentModel && <option value="">model…</option>}
-                  {currentModel &&
-                    !modelOptions.some(
-                      (option) =>
-                        `${option.provider}/${option.id}` === currentModel,
-                    ) && (
-                      <option value={currentModel}>
-                        {tab.backend === "claude"
-                          ? formatClaudeModelName(
-                              state?.model?.name ??
-                                state?.model?.id ??
-                                currentModel,
-                            )
-                          : (state?.model?.name ??
-                            state?.model?.id ??
-                            currentModel)}
-                      </option>
-                    )}
-                  {modelOptions.map((option) => (
-                    <option
-                      key={`${option.provider}/${option.id}`}
-                      value={`${option.provider}/${option.id}`}
-                    >
-                      {option.label}
-                    </option>
-                  ))}
-                </select>
-              </span>
-              <span
-                className="native-model-controls__field native-model-controls__field--effort"
-                title={`Effort: ${effort}`}
-              >
-                <span className="native-model-controls__value">{effort}</span>
-                <span className="native-select__chev">
-                  <IconChevronDown size={13} />
-                </span>
-                <select
-                  aria-label="Effort"
-                  value={effort}
-                  disabled={configuring || streaming}
-                  onChange={(event) => setEffort(event.target.value)}
-                >
-                  {!levels.includes(effort) && (
-                    <option value={effort}>{effort}</option>
-                  )}
-                  {levels.map((level) => (
-                    <option key={level} value={level}>
-                      {level}
-                    </option>
-                  ))}
-                </select>
-              </span>
-            </div>
             {streaming ? (
               <button
                 type="button"
@@ -3392,20 +3628,22 @@ export function Conversation({
       />
     ) : null;
 
-  const overflowMenu = tight ? (
+  const overflowMenu = (
     <div className="conversation-header__overflow" ref={overflowRef}>
       <button
         type="button"
         className="conversation-header__more"
         aria-haspopup="menu"
         aria-expanded={overflowOpen}
-        aria-label="Session actions"
+        aria-label="More"
+        title="More"
         onClick={() => setOverflowOpen((open) => !open)}
       >
         <IconDots size={14} />
       </button>
       {overflowOpen && (
         <div className="conversation-header__overflow-menu" role="menu">
+          <DeployButton cwd={tab.cwd} compact />
           <button
             type="button"
             role="menuitem"
@@ -3441,7 +3679,7 @@ export function Conversation({
         </div>
       )}
     </div>
-  ) : null;
+  );
 
   const viewTab = (
     id: "chat" | "trajectory" | "backend",
@@ -3450,12 +3688,8 @@ export function Conversation({
     count?: number,
   ) => {
     const active = conversationView === id;
-    const showLabel =
-      density === "full" ||
-      (density === "compact" && id === "chat") ||
-      (density === "dense" && active);
-    const showIcon =
-      density === "dense" || (density === "compact" && id !== "chat");
+    const showLabel = density !== "dense" || active;
+    const showIcon = density === "dense" && !showLabel;
     return (
       <button
         key={id}
@@ -3477,38 +3711,22 @@ export function Conversation({
   };
 
   const trajCount = timeline.items.length;
-  const viewSwitcher =
-    density === "dense" ? (
-      <div
-        className="conversation-header__segment"
-        role="tablist"
-        aria-label="Conversation view"
-      >
-        {viewTab("chat", "Chat", <IconChat size={12} />)}
-        {viewTab(
-          "trajectory",
-          "Trajectory",
-          <IconBranch size={12} />,
-          trajCount,
-        )}
-        {viewTab("backend", "Backend log", <IconList size={12} />)}
-      </div>
-    ) : (
-      <div
-        className={`conversation-header__track${density === "compact" ? " conversation-header__track--compact" : ""}`}
-        role="tablist"
-        aria-label="Conversation view"
-      >
-        {viewTab("chat", "Chat", <IconChat size={12} />)}
-        {viewTab(
-          "trajectory",
-          "Trajectory",
-          <IconBranch size={12} />,
-          density === "compact" ? trajCount : undefined,
-        )}
-        {viewTab("backend", "Backend log", <IconList size={12} />)}
-      </div>
-    );
+  const viewSwitcher = (
+    <div
+      className="conversation-header__segment"
+      role="tablist"
+      aria-label="Conversation view"
+    >
+      {viewTab("chat", "Chat", <IconChat size={12} />)}
+      {viewTab(
+        "trajectory",
+        "Trajectory",
+        <IconBranch size={12} />,
+        density === "full" ? undefined : trajCount,
+      )}
+      {viewTab("backend", "Backend log", <IconList size={12} />)}
+    </div>
+  );
 
   if (!hasItems) {
     return (
@@ -3585,19 +3803,21 @@ export function Conversation({
     );
   }
 
-  const statusDot = (
+  // The mark IS the status light: it blinks while the turn runs (streaming
+  // covers subagents too), turns red on error, and stays steady otherwise.
+  // No separate dot, no square tile behind the logo.
+  const markLive = streaming || status === "starting";
+  const mark = (
     <span
-      className={`conversation-header__dot${streaming ? " is-live" : ""}`}
+      className={`conversation-header__pill-mark${markLive ? " is-live" : ""}`}
       style={{
-        background:
-          status === "error"
-            ? "var(--pw-red)"
-            : streaming
-              ? "var(--pw-accent)"
-              : backendMark(tab.backend).color,
+        color:
+          status === "error" ? "var(--pw-red)" : backendMark(tab.backend).color,
       }}
       aria-hidden
-    />
+    >
+      <BackendLogo backend={tab.backend} size={14} />
+    </span>
   );
 
   // Click-to-rename: the title itself becomes the editor in place — no
@@ -3641,82 +3861,33 @@ export function Conversation({
   return (
     <>
       <div className={`conversation-header${split ? ` is-${density}` : ""}`}>
-        {/* Wide split panes leave tight mode, but the title still lives here.
-            Gating this row on tight hid it whenever the sidebar collapsed. */}
-        {(tight || split) && (
-          <div className="conversation-header__identity">
-            {statusDot}
-            {split ? (
-              renaming ? (
-                renameInput
-              ) : (
-                <button
-                  type="button"
-                  className="conversation-header__agent"
-                  aria-label="Rename session"
-                  title="Rename session"
-                  onClick={startRename}
-                >
-                  <span
-                    className="conversation-header__agent-logo"
-                    style={{ color: backendMark(tab.backend).color }}
-                    aria-hidden
-                  >
-                    <BackendLogo backend={tab.backend} size={13} />
-                  </span>
-                  <span className="conversation-header__agent-title">
-                    {displayTitle}
-                  </span>
-                </button>
-              )
-            ) : (
-              <span className="conversation-header__agent">
-                {backendLabel(tab.backend)}
-              </span>
-            )}
-            {tight && (
-              <>
-                <span className="conversation-header__spacer" aria-hidden />
-                {providerUsage && showsUsageSummary(providerUsage) && (
-                  <UsageSummary usage={providerUsage} />
-                )}
-                {density === "dense" && folderChip}
-                {overflowMenu}
-              </>
-            )}
-          </div>
-        )}
         <div className="conversation-header__row">
-          <div className="conversation-header__tabs">
-            {agentMode === "plan" && !tight && (
-              <div className="conversation-header__mode">
-                <IconCube size={13} /> Plan mode
-              </div>
-            )}
-            {agentMode === "routed" && !tight && (
-              <div className="conversation-header__mode">Routed</div>
-            )}
-            {viewSwitcher}
-          </div>
-          {!split && (
-            <div className="conversation-header__workspace">
-              {renaming ? (
-                renameInput
-              ) : (
-                <button
-                  type="button"
-                  className="conversation-header__session-title"
-                  aria-label="Rename session"
-                  title="Rename session"
-                  onClick={startRename}
-                >
-                  {displayTitle}
-                </button>
-              )}
+          <span className="conversation-header__pill">{mark}</span>
+          {renaming ? (
+            renameInput
+          ) : (
+            <button
+              type="button"
+              className="conversation-header__session-title"
+              aria-label="Rename session"
+              title="Rename session"
+              onClick={startRename}
+            >
+              {displayTitle}
+            </button>
+          )}
+          {agentMode === "plan" && (
+            <div className="conversation-header__mode">
+              <IconCube size={12} /> Plan
             </div>
           )}
+          {agentMode === "routed" && (
+            <div className="conversation-header__mode">Routed</div>
+          )}
+          <div className="conversation-header__tabs">{viewSwitcher}</div>
+          <span className="conversation-header__divider" aria-hidden />
           <div className="conversation-header__tabs-actions">
-            {!tight && runningSubagentSummary(subagentRuns) && (
+            {runningSubagentSummary(subagentRuns) && density !== "dense" && (
               <span className="conversation-header__subagents">
                 <span
                   className="conversation-header__subagents-dot"
@@ -3725,17 +3896,17 @@ export function Conversation({
                 {runningSubagentSummary(subagentRuns)}
               </span>
             )}
-            {density !== "dense" && folderChip}
-            <DeployButton cwd={tab.cwd} compact={tight} />
-            {!tight && onClose && (
+            {density === "dense" && folderChip}
+            {onTerminalToggle && (
               <button
                 type="button"
-                className="conversation-header__close"
-                aria-label={`Close ${displayTitle}`}
-                title="Close session"
-                onClick={onClose}
+                className={`conversation-header__download conversation-header__icon-btn${terminalOpen ? " is-active" : ""}`}
+                aria-pressed={terminalOpen}
+                aria-label="Terminal"
+                title="Terminal"
+                onClick={onTerminalToggle}
               >
-                ×
+                <IconTerminal size={14} />
               </button>
             )}
             {!split && (
@@ -3743,8 +3914,8 @@ export function Conversation({
                 type="button"
                 className={`conversation-header__download conversation-header__icon-btn${workspaceOpen ? " is-active" : ""}`}
                 aria-pressed={workspaceOpen}
-                aria-label="View project source"
-                title="View project source"
+                aria-label="Code"
+                title="Code"
                 onClick={toggleWorkspace}
               >
                 <IconCode size={14} />
@@ -3755,24 +3926,14 @@ export function Conversation({
                 type="button"
                 className={`conversation-header__download conversation-header__icon-btn${boardOpen ? " is-active" : ""}`}
                 aria-pressed={boardOpen}
-                aria-label="Board"
-                title="Board"
+                aria-label="Split"
+                title="Split"
                 onClick={() => setBoardOpen((open) => !open)}
               >
                 <IconColumns size={14} />
               </button>
             )}
-            {!tight && (
-              <button
-                type="button"
-                className="conversation-header__download conversation-header__icon-btn"
-                aria-label="Session details"
-                title="Session details"
-                onClick={() => setSessionDetailsOpen(true)}
-              >
-                <IconInfo size={14} />
-              </button>
-            )}
+            {overflowMenu}
           </div>
         </div>
         <ContextFill context={context} />
@@ -3817,13 +3978,22 @@ export function Conversation({
                   const stats = showFold ? statsForTurn(turn) : null;
                   return (
                     <div className="chat-turn" key={id || turnIndex}>
-                      {turnUserItems(turn).map(renderTimelineItem)}
+                      {turnUserItems(turn).map((item) =>
+                        renderTimelineItem(item),
+                      )}
                       {showFold && stats && (
                         <TurnFoldBar
                           durationMs={stats.durationMs}
                           endedAt={turnEndedAt(turn)}
                           toolCount={stats.toolCount}
                           fileCount={changedFiles.length || stats.fileCount}
+                          failedCount={
+                            turn.filter(
+                              (entry) =>
+                                entry.kind === "tool" &&
+                                entry.status === "error",
+                            ).length
+                          }
                           open={logOpen}
                           onToggle={() =>
                             setTurnOpen((current) => ({
@@ -3833,7 +4003,25 @@ export function Conversation({
                           }
                         />
                       )}
-                      {bodyItems.map(renderTimelineItem)}
+                      {groupTranscriptRows(bodyItems).map((block) =>
+                        block.type === "explored" ? (
+                          <ExploredRows
+                            key={block.id}
+                            entries={block.entries}
+                            calls={block.calls}
+                            failed={block.failed}
+                            durationMs={block.durationMs}
+                            cwd={tab.cwd}
+                            expandDiff={turnIndex === chatTurns.length - 1}
+                            onOpenFile={setViewer}
+                          />
+                        ) : (
+                          renderTimelineItem(block.item, {
+                            repeat: block.repeat,
+                            expandDiff: turnIndex === chatTurns.length - 1,
+                          })
+                        ),
+                      )}
                       {!logOpen && (
                         <TurnFilesCard
                           files={changedFiles}
@@ -3887,12 +4075,32 @@ export function Conversation({
                   />
                 ) : showThinkingIndicator ? (
                   <ThinkingRow
-                    backend={tab.backend}
                     resume={visibleItems.some(
                       (item) =>
                         item.kind === "notice" &&
                         /picking this conversation back up/i.test(item.text),
                     )}
+                    startedAt={turnStartedAt(chatTurns.at(-1))}
+                    tools={
+                      chatTurns.at(-1)?.filter((entry) => entry.kind === "tool")
+                        .length ?? 0
+                    }
+                    failed={
+                      chatTurns
+                        .at(-1)
+                        ?.filter(
+                          (entry) =>
+                            entry.kind === "tool" && entry.status === "error",
+                        ).length ?? 0
+                    }
+                    parallel={
+                      chatTurns
+                        .at(-1)
+                        ?.filter(
+                          (entry) =>
+                            entry.kind === "tool" && entry.status === "running",
+                        ).length ?? 0
+                    }
                   />
                 ) : null}
               </div>
@@ -4054,19 +4262,48 @@ export function Conversation({
 }
 
 function ThinkingRow({
-  backend,
   resume = false,
+  startedAt,
+  tools,
+  failed,
+  parallel,
 }: {
-  backend: ConversationTab["backend"];
   resume?: boolean;
+  startedAt: number;
+  tools: number;
+  failed: number;
+  parallel: number;
 }) {
-  const name = backendLabel(backend);
-  const label = resume ? "Picking up after restart" : `${name} is thinking`;
+  const drawRef = useRef<(() => string) | null>(null);
+  if (drawRef.current == null) drawRef.current = createThinkingQuips();
+  const [quip, setQuip] = useState(() => drawRef.current!());
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const id = window.setInterval(() => setNow(Date.now()), 500);
+    return () => window.clearInterval(id);
+  }, []);
+  useEffect(() => {
+    if (resume) return;
+    const id = window.setInterval(() => {
+      setQuip(drawRef.current!());
+    }, THINKING_QUIP_MS);
+    return () => window.clearInterval(id);
+  }, [resume]);
+  const label = resume ? "Picking up after restart" : quip;
   return (
     <div className="thinking" aria-label={label}>
       <span className="thinking__spinner" />
-      <span>{label}</span>
+      <span key={label} className="thinking__line">
+        {label}
+      </span>
       {resume ? null : <span className="thinking__dots" aria-hidden="true" />}
+      <span className="thinking__meta">
+        {` · ${formatWorkingClock(Math.max(0, now - startedAt))} · ${tools} tool${tools === 1 ? "" : "s"}`}
+        {parallel > 1 ? ` · ${parallel} running in parallel` : ""}
+      </span>
+      {failed > 0 && (
+        <span className="thinking__fail">{` · ${failed} failed`}</span>
+      )}
     </div>
   );
 }
@@ -4252,6 +4489,15 @@ function CompactedNotice({
   );
 }
 
+function turnStartedAt(turn: TimelineItem[] | undefined): number {
+  if (!turn) return Date.now();
+  const user = turn.find((item) => item.kind === "user");
+  if (user?.kind === "user") return user.timestamp;
+  const tool = turn.find((item) => item.kind === "tool");
+  if (tool?.kind === "tool") return tool.startedAt;
+  return Date.now();
+}
+
 const TimelineRow = memo(function TimelineRow({
   item,
   onOpenFile,
@@ -4272,9 +4518,15 @@ const TimelineRow = memo(function TimelineRow({
   onOpenSubagent,
   onBackgroundSubagent,
   onStopTerminal,
+  cwd = "",
+  repeat = 1,
+  expandDiff = false,
 }: {
   item: TimelineItem;
   onOpenFile: (view: ToolFileView) => void;
+  cwd?: string;
+  repeat?: number;
+  expandDiff?: boolean;
   onFork: (item: Extract<TimelineItem, { kind: "assistant" }>) => void;
   forking: boolean;
   canFork?: boolean;
@@ -4309,6 +4561,7 @@ const TimelineRow = memo(function TimelineRow({
         onOpenFile={onOpenFile}
         onOpenSubagent={onOpenSubagent}
         onBackground={onBackgroundSubagent}
+        cwd={cwd}
       />
     );
   if (item.kind === "tool")
@@ -4318,6 +4571,9 @@ const TimelineRow = memo(function TimelineRow({
         onOpenFile={onOpenFile}
         onOpenSubagent={onOpenSubagent}
         children={subagentChildren?.get(item.id) ?? []}
+        cwd={cwd}
+        repeat={repeat}
+        expandDiff={expandDiff}
       />
     );
   if (item.kind === "notice")

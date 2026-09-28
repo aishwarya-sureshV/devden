@@ -38,6 +38,10 @@
         ]
       },
       {
+        "from": "../scripts",
+        "to": "devden/scripts"
+      },
+      {
         "from": "../dist",
         "to": "devden/dist"
       },

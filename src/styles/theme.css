@@ -108,16 +108,20 @@ body[data-ds-dark-theme] {
   color-scheme: dark;
   /* Subpixel rendering. Antialiased light glyphs bloom on this background. */
   -webkit-font-smoothing: auto;
-  --pw-panel: #12110f;
-  --pw-rail: #100f0d;
-  --pw-card: #131210;
-  --pw-card-strong: #16150f;
-  --pw-fg-strong: #b7b0a5;
-  --pw-fg: #a89f94;
-  --pw-fg-2: #948c82;
-  --pw-fg-3: #7d766d;
-  --pw-fg-4: #6d655c;
-  --pw-fg-5: #55504a;
+  /* Elevation ladder. Every surface is a real step off the one below it
+     (~4% luminance each), so depth reads without brightening anything:
+     void → rail → panel → card → pop. Near-neutral grey, a hair warm, so
+     the amber accent sits on it without the whole app turning brown. */
+  --pw-panel: #202024;
+  --pw-rail: #1c1c20;
+  --pw-card: #26262b;
+  --pw-card-strong: #2d2d33;
+  --pw-fg-strong: #f1eff4;
+  --pw-fg: #dcdae2;
+  --pw-fg-2: #c0bdc7;
+  --pw-fg-3: #9c98a4;
+  --pw-fg-4: #817d89;
+  --pw-fg-5: #67636f;
   --pw-accent: #e8a765;
   --pw-accent-dim: #8b7358;
   --pw-accent-tint: rgba(232, 167, 101, 0.07);
@@ -131,9 +135,9 @@ body[data-ds-dark-theme] {
   --pw-yellow: #d9b972;
   --pw-yellow-soft: rgba(217, 185, 114, 0.22);
   --pw-orange: #e3944a;
-  --pw-user-bg: #17150f;
-  --pw-code: #9a9288;
-  --pw-code-bg: #12110e;
+  --pw-user-bg: #2b2a31;
+  --pw-code: #cdc9d4;
+  --pw-code-bg: #1a1a1e;
   --pw-code-comment: #6d655c;
   --pw-code-keyword: #7cc7c0;
   --pw-code-string: #86b784;
@@ -143,19 +147,19 @@ body[data-ds-dark-theme] {
   --pw-code-bool: #7cc7c0;
   --pw-code-decorator: #c59ac7;
   --pw-stripe: rgba(255, 255, 255, 0.07);
-  --pw-add-bg: rgba(134, 183, 132, 0.09);
-  --pw-add-fg: #b5c6b4;
-  --pw-add-line: rgba(134, 183, 132, 0.6);
-  --pw-add-sign: #86b784;
-  --pw-del-bg: rgba(212, 121, 111, 0.08);
-  --pw-del-fg: #c9938c;
-  --pw-del-line: rgba(212, 121, 111, 0.6);
-  --pw-del-sign: #d4796f;
-  --pw-pop: #1b1a16;
-  --pw-sunken: #0b0a09;
-  --pw-chip: #16150f;
+  --pw-add-bg: rgba(95, 212, 154, 0.1);
+  --pw-add-fg: #5fd49a;
+  --pw-add-line: rgba(95, 212, 154, 0.6);
+  --pw-add-sign: #5fd49a;
+  --pw-del-bg: rgba(255, 122, 138, 0.08);
+  --pw-del-fg: #ff7a8a;
+  --pw-del-line: rgba(255, 122, 138, 0.6);
+  --pw-del-sign: #ff7a8a;
+  --pw-pop: #32323a;
+  --pw-sunken: #17171b;
+  --pw-chip: #2d2d33;
 
-  --dsw-alias-bg-base: #0e0d0b;
+  --dsw-alias-bg-base: #17171b;
   --dsw-alias-bg-layer-1: var(--pw-card);
   --dsw-alias-bg-layer-2: var(--pw-card-strong);
   --dsw-alias-bg-layer-3: var(--pw-panel);
@@ -169,16 +173,16 @@ body[data-ds-dark-theme] {
   --dsw-alias-brand-primary: var(--pw-fg);
   --dsw-alias-label-primary: var(--pw-fg);
   --dsw-alias-label-primary-dimmed: var(--pw-fg-2);
-  --dsw-alias-label-primary-inverted: #0e0d0b;
+  --dsw-alias-label-primary-inverted: #17171b;
   --dsw-alias-label-primary-accent: var(--pw-accent);
   --dsw-alias-label-secondary: var(--pw-fg-3);
   --dsw-alias-label-tertiary: var(--pw-fg-4);
   --dsw-alias-label-caption: var(--pw-fg-4);
   --dsw-alias-label-dimmed: var(--pw-fg-5);
   --dsw-alias-interactive-bg-hover: var(--pw-accent-tint);
-  --dsw-alias-interactive-bg-hover-solid: #1b1915;
+  --dsw-alias-interactive-bg-hover-solid: #33333b;
   --dsw-alias-button-elevated-fill: var(--pw-card-strong);
-  --dsw-alias-button-floating-hover: #1b1915;
+  --dsw-alias-button-floating-hover: #33333b;
   --dsw-alias-button-ghost-active-fill: var(--pw-accent-tint);
   --dsw-alias-button-ghost-active-hover: var(--pw-accent-tint-2);
   --dsw-alias-state-business-primary: var(--pw-accent);
@@ -223,8 +227,8 @@ body {
   scrollbar-color: var(--dsw-alias-border-l3) transparent;
 }
 *::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
+  width: 5px;
+  height: 5px;
 }
 *::-webkit-scrollbar-thumb {
   background: var(--dsw-alias-border-l3);
@@ -246,6 +250,60 @@ button {
    highlighter already consume. Palettes are the canonical editor themes —
    VS Code defaults from github.com/microsoft/vscode theme-defaults, the rest
    from their theme specs. */
+
+/* Workbench design: file-tree icon roles. Dark uses the mock's accents;
+   light remaps each role onto its Daylight palette (ICROLE in the mock). */
+body {
+  --ic-orange: #bc4c00;
+  --ic-blue: #0969da;
+  --ic-amber: #9a6700;
+  --ic-purple: #8250df;
+  --ic-pink: #cf222e;
+  --ic-green: #1a7f37;
+  --ic-teal: #1b7c83;
+  --ic-grey: #77747f;
+  --git-modified: #bc4c00;
+  --git-added: #1a7f37;
+}
+body[data-ds-dark-theme] {
+  --ic-orange: #ff8a65;
+  --ic-blue: #6aa8ff;
+  --ic-amber: #f0c84a;
+  --ic-purple: #b69cff;
+  --ic-pink: #ff7a8a;
+  --ic-green: #5fd49a;
+  --ic-teal: #3fbfb0;
+  --ic-grey: #a6a4b1;
+  --git-modified: #f0b35a;
+  --git-added: #5fd49a;
+}
+
+/* Workbench (the mock's editor): Daylight in light, the pink/yellow/blue
+   ramp in dark. Transparent bg so the code sits on the pane's glass. */
+body[data-code-theme="workbench"] {
+  --pw-code-bg: transparent;
+  --pw-code: #1f2328;
+  --pw-code-comment: #6e7781;
+  --pw-code-keyword: #cf222e;
+  --pw-code-string: #0a3069;
+  --pw-code-number: #0550ae;
+  --pw-code-func: #8250df;
+  --pw-code-type: #0550ae;
+  --pw-code-bool: #cf222e;
+  --pw-code-decorator: #953800;
+}
+body[data-code-theme="workbench"][data-ds-dark-theme] {
+  --pw-code-bg: transparent;
+  --pw-code: #eceaf1;
+  --pw-code-comment: #8c8a99;
+  --pw-code-keyword: #ff7ab6;
+  --pw-code-string: #e8d86a;
+  --pw-code-number: #c3a6ff;
+  --pw-code-func: #6aa8ff;
+  --pw-code-type: #c3a6ff;
+  --pw-code-bool: #ff7ab6;
+  --pw-code-decorator: #c3a6ff;
+}
 
 body[data-code-theme="vscode"] {
   --pw-code-bg: #ffffff;

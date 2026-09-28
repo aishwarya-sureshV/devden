@@ -1983,6 +1983,27 @@ export class ClaudeAgentProcess {
       return;
     }
 
+    if (event.type === "system" && event.subtype === "compact_boundary") {
+      // Claude auto-compacts near the context limit with no chat message of
+      // its own; without this the transcript just goes silent about it.
+      // Reuse pi's "compaction_end" shape so the client's existing notice
+      // rendering (Timeline, src/lib/timeline.ts) picks it up unchanged.
+      const meta = event.compactMetadata ?? {};
+      this.emit({
+        type: "compaction_end",
+        sessionKey: this.sessionKey,
+        reason: typeof meta.trigger === "string" ? meta.trigger : "auto",
+        aborted: false,
+        result: {
+          tokensBefore:
+            typeof meta.preTokens === "number" ? meta.preTokens : undefined,
+          estimatedTokensAfter:
+            typeof meta.postTokens === "number" ? meta.postTokens : undefined,
+        },
+      });
+      return;
+    }
+
     if (event.type === "system" && event.subtype === "init") {
       this.initialized = true;
       const authSource = event.apiKeySource ?? event.api_key_source;

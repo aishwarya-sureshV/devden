@@ -539,11 +539,19 @@ class GrokAgentProcess {
           onStderr: (chunk) => {
             // grok colours its logs; raw escapes render as "[2m...[0m" noise in
             // the transcript, which is where its network errors surface.
-            const message = chunk
-              .toString("utf8")
-              // biome-ignore lint/suspicious/noControlCharactersInRegex: ANSI SGR
-              .replace(/\u001b\[[0-9;]*m/g, "")
-              .split(/\r?\n/)
+            // node's stream "data" event does not respect line boundaries, so
+            // a single log line (e.g. the usage-limit error, which readableAgentError
+            // matches with an anchored/line-scoped regex) can arrive split across two
+            // chunks. Buffer until a full line is available before parsing.
+            this.grokStderrBuf =
+              (this.grokStderrBuf ?? "") +
+              chunk
+                .toString("utf8")
+                // biome-ignore lint/suspicious/noControlCharactersInRegex: ANSI SGR
+                .replace(/\u001b\[[0-9;]*m/g, "");
+            const lines = this.grokStderrBuf.split(/\r?\n/);
+            this.grokStderrBuf = lines.pop() ?? "";
+            const message = lines
               // grok logs ERROR tool_error: tool_output_error for every failed
               // tool (missing file, MCP -32602). The card already shows that.
               .filter((line) => !/\btool_error:\s*tool_output_error\b/i.test(line))

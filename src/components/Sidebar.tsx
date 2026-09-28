@@ -43,6 +43,7 @@ import {
   IconFolder,
   IconMoon,
   IconNewChat,
+  IconOpenTab,
   IconPanel,
   IconPencil,
   IconRestore,
@@ -150,6 +151,7 @@ export function Sidebar({
   onTerminalToggle,
   onResizePointerDown,
   onResizeKeyDown,
+  onOpenSettings,
 }: {
   collapsed: boolean;
   onToggle: () => void;
@@ -166,6 +168,8 @@ export function Sidebar({
   onTerminalToggle?: () => void;
   onResizePointerDown: (event: ReactPointerEvent<HTMLButtonElement>) => void;
   onResizeKeyDown: (event: ReactKeyboardEvent<HTMLButtonElement>) => void;
+  /** Opens the redesign's settings modal from the footer button. */
+  onOpenSettings?: () => void;
 }) {
   const [sessionView, setSessionView] = useState<"recent" | "archived">(
     "recent",
@@ -325,10 +329,17 @@ export function Sidebar({
       return;
     initializedWorkspaceGroups.current = true;
     const openWorkspaces = new Set(tabs.map((tab) => tab.cwd));
+    // Also keep groups with recent activity open: a session run from a
+    // workspace with no open tab (e.g. Home) otherwise vanished behind a
+    // collapsed header right after it finished.
+    const recentCutoff = Date.now() - 3 * 60 * 60 * 1000;
     setCollapsedWorkspaces(
       new Set(
         workspaceGroups
           .filter((group) => !openWorkspaces.has(group.cwd))
+          .filter((group) =>
+            group.sessions.every((session) => session.modifiedAt < recentCutoff),
+          )
           .map((group) => group.cwd),
       ),
     );
@@ -587,6 +598,11 @@ export function Sidebar({
   return (
     <aside className={`sidebar${collapsed ? " is-collapsed" : ""}`}>
       <div className="sidebar__brand-row">
+        <span className="sidebar__traffic" aria-hidden="true">
+          <i className="is-close" />
+          <i className="is-min" />
+          <i className="is-max" />
+        </span>
         {!collapsed && (
           <div className="sidebar__backend-menu sidebar__floating-menu">
             <button
@@ -607,7 +623,7 @@ export function Sidebar({
                 style={{ color: backendMark(currentBackend).color }}
                 aria-hidden
               >
-                <BackendLogo backend={currentBackend} size={28} />
+                <BackendLogo backend={currentBackend} size={16} />
               </span>
               <span className="sidebar__backend-copy">
                 <strong>{backendLabel(currentBackend).toLowerCase()}</strong>
@@ -685,6 +701,19 @@ export function Sidebar({
             )}
           </div>
         )}
+        {!collapsed && (
+          <button
+            type="button"
+            className="sidebar__icon-btn"
+            onClick={() =>
+              window.open(window.location.href, "_blank", "noopener")
+            }
+            aria-label="New window"
+            title="New window"
+          >
+            <IconNewChat size={14} />
+          </button>
+        )}
         <button
           type="button"
           className="sidebar__icon-btn sidebar__toggle"
@@ -702,18 +731,28 @@ export function Sidebar({
         </button>
       </div>
 
-      <div className="sidebar__new-row">
+      {collapsed ? (
+        <div className="sidebar__new-row">
+          <button
+            type="button"
+            className="sidebar__new"
+            onClick={() => startFresh()}
+            aria-label="New session"
+          >
+            <IconPlus size={18} />
+          </button>
+        </div>
+      ) : (
         <button
           type="button"
-          className="sidebar__new"
+          className="sidebar__new-session"
           onClick={() => startFresh()}
-          aria-label="New session"
         >
-          <IconNewChat size={collapsed ? 18 : 15} />
-          {!collapsed && <span>New session</span>}
-          {!collapsed && <kbd>⌘N</kbd>}
+          <IconPlus size={13} />
+          <span>New session</span>
+          <kbd>⌘N</kbd>
         </button>
-      </div>
+      )}
 
       <nav className="sidebar__nav" aria-label="Workbench">
         {onTerminalToggle && (
@@ -723,7 +762,7 @@ export function Sidebar({
             pressed={terminalOpen}
             label="Terminal"
             onClick={onTerminalToggle}
-            icon={<IconTerminal size={18} />}
+            icon={<IconTerminal size={collapsed ? 18 : 15} />}
           />
         )}
         <SidebarNavButton
@@ -731,28 +770,28 @@ export function Sidebar({
           active={view === "notes"}
           label="Notes"
           onClick={() => chooseView("notes")}
-          icon={<IconPencil size={18} />}
+          icon={<IconPencil size={collapsed ? 18 : 15} />}
         />
         <SidebarNavButton
           collapsed={collapsed}
           active={view === "skills"}
           label="Skills"
           onClick={() => chooseView("skills")}
-          icon={<IconCube size={18} />}
+          icon={<IconCube size={collapsed ? 18 : 15} />}
         />
         <SidebarNavButton
           collapsed={collapsed}
           active={view === "extensions"}
           label="Extensions"
           onClick={() => chooseView("extensions")}
-          icon={<IconExtension size={18} />}
+          icon={<IconExtension size={collapsed ? 18 : 15} />}
         />
         <SidebarNavButton
           collapsed={collapsed}
           active={view === "settings"}
           label="Settings"
           onClick={() => chooseView("settings")}
-          icon={<IconSettings size={18} />}
+          icon={<IconSettings size={collapsed ? 18 : 15} />}
         />
       </nav>
 
@@ -763,20 +802,6 @@ export function Sidebar({
               <div className="sidebar__open-head">
                 <div className="sidebar__heading">Open</div>
                 <span className="sidebar__open-rule" aria-hidden />
-                <button
-                  type="button"
-                  className={splitSessions ? "is-active" : ""}
-                  aria-pressed={splitSessions}
-                  aria-label={
-                    splitSessions
-                      ? "Show one session at a time"
-                      : "Show sessions side by side"
-                  }
-                  title={splitSessions ? "Focus one session" : "Split sessions"}
-                  onClick={onSplitSessionsToggle}
-                >
-                  <IconColumns />
-                </button>
               </div>
               {openTabs.map((tab) => (
                 <div className="sidebar__item-row" key={tab.key}>
@@ -800,15 +825,13 @@ export function Sidebar({
                       }}
                       aria-hidden
                     />
-                    <span className="sidebar__item-stack">
-                      <span className="sidebar__item-label">{tab.label}</span>
-                      <span className="sidebar__item-sub">
-                        {backendLabel(tab.backend).toLowerCase()}
-                        {workingKeys.has(tab.key) ? " · running" : ""}
-                        {!workingKeys.has(tab.key) && awaitingKeys.has(tab.key)
-                          ? " · waiting"
-                          : ""}
-                      </span>
+                    <span className="sidebar__item-label">{tab.label}</span>
+                    <span className="sidebar__open-agent">
+                      {backendLabel(tab.backend).toLowerCase()}
+                      {workingKeys.has(tab.key) ? " · running" : ""}
+                      {!workingKeys.has(tab.key) && awaitingKeys.has(tab.key)
+                        ? " · waiting"
+                        : ""}
                     </span>
                   </button>
                   {/* Another session on this row's own agent + folder. */}
@@ -1355,11 +1378,10 @@ export function Sidebar({
                         <button
                           type="button"
                           className="sidebar__saved-split"
-                          aria-label={`Split with ${title}`}
-                          title="Open in split view"
+                          aria-label={`Open ${title} in a new tab`}
                           onClick={() => splitSavedSession(session)}
                         >
-                          <IconColumns size={14} />
+                          <IconOpenTab size={12} />
                         </button>
                         <div className="sidebar__session-menu sidebar__floating-menu">
                           <button
@@ -1446,29 +1468,28 @@ export function Sidebar({
         />
       )}
       <div className="sidebar__footer-row">
+        {!collapsed && (
+          <button
+            type="button"
+            className="sidebar__footer"
+            onClick={() =>
+              onOpenSettings ? onOpenSettings() : chooseView("settings")
+            }
+          >
+            <IconSettings size={15} />
+            <span>Settings</span>
+            <span className="sidebar__footer-kbd">⌘,</span>
+          </button>
+        )}
         <button
           type="button"
-          className="sidebar__footer"
+          className="sidebar__footer sidebar__footer--icon"
           onClick={onThemeToggle}
           aria-label={theme === "dark" ? "Use light theme" : "Use dark theme"}
+          title={theme === "dark" ? "Use light theme" : "Use dark theme"}
         >
           {theme === "dark" ? <IconSun /> : <IconMoon />}
-          {!collapsed && <span>{theme === "dark" ? "Dark" : "Light"}</span>}
         </button>
-        {!collapsed && (
-          <>
-            <span className="sidebar__footer-rule" aria-hidden />
-            <button
-              type="button"
-              className="sidebar__footer"
-              onClick={() => chooseView("settings")}
-            >
-              <IconSettings size={14} />
-              <span>Settings</span>
-            </button>
-            <span className="sidebar__footer-kbd">⌘K</span>
-          </>
-        )}
       </div>
     </aside>
   );

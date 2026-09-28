@@ -49,8 +49,9 @@ export function backendMark(backend: AgentBackend): {
   color: string;
   blurb: string;
 } {
+  // Claude's signature amber ("crail"). Fixed — no theme or state overrides it.
   if (backend === "claude")
-    return { glyph: "✳", color: "var(--pw-teal)", blurb: "acp" };
+    return { glyph: "✳", color: "#D97757", blurb: "acp" };
   if (backend === "grok")
     return { glyph: "✦", color: "var(--pw-accent)", blurb: "cloud" };
   if (backend === "codex")
@@ -1108,6 +1109,13 @@ export const api = {
     get<{ ok: boolean; models: ModelInfo[] }>(
       `/api/${key}/models${backend ? `?backend=${backend}` : ""}`,
     ),
+  /** Account-level quota for every backend at once (status footer, model picker). */
+  backendUsage: () =>
+    get<{
+      ok: boolean;
+      usage: Partial<Record<AgentBackend, ProviderUsage>>;
+      error?: string;
+    }>("/api/usage"),
   thinkingLevels: (key: string, backend?: AgentBackend) =>
     get<{ ok: boolean; levels: string[] }>(
       `/api/${key}/thinking-levels${backend ? `?backend=${backend}` : ""}`,
@@ -1151,8 +1159,7 @@ export const api = {
     done: boolean;
     defaultBackend?: string | null;
     workspace?: string | null;
-  }) =>
-    post<{ ok: boolean; done: boolean }>("/api/onboarding", body),
+  }) => post<{ ok: boolean; done: boolean }>("/api/onboarding", body),
   authStatus: () => get<{ ok: boolean }>("/api/auth/status"),
   /** Renew the server-side lease for the given conversation keys. */
   heartbeat: (keys: string[]) =>

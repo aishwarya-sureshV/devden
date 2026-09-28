@@ -174,6 +174,32 @@ const MarkdownBlocks = memo(function MarkdownBlocks({
       continue;
     }
 
+    // A callout divider ("★ Insight ─────" or a bare "─────" close line).
+    // Output-style presets hardcode a fixed dash count on each side, which
+    // rarely renders to the same pixel width once wrapped proportionally
+    // (the label eats into one side's budget). Drawing a real rule instead
+    // of literal dash characters makes both lines span the same width no
+    // matter which preset produced them.
+    // Some presets wrap each divider line in its own backtick span; strip
+    // one from each end before matching so those still count as a rule.
+    const unbackticked = trimmed.replace(/^`|`$/g, "");
+    const rule = /^(.*?)\s*[─━]{6,}\s*$/u.exec(unbackticked);
+    if (rule) {
+      const label = (rule[1] ?? "").trim();
+      nodes.push(
+        label ? (
+          <div key={`rule-${index}`} className="md-rule-row">
+            <span>{inline(label)}</span>
+            <span className="md-rule-line" />
+          </div>
+        ) : (
+          <hr key={`rule-${index}`} className="md-rule" />
+        ),
+      );
+      index += 1;
+      continue;
+    }
+
     const heading = /^(#{1,4})\s+(.+)$/.exec(trimmed);
     if (heading) {
       const level = (heading[1] ?? "").length;

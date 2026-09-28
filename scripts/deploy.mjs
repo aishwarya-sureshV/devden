@@ -19,7 +19,7 @@
  */
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { readFileSync, writeFileSync, renameSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, renameSync } from "node:fs";
 import { join } from "node:path";
 
 // The project being deployed — the workbench session's cwd, which is only
@@ -154,6 +154,17 @@ if (MODE === "cloud") {
   }
 }
 
+// No package.json means the session isn't in a project (e.g. a chat opened in
+// ~). Reporting "success" there hides that nothing was built.
+if (!existsSync(join(ROOT, "package.json"))) {
+  persist({
+    status: "failed",
+    finishedAt: Date.now(),
+    error: `Nothing to deploy — no package.json in ${ROOT}. Open the session in the project folder.`,
+  });
+  process.exit(1);
+}
+
 // Not every project builds (a Python service, a static site, a library with
 // no bundle step). Deploying one of those should pull/install and stop, not
 // fail on a script that was never meant to exist.
@@ -214,6 +225,12 @@ persist({
 });
 
 if (SERVER_PID) {
+  // The Mac app restarts its server from whatever root this file names.
+  if (process.env.DEVDEN_RELAUNCH_FILE) {
+    try {
+      writeFileSync(process.env.DEVDEN_RELAUNCH_FILE, ROOT);
+    } catch {}
+  }
   try {
     process.kill(SERVER_PID, "SIGTERM");
   } catch (error) {

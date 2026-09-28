@@ -21,6 +21,7 @@ import {
 } from "../lib/notify";
 import { useStore } from "../lib/store";
 import { SettingsAgents } from "./SettingsAgents";
+import { SettingsAppearance } from "./SettingsAppearance";
 
 const EMPTY_CATALOG: PiCatalogResponse = {
   ok: true,
@@ -668,6 +669,7 @@ function SettingsView({
               </button>
             </div>
           </section>
+          <SettingsAppearance />
           <section className="settings-card">
             <div className="settings-card__heading">
               <IconSettings />

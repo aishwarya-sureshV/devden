@@ -11,16 +11,11 @@ import {
 } from "react";
 import {
   api,
+  type GitChange,
   type WorkspaceEntry,
   type WorkspaceFileResponse,
 } from "../lib/api";
 import { highlightCode } from "../lib/highlight";
-import {
-  applyCodeTheme,
-  CODE_THEMES,
-  codeTheme,
-  type CodeThemeId,
-} from "../lib/codeTheme";
 import { langFromPath } from "../lib/toolCards";
 import type { EditorNavigation } from "./CodeEditor";
 import {
@@ -29,6 +24,7 @@ import {
   type PaletteResult,
 } from "./EditorPalette";
 import { CopyButton } from "./CopyButton";
+import { RichText } from "./RichText";
 import {
   IconCode,
   IconExpand,
@@ -46,6 +42,126 @@ export type WorkspacePlacement = "side" | "full";
 const CodeEditor = lazy(() =>
   import("./CodeEditor").then((module) => ({ default: module.CodeEditor })),
 );
+
+/** Folder tints from the workbench design; unlisted folders hash into FOLDER_PALETTE. */
+const FOLDER_COLORS: Record<string, string> = {
+  ".claude": "var(--ic-orange)",
+  commands: "var(--ic-blue)",
+  prompts: "var(--ic-purple)",
+  bin: "#ff7a8a",
+  dist: "#9aa4b8",
+  electron: "#5fd49a",
+  node_modules: "#7a7884",
+  packaging: "#c3a6ff",
+  public: "#6aa8ff",
+  scripts: "#f0c84a",
+  docs: "var(--ic-blue)",
+  server: "#ff9f6a",
+  src: "#4fd1c5",
+  components: "#6ad4e0",
+  lib: "#e8b84a",
+  styles: "var(--ic-purple)",
+  test: "var(--ic-teal)",
+  tests: "var(--ic-teal)",
+};
+
+const FOLDER_PALETTE = [
+  "#ff7a8a", "#ff9f6a", "#f0c84a", "#86e6b0", "#5fd49a", "#4fd1c5",
+  "#6ad4e0", "#6aa8ff", "#9cc4ff", "#c3a6ff", "#ff9cc4", "#e8b84a",
+];
+
+/** Stable per-name color: the same folder is always the same tint. */
+function folderColor(name: string): string {
+  const known = FOLDER_COLORS[name];
+  if (known) return known;
+  let hash = 0;
+  for (const ch of name) hash = (hash * 31 + ch.charCodeAt(0)) | 0;
+  return FOLDER_PALETTE[Math.abs(hash) % FOLDER_PALETTE.length];
+}
+
+function FolderGlyph({ color }: { color: string }) {
+  return (
+    <svg viewBox="0 0 16 16" width="15" height="15" aria-hidden>
+      <path
+        d="M1.5 4.2A1.4 1.4 0 0 1 2.9 2.8h3.2l1.6 1.5h5.4a1.4 1.4 0 0 1 1.4 1.4v6.6a1.4 1.4 0 0 1-1.4 1.4H2.9a1.4 1.4 0 0 1-1.4-1.4z"
+        fill={color}
+        fillOpacity="0.28"
+        stroke={color}
+        strokeWidth="1.1"
+      />
+    </svg>
+  );
+}
+
+// Glyph + color per extension. \uFE0E forces text (not emoji) presentation.
+const EXT_BADGE: Record<string, [string, string]> = {
+  js: ["JS", "#f0db4f"], mjs: ["JS", "#f0db4f"], cjs: ["JS", "#f0db4f"],
+  json: ["{}", "#f5c77e"], jsonc: ["{}", "#f5c77e"],
+  yaml: ["≡", "#ff9f6a"], yml: ["≡", "#ff9f6a"], toml: ["≡", "#ff9f6a"],
+  md: ["M↓", "#9cc4ff"], mdx: ["M↓", "#9cc4ff"], txt: ["≣", "#a6a4b1"],
+  css: ["#", "#c3a6ff"], scss: ["#", "#c3a6ff"], less: ["#", "#c3a6ff"],
+  html: ["<>", "#ff8a65"], xml: ["<>", "#ff8a65"], vue: ["V", "#5fd49a"],
+  py: ["Py", "#6aa8ff"], rb: ["Rb", "#ff7a8a"], go: ["Go", "#6ad4e0"],
+  rs: ["Rs", "#ff9f6a"], swift: ["Sw", "#ff8a50"], java: ["Jv", "#ff9f6a"],
+  kt: ["Kt", "#c3a6ff"], c: ["C", "#9cc4ff"], h: ["H", "#9cc4ff"],
+  cpp: ["C+", "#9cc4ff"], cs: ["C#", "#c3a6ff"], php: ["P", "#c3a6ff"],
+  sh: ["$", "#86e6b0"], zsh: ["$", "#86e6b0"], bash: ["$", "#86e6b0"],
+  sql: ["⛁\uFE0E", "#f5c77e"], db: ["⛁\uFE0E", "#f5c77e"],
+  png: ["▣", "#ff9cc4"], jpg: ["▣", "#ff9cc4"], jpeg: ["▣", "#ff9cc4"],
+  gif: ["▣", "#ff9cc4"], webp: ["▣", "#ff9cc4"], ico: ["▣", "#ff9cc4"],
+  svg: ["◇", "#ffb86a"], pdf: ["▤", "#ff7a8a"],
+  mp4: ["▶\uFE0E", "#ff9cc4"], mov: ["▶\uFE0E", "#ff9cc4"], mp3: ["♪", "#ff9cc4"],
+  zip: ["▦", "#a6a4b1"], gz: ["▦", "#a6a4b1"], lock: ["⊟", "#7a7884"],
+  log: ["≣", "#7a7884"], env: ["⚙\uFE0E", "#86e6b0"],
+};
+
+/** Colored file marks from the redesign; `.ts` rules match the mock exactly. */
+function fileBadge(name: string): { glyph: string; bg: string; fg: string } {
+  const mk = (glyph: string, fg: string) => ({
+    glyph,
+    fg,
+    bg: `color-mix(in srgb, ${fg} 18%, transparent)`,
+  });
+  const lower = name.toLowerCase();
+  if (/\.(test|spec)\.[cm]?[jt]sx?$/.test(lower)) return mk("⚗\uFE0E", "#d4c2ff");
+  if (/\.[jt]sx$/.test(lower)) return mk("⚛\uFE0E", "#8fe6ef");
+  if (lower === "package-lock.json" || lower.endsWith(".lock")) return mk("⊟", "#7a7884");
+  if (lower.startsWith(".env") || lower.startsWith(".git") || lower.endsWith("rc"))
+    return mk("⚙\uFE0E", "#a6a4b1");
+  if (lower === "dockerfile") return mk("◳", "#6aa8ff");
+  if (lower === "license") return mk("§", "#a6a4b1");
+  const ext = lower.includes(".") ? lower.slice(lower.lastIndexOf(".") + 1) : "";
+  if (ext === "ts" || ext === "mts" || ext === "cts") {
+    if (/shader|theme|appearance|highlight/.test(lower)) return mk("✦\uFE0E", "#ff9cc4");
+    if (/api|board|session/.test(lower)) return mk("◆", "#9cc4ff");
+    return mk("●", "#f0c84a");
+  }
+  const hit = EXT_BADGE[ext];
+  return hit ? mk(hit[0], hit[1]) : mk("·", "#7a7884");
+}
+
+/** Render leading `---` frontmatter as a yaml block instead of stray rules. */
+function frontmatterAsYaml(text: string) {
+  return text.replace(/^---\r?\n([\s\S]*?)\r?\n---\r?\n/, "```yaml\n$1\n```\n");
+}
+
+const GIT_LETTER: Record<GitChange["status"], string> = {
+  added: "A",
+  modified: "M",
+  deleted: "D",
+  conflicted: "C",
+};
+
+/** Badge for a tree row: the file's own status, or M on any changed ancestor. */
+function gitBadge(git: ReadonlyMap<string, string>, path: string) {
+  const own = git.get(path);
+  if (own) return own;
+  const prefix = `${path}/`;
+  for (const key of git.keys()) if (key.startsWith(prefix)) return "M";
+  return "";
+}
+
+const EMPTY_GIT: ReadonlyMap<string, string> = new Map();
 
 const HEAVY_DIRS = new Set([
   "node_modules",
@@ -117,7 +233,9 @@ function ExplorerPanel({
   onClose,
   onAddToChat,
   worktreePicker,
+  git = EMPTY_GIT,
 }: {
+  git?: ReadonlyMap<string, string>;
   root: string;
   visible?: boolean;
   placement: WorkspacePlacement;
@@ -141,7 +259,7 @@ function ExplorerPanel({
   const [draft, setDraft] = useState("");
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
-  const [codeThemeId, setCodeThemeId] = useState<CodeThemeId>(codeTheme);
+  const [mdPreview, setMdPreview] = useState(true);
   const [fileLoading, setFileLoading] = useState(false);
   const [query, setQuery] = useState("");
   const [showHidden, setShowHidden] = useState(false);
@@ -162,8 +280,13 @@ function ExplorerPanel({
   } | null>(null);
   const [navigation, setNavigation] = useState<EditorNavigation | null>(null);
   const [panelWidth, setPanelWidth] = useState(() => {
+    // Number(null) is 0, so an unset key must not pass as a stored width.
+    // Unset → the mock's split: editor + tree slightly wider than the chat.
     const stored = Number(localStorage.getItem("devden.workspace-width"));
-    return Number.isFinite(stored) ? Math.min(860, Math.max(360, stored)) : 560;
+    const max = Math.round(window.innerWidth * 0.82);
+    return stored > 0
+      ? Math.min(max, Math.max(520, stored))
+      : Math.max(520, Math.round(window.innerWidth * 0.5));
   });
   const [treeWidth, setTreeWidth] = useState(() => {
     const stored = Number(localStorage.getItem("devden.workspace-tree-width"));
@@ -410,7 +533,7 @@ function ExplorerPanel({
 
   const persistPanelWidth = (width: number) => {
     const next = Math.min(
-      Math.max(width, 360),
+      Math.max(width, 520),
       Math.round(window.innerWidth * 0.82),
     );
     setPanelWidth(next);
@@ -491,6 +614,7 @@ function ExplorerPanel({
   );
   const language = file?.path ? langFromPath(file.path) : undefined;
   const sizeLabel = formatSize(file?.size);
+  const isMarkdown = /\.(md|mdx|markdown)$/i.test(file?.name ?? "");
   const canEdit = Boolean(
     file?.ok && file.content !== undefined && !file.binary && !file.truncated,
   );
@@ -517,65 +641,13 @@ function ExplorerPanel({
           onKeyDown={resizePanelWithKeyboard}
         />
       )}
-      <header className="workspace-explorer__head">
-        <div className="workspace-explorer__identity" title={root}>
-          <IconCode size={15} />
-          <div>
-            {worktreePicker ?? <strong>{folderLabel(root)}</strong>}
-            <span>Project source</span>
-          </div>
-        </div>
-        <div
-          className="workspace-explorer__modes"
-          role="group"
-          aria-label="Workspace layout"
-        >
-          <button
-            type="button"
-            aria-pressed={placement === "side"}
-            title="Side panel"
-            onClick={() => onPlacementChange("side")}
-          >
-            <IconPanel size={14} />
-          </button>
-          <button
-            type="button"
-            aria-pressed={placement === "full"}
-            title="Full screen"
-            onClick={() => onPlacementChange("full")}
-          >
-            <IconExpand size={14} />
-          </button>
-        </div>
-        <button
-          type="button"
-          className="workspace-explorer__icon-btn"
-          aria-label="Refresh workspace"
-          title="Refresh"
-          onClick={() => {
-            void refreshTree();
-            if (selected && !dirty) void openFile(selected);
-          }}
-        >
-          <IconRefresh size={14} />
-        </button>
-        <button
-          type="button"
-          className="workspace-explorer__close"
-          aria-label="Close workspace"
-          onClick={onClose}
-        >
-          ×
-        </button>
-      </header>
-
       <div className="workspace-explorer__body">
         <div
           className="workspace-explorer__tree"
           style={{ width: treeWidth, flexBasis: treeWidth }}
         >
-          <label className="workspace-explorer__search">
-            <IconSearch size={13} />
+          <div className="workspace-explorer__search">
+            <IconSearch size={12} />
             <input
               type="search"
               value={query}
@@ -583,15 +655,15 @@ function ExplorerPanel({
               aria-label="Filter workspace files"
               onChange={(event) => setQuery(event.target.value)}
             />
-          </label>
-          <label className="workspace-explorer__hidden">
-            <input
-              type="checkbox"
-              checked={showHidden}
-              onChange={(event) => setShowHidden(event.target.checked)}
-            />
-            Hidden files
-          </label>
+            <label className="workspace-explorer__hidden">
+              <input
+                type="checkbox"
+                checked={showHidden}
+                onChange={(event) => setShowHidden(event.target.checked)}
+              />
+              hidden
+            </label>
+          </div>
           <div
             className="workspace-explorer__list"
             aria-busy={loadingPaths.has(root)}
@@ -630,6 +702,7 @@ function ExplorerPanel({
                 onMenu={openMenu}
                 onRename={renameEntry}
                 onCancelRename={() => setRenaming(null)}
+                git={git}
               />
             ))}
             {truncatedRoots.has(root) && (
@@ -683,40 +756,27 @@ function ExplorerPanel({
           {selected && file?.ok && file.content !== undefined && (
             <>
               <div className="workspace-explorer__file-head">
-                <div title={file.path ?? selected}>
-                  <strong>
-                    {file.name}
-                    {dirty ? " ·" : ""}
-                  </strong>
-                  <span>
-                    {relativePath(root, file.path ?? selected)}
-                    {language ? ` · ${language}` : ""}
-                    {sizeLabel ? ` · ${sizeLabel}` : ""}
-                    {file.truncated ? " · truncated" : ""}
-                    {dirty ? " · unsaved" : ""}
-                  </span>
-                </div>
-                {canEdit && (
-                  <span className="workspace-explorer__hint">
-                    ⌘-click to jump
-                  </span>
-                )}
-                <select
-                  className="workspace-explorer__codetheme"
-                  value={codeThemeId}
-                  title="Syntax theme"
-                  onChange={(event) => {
-                    const id = event.target.value as CodeThemeId;
-                    applyCodeTheme(id);
-                    setCodeThemeId(id);
-                  }}
+                <div
+                  className="workspace-explorer__tab"
+                  title={file.path ?? selected}
                 >
-                  {CODE_THEMES.map((theme) => (
-                    <option key={theme.id} value={theme.id}>
-                      {theme.label}
-                    </option>
-                  ))}
-                </select>
+                  <i
+                    style={{ background: fileBadge(file.name ?? "").fg }}
+                    aria-hidden
+                  />
+                  <strong>{file.name}</strong>
+                  {dirty && <span aria-label="unsaved">●</span>}
+                </div>
+                {isMarkdown && (
+                  <button
+                    type="button"
+                    className="workspace-explorer__save is-ready"
+                    aria-pressed={mdPreview}
+                    onClick={() => setMdPreview((on) => !on)}
+                  >
+                    {mdPreview ? "Edit" : "Preview"}
+                  </button>
+                )}
                 {canEdit && (
                   <button
                     type="button"
@@ -744,7 +804,11 @@ function ExplorerPanel({
                   {saveError}
                 </div>
               )}
-              {canEdit ? (
+              {isMarkdown && mdPreview ? (
+                <div className="workspace-explorer__code workspace-explorer__md">
+                  <RichText text={frontmatterAsYaml(draft || file.content)} />
+                </div>
+              ) : canEdit ? (
                 <Suspense
                   fallback={
                     <div className="workspace-explorer__status">
@@ -768,6 +832,19 @@ function ExplorerPanel({
                   </pre>
                 </div>
               )}
+              <footer className="workspace-explorer__statusbar">
+                <span>{relativePath(root, file.path ?? selected)}</span>
+                <span className="workspace-explorer__statusbar-end">
+                  {[
+                    sizeLabel,
+                    file.truncated && "truncated",
+                    dirty && "unsaved",
+                    language,
+                  ]
+                    .filter(Boolean)
+                    .join(" · ")}
+                </span>
+              </footer>
             </>
           )}
         </section>
@@ -879,7 +956,9 @@ function TreeNode({
   onMenu,
   onRename,
   onCancelRename,
+  git,
 }: {
+  git: ReadonlyMap<string, string>;
   entry: WorkspaceEntry;
   depth: number;
   query: string;
@@ -902,18 +981,21 @@ function TreeNode({
 }) {
   const isDirectory = entry.type === "directory";
   const isOpen = isDirectory && expanded.has(entry.path);
+  const badge = gitBadge(git, entry.path);
+  const mark = isDirectory ? null : fileBadge(entry.name);
   const children = isOpen
     ? visibleEntries(listings[entry.path] ?? [], query, listings, showHidden)
     : [];
   const heavy = isDirectory && HEAVY_DIRS.has(entry.name);
   const isRenaming = renaming === entry.path;
+  const pad = 4 + depth * 8;
 
   return (
     <>
       {isRenaming ? (
         <form
           className="workspace-tree__rename"
-          style={{ paddingLeft: 8 + depth * 14 }}
+          style={{ paddingLeft: pad }}
           onSubmit={(event) => {
             event.preventDefault();
             const value = new FormData(event.currentTarget).get("name");
@@ -938,8 +1020,8 @@ function TreeNode({
       ) : (
         <button
           type="button"
-          className={`workspace-tree__item${selected === entry.path ? " is-active" : ""}${heavy ? " is-heavy" : ""}`}
-          style={{ paddingLeft: 8 + depth * 14 }}
+          className={`workspace-tree__item${selected === entry.path ? " is-active" : ""}${heavy ? " is-heavy" : ""}${badge ? ` is-git-${badge}` : ""}`}
+          style={{ paddingLeft: pad }}
           title={entry.path}
           aria-expanded={isDirectory ? isOpen : undefined}
           onClick={() =>
@@ -957,14 +1039,33 @@ function TreeNode({
           ) : (
             <span className="workspace-tree__file-gap" />
           )}
-          {isDirectory ? <IconFolder size={14} /> : <IconFile size={14} />}
-          <span>{entry.name}</span>
+          {isDirectory ? (
+            <span className="workspace-tree__folder">
+              <FolderGlyph
+                color={folderColor(entry.name)}
+              />
+            </span>
+          ) : (
+            <span
+              className={`workspace-tree__badge${mark && mark.glyph.length > 1 && !mark.glyph.endsWith("\uFE0E") ? " is-text" : ""}`}
+              style={{
+                background: mark?.bg,
+                color: mark?.fg,
+              }}
+            >
+              {mark?.glyph}
+            </span>
+          )}
+          <span className="workspace-tree__name">{entry.name}</span>
+          {badge && (
+            <span className={`workspace-tree__git is-${badge}`}>{badge}</span>
+          )}
         </button>
       )}
       {isOpen && loadingPaths.has(entry.path) && !listings[entry.path] && (
         <div
           className="workspace-explorer__status"
-          style={{ paddingLeft: 26 + depth * 14 }}
+          style={{ paddingLeft: pad + 16 }}
         >
           Loading…
         </div>
@@ -972,7 +1073,7 @@ function TreeNode({
       {isOpen && errors[entry.path] && (
         <div
           className="workspace-explorer__error"
-          style={{ paddingLeft: 26 + depth * 14 }}
+          style={{ paddingLeft: pad + 16 }}
         >
           {errors[entry.path]}
         </div>
@@ -997,12 +1098,13 @@ function TreeNode({
             onMenu={onMenu}
             onRename={onRename}
             onCancelRename={onCancelRename}
+            git={git}
           />
         ))}
       {isOpen && truncatedRoots.has(entry.path) && (
         <div
           className="workspace-explorer__status"
-          style={{ paddingLeft: 26 + depth * 14 }}
+          style={{ paddingLeft: pad + 16 }}
         >
           Folder truncated.
         </div>
@@ -1167,6 +1269,30 @@ export function WorkspaceExplorer(
     };
   }, [sessionKey, root]);
 
+  // ponytail: fetched once per root; the refresh button doesn't re-poll git.
+  // Porcelain paths are repo-relative, so a root below the repo top misses.
+  const [git, setGit] = useState<ReadonlyMap<string, string>>(EMPTY_GIT);
+  useEffect(() => {
+    let alive = true;
+    api
+      .gitChanges(sessionKey || "workspace", viewRoot)
+      .then((result) => {
+        if (!alive || !result.changes) return;
+        setGit(
+          new Map(
+            result.changes.map((change) => [
+              `${viewRoot}/${change.path}`,
+              GIT_LETTER[change.status],
+            ]),
+          ),
+        );
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [sessionKey, viewRoot]);
+
   const picker =
     trees.length > 1 ? (
       <select
@@ -1189,6 +1315,7 @@ export function WorkspaceExplorer(
       {...rest}
       root={viewRoot}
       worktreePicker={picker}
+      git={git}
     />
   );
 }

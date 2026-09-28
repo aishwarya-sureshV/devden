@@ -201,6 +201,25 @@ export function IconColumns({ size = 16 }: { size?: number }) {
   );
 }
 
+export function IconOpenTab({ size = 12 }: { size?: number }) {
+  return (
+    <svg
+      viewBox="0 0 16 16"
+      width={size}
+      height={size}
+      aria-hidden
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d="M9.5 2.5h4v4M13.5 2.5 8 8" />
+      <path d="M12 9.5v3a1 1 0 0 1-1 1H3.5a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1h3" />
+    </svg>
+  );
+}
+
 export function IconNewChat({ size = 16 }: { size?: number }) {
   return (
     <svg
@@ -775,13 +794,14 @@ function LogoPi({ size }: { size: number }) {
 }
 
 function LogoClaude({ size }: { size: number }) {
+  // 12 rays at uneven angles/lengths, echoing Claude's spark mark.
   return (
     <svg viewBox="0 0 24 24" width={size} height={size} aria-hidden>
       <path
-        d="M12 2.4v19.2M4.7 6.8l14.6 10.4M4.7 17.2 19.3 6.8"
+        d="M12 12L12.0 2.5M12 12L15.4 5.4M12 12L19.5 6.7M12 12L19.3 12.0M12 12L20.4 16.5M12 12L16.1 18.5M12 12L12.0 21.3M12 12L8.1 18.3M12 12L3.8 16.8M12 12L4.5 12.0M12 12L3.9 7.3M12 12L8.1 5.3"
         fill="none"
         stroke="currentColor"
-        strokeWidth="2.5"
+        strokeWidth="2.3"
         strokeLinecap="round"
       />
     </svg>

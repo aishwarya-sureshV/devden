@@ -6,6 +6,7 @@
  */
 export type CodeThemeId =
  | "default"
+ | "workbench"
  | "vscode"
  | "github"
  | "onedark"
@@ -13,6 +14,7 @@ export type CodeThemeId =
  | "tokyonight";
 
 export const CODE_THEMES: { id: CodeThemeId; label: string }[] = [
+ { id: "workbench", label: "Workbench" },
  { id: "vscode", label: "VS Code" },
  { id: "default", label: "devden" },
  { id: "github", label: "GitHub" },
@@ -21,15 +23,15 @@ export const CODE_THEMES: { id: CodeThemeId; label: string }[] = [
  { id: "tokyonight", label: "Tokyo Night" },
 ];
 
-const KEY = "devden.code-theme";
+// v2: the workbench redesign resets everyone onto its own editor palette.
+const KEY = "devden.code-theme.v2";
 
 export function codeTheme(): CodeThemeId {
  const saved = localStorage.getItem(KEY);
  return (
-  // VS Code is the default look: a user who never touched the header picker
-  // should get the subtle palette, not the old warm ramp.
+  // Workbench (the redesign's editor palette) is the default look.
   (
-   CODE_THEMES.some((theme) => theme.id === saved) ? saved : "vscode"
+   CODE_THEMES.some((theme) => theme.id === saved) ? saved : "workbench"
   ) as CodeThemeId
  );
 }

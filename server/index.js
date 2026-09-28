@@ -573,7 +573,39 @@ function deployProjectRoot(requested) {
   // directory) rather than to the mutation roots: a session's cwd only
   // becomes a mutation root once its agent has started, and the Deploy button
   // has to answer for a tab whose agent is still lazy.
-  return resolve(confineHomePath(requested));
+  // A session opened in a subfolder (src/, packages/web) still deploys its
+  // project: walk up to the nearest package.json, stopping at home.
+  const start = resolve(confineHomePath(requested));
+  for (
+    let dir = start;
+    dir !== homedir() && dir !== dirname(dir);
+    dir = dirname(dir)
+  ) {
+    if (existsSync(join(dir, "package.json"))) return dir;
+  }
+  return start;
+}
+
+/**
+ * Does deploying `projectRoot` rebuild the code this server runs? Always for
+ * ROOT; also for any devden checkout when the Mac app supervises us — it
+ * reads DEVDEN_RELAUNCH_FILE to restart from the freshly built checkout
+ * instead of its bundled copy.
+ */
+function deploysSelf(projectRoot) {
+  if (projectRoot === ROOT) return true;
+  if (!process.env.DEVDEN_RELAUNCH_FILE) return false;
+  try {
+    const pkg = JSON.parse(
+      readFileSync(join(projectRoot, "package.json"), "utf8"),
+    );
+    return (
+      pkg.name === "devden" &&
+      existsSync(join(projectRoot, "server", "index.js"))
+    );
+  } catch {
+    return false;
+  }
 }
 
 function deployStatePath(projectRoot) {
@@ -1953,6 +1985,35 @@ async function route(req, res) {
     });
   }
 
+  if (pathname === "/api/usage" && req.method === "GET") {
+    // Account-level quota for every backend at once — the status footer and
+    // the model picker's agent bars. pi has no account of its own: its quota
+    // is whichever provider backs a live session, so answer from a live
+    // agent when one exists; the cold probe just reports "unavailable".
+    const usage = {};
+    await Promise.all(
+      AGENT_BACKENDS.map(async (backend) => {
+        const pool = poolFor(backend);
+        let agent = null;
+        if (backend === "pi") {
+          for (const candidate of pool.agents.values())
+            if (candidate.lastState) {
+              agent = candidate;
+              break;
+            }
+        }
+        agent ??= pool.get("__usage__");
+        const result = await agent.getUsage().catch((error) => ({
+          ok: false,
+          error: String(error?.message ?? error),
+        }));
+        usage[backend] = result?.ok ? result.usage : { available: false };
+        return usage[backend];
+      }),
+    );
+    return sendJson(res, 200, { ok: true, usage });
+  }
+
   if (pathname === "/api/remote/status" && req.method === "GET") {
     const tunnel = getRemoteTunnel();
     return sendJson(res, 200, {
@@ -2016,7 +2077,7 @@ async function route(req, res) {
       projectName: basename(projectRoot),
       // Only a deploy of devden itself restarts this server and reloads the
       // page; any other project is just built in place.
-      self: projectRoot === ROOT,
+      self: deploysSelf(projectRoot),
       head: currentGitHead(projectRoot),
       signature: workingTreeSignature(projectRoot),
       dirtyFiles: uncommittedFileCount(projectRoot),
@@ -2083,12 +2144,26 @@ async function route(req, res) {
             DEVDEN_DEPLOY_STATE: deployStatePath(projectRoot),
             // Restarting this server only makes sense when the project being
             // deployed IS this server.
-            ...(projectRoot === ROOT
+            ...(deploysSelf(projectRoot)
               ? { DEVDEN_SERVER_PID: String(process.pid) }
               : { DEVDEN_SERVER_PID: "" }),
           },
         },
       );
+      // A deployer that dies before reporting (missing script, bad node)
+      // would otherwise leave the button spinning on "running" for 15 min.
+      child.on("exit", (code) => {
+        if (code && readDeployState(projectRoot)?.status === "running") {
+          writeDeployState(
+            {
+              status: "failed",
+              finishedAt: Date.now(),
+              error: `Deployer exited with code ${code} before reporting.`,
+            },
+            projectRoot,
+          );
+        }
+      });
       child.unref();
     } catch (error) {
       writeDeployState(
@@ -2108,7 +2183,7 @@ async function route(req, res) {
       ok: true,
       mode: requestedMode,
       project: projectRoot,
-      self: projectRoot === ROOT,
+      self: deploysSelf(projectRoot),
     });
   }
 

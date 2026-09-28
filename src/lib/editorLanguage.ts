@@ -60,17 +60,16 @@ export const editorTheme: Extension = EditorView.theme({
   '&.cm-focused': { outline: 'none' },
   '.cm-scroller': {
     fontFamily: 'var(--ds-font-family-code)',
-    lineHeight: '1.55',
+    lineHeight: '20px',
     overscrollBehavior: 'contain',
   },
-  '.cm-content': { padding: '10px 0 32px', caretColor: 'var(--pw-accent)' },
+  '.cm-content': { padding: '6px 0 32px', caretColor: 'var(--pw-accent)' },
   '.cm-gutters': {
     backgroundColor: 'transparent',
     color: 'color-mix(in srgb, var(--pw-code) 38%, transparent)',
     border: 'none',
-    borderRight: '1px solid var(--dsw-alias-border-l1)',
   },
-  '.cm-lineNumbers .cm-gutterElement': { minWidth: '34px', padding: '0 8px 0 6px' },
+  '.cm-lineNumbers .cm-gutterElement': { minWidth: '44px', padding: '0 16px 0 0' },
   '.cm-foldGutter .cm-gutterElement': { padding: '0 2px', cursor: 'pointer' },
   '.cm-activeLine': { backgroundColor: 'color-mix(in srgb, var(--pw-code) 6%, transparent)' },
   '.cm-activeLineGutter': {
@@ -127,47 +126,18 @@ export const editorTheme: Extension = EditorView.theme({
 })
 
 /**
- * Grammar for a path, loaded on demand — the JS/TS parser alone is larger than
- * the rest of this app's bundle, so none of them belong in the entry chunk.
- * An unknown extension is not an error: the editor still edits, it just has no
- * syntax tree.
+ * Grammar for a path, loaded on demand from @codemirror/language-data (100+
+ * languages, each its own chunk). An unknown extension is not an error: the
+ * editor still edits, it just has no syntax tree.
  */
 export async function languageForPath(path: string): Promise<Extension | null> {
-  const name = (path.split('/').pop() ?? '').toLowerCase()
-  const extension = name.includes('.') ? name.slice(name.lastIndexOf('.')) : ''
-
-  if (['.js', '.jsx', '.mjs', '.cjs', '.ts', '.tsx', '.mts', '.cts'].includes(extension)) {
-    const { javascript } = await import('@codemirror/lang-javascript')
-    return javascript({
-      jsx: extension === '.jsx' || extension === '.tsx',
-      typescript: extension.startsWith('.t') || extension === '.mts' || extension === '.cts',
-    })
-  }
-  if (extension === '.json' || extension === '.jsonc' || name === '.babelrc') {
-    const { json } = await import('@codemirror/lang-json')
-    return json()
-  }
-  if (['.css', '.scss', '.less'].includes(extension)) {
-    const { css } = await import('@codemirror/lang-css')
-    return css()
-  }
-  if (['.html', '.htm', '.vue', '.svelte'].includes(extension)) {
-    const { html } = await import('@codemirror/lang-html')
-    return html()
-  }
-  if (['.md', '.mdx', '.markdown'].includes(extension)) {
-    const { markdown } = await import('@codemirror/lang-markdown')
-    return markdown()
-  }
-  if (['.py', '.pyi'].includes(extension)) {
-    const { python } = await import('@codemirror/lang-python')
-    return python()
-  }
-  if (extension === '.rs') {
-    const { rust } = await import('@codemirror/lang-rust')
-    return rust()
-  }
-  return null
+  const [{ LanguageDescription }, { languages }] = await Promise.all([
+    import('@codemirror/language'),
+    import('@codemirror/language-data'),
+  ])
+  const name = path.split('/').pop() ?? ''
+  const description = LanguageDescription.matchFilename(languages, name)
+  return description ? await description.load() : null
 }
 
 /** The identifier spanning `pos`, or null if the cursor is not inside one. */

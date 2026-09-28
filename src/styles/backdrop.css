@@ -1,0 +1,667 @@
+/* Workbench redesign — glass backdrop skin, status bar and settings modal.
+   Ported from the "Workbench Layouts" mockup. body[data-glass] applies only
+   when a backdrop scene is selected; the static theme (default) keeps the
+   original solid tokens untouched. The app is always the classic layout. */
+
+/* ---------- 1. Glass design tokens + semantic remap ---------- */
+
+body[data-glass] {
+  /* Mockup tokens — light. */
+  --g-fg: #1d1c24;
+  --g-fg0: #0d0c12;
+  --g-fg2: #33313c;
+  --g-fg3: #55525e;
+  --g-fg4: #77747f;
+  --g-ink: 24 26 40;
+  --g-sink: 70 80 110;
+  --g-tint: 250 250 252;
+  /* Overlapping surfaces (menus, modals, the full editor) must not be
+     see-through: pop is near-opaque pane tint, not frosted glass. */
+  --g-pop: rgb(var(--g-tint) / 0.98);
+  /* Matte: flat fills, no gradients or gloss. */
+  --g-raised: rgba(255, 255, 255, 0.72);
+  /* The accent IS the picked highlight color: every amber in the app
+     (New session / Auto mode overlays, badges, send button) follows it. */
+  --g-accent: var(--g-highlight, #e8a765);
+  color-scheme: light;
+
+  /* The redesign's UI font: system sans. Code keeps the mono stack. */
+  --dsw-font-family:
+    -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
+
+  /* Semantic remap — the whole component library re-skins through these. */
+  background: transparent;
+
+  --dsw-alias-bg-base: transparent;
+  --dsw-alias-bg-layer-1: transparent;
+  --dsw-alias-bg-layer-2: rgb(var(--g-ink) / 0.07);
+  --dsw-alias-bg-layer-3: rgb(var(--g-tint) / var(--g-tint-a, 0));
+  --dsw-alias-bg-overlay: var(--g-pop);
+  --dsw-alias-bg-skeleton: rgb(var(--g-ink) / 0.04);
+  --dsw-alias-border-l1: rgb(var(--g-ink) / 0.07);
+  --dsw-alias-border-l2: rgb(var(--g-ink) / 0.1);
+  --dsw-alias-border-l2-darkmode-thin: rgb(var(--g-ink) / 0.08);
+  --dsw-alias-border-l3: rgb(var(--g-ink) / 0.17);
+  --dsw-alias-border-l4: rgb(var(--g-ink) / 0.22);
+  --dsw-alias-brand-primary: var(--g-fg2);
+  --dsw-alias-label-primary: var(--g-fg2);
+  --dsw-alias-label-primary-dimmed: var(--g-fg2);
+  --dsw-alias-label-primary-accent: var(--g-accent);
+  --dsw-alias-label-primary-inverted: #fff;
+  --dsw-alias-label-secondary: var(--g-fg3);
+  --dsw-alias-label-tertiary: var(--g-fg4);
+  --dsw-alias-label-caption: var(--g-fg3);
+  --dsw-alias-label-dimmed: var(--g-fg4);
+  --dsw-alias-interactive-bg-hover: rgb(var(--g-ink) / 0.06);
+  --dsw-alias-interactive-bg-hover-solid: rgb(var(--g-ink) / 0.08);
+  --dsw-alias-button-elevated-fill: rgb(var(--g-ink) / 0.09);
+  --dsw-alias-button-floating-hover: rgb(var(--g-ink) / 0.07);
+  --dsw-alias-button-ghost-active-fill: rgb(var(--g-ink) / 0.1);
+  --dsw-alias-button-ghost-active-hover: rgb(var(--g-ink) / 0.13);
+  --dsw-alias-state-business-primary: var(--g-accent);
+  --dsw-alias-state-business-tertiary: color-mix(
+    in srgb,
+    var(--g-highlight, #e8a765) 18%,
+    transparent
+  );
+  --dsw-alias-state-error-primary: #ff7a8a;
+  --dsw-specific-input-major: rgb(var(--g-ink) / 0.08);
+  --dsw-specific-selector: rgb(var(--g-ink) / 0.06);
+  --dsw-specific-bubble: var(--g-raised);
+  --dsw-specific-user-accent: var(--g-accent);
+  --dsw-specific-sidebar-fill: rgb(var(--g-tint) / var(--g-tint-a, 0));
+  --dsw-specific-sidebar-nav-item-active: rgb(var(--g-ink) / 0.1);
+  --dsw-specific-sidebar-nav-item-hover: rgb(var(--g-ink) / 0.06);
+  --dsw-shadow-lv2: 0 6px 14px -4px rgb(var(--g-sink) / 0.5);
+  --ds-status-success: #3ba55d;
+  --ds-status-error: #ff7a8a;
+  --ds-status-warning: var(--g-highlight, #e8a765);
+  --ds-activity: var(--g-accent);
+
+  --pw-panel: rgb(var(--g-tint) / var(--g-tint-a, 0));
+  --pw-rail: rgb(var(--g-tint) / var(--g-tint-a, 0));
+  --pw-card: transparent;
+  --pw-card-strong: rgb(var(--g-ink) / 0.09);
+  --pw-pop: var(--g-pop);
+  --pw-sunken: rgb(var(--g-sink) / 0.18);
+  --pw-chip: rgb(var(--g-ink) / 0.07);
+  --pw-user-bg: rgb(var(--g-ink) / 0.1);
+  --pw-code-bg: transparent;
+  --pw-fg-strong: var(--g-fg0);
+  --pw-fg: var(--g-fg2);
+  --pw-fg-2: var(--g-fg2);
+  --pw-fg-3: var(--g-fg3);
+  --pw-fg-4: var(--g-fg4);
+  --pw-fg-5: var(--g-fg4);
+  --pw-accent: var(--g-accent);
+  --pw-accent-dim: color-mix(
+    in srgb,
+    var(--g-highlight, #e8a765) 75%,
+    transparent
+  );
+  --pw-accent-tint: color-mix(
+    in srgb,
+    var(--g-highlight, #e8a765) 12%,
+    transparent
+  );
+  --pw-accent-tint-2: color-mix(
+    in srgb,
+    var(--g-highlight, #e8a765) 18%,
+    transparent
+  );
+  --pw-accent-line: color-mix(
+    in srgb,
+    var(--g-highlight, #e8a765) 40%,
+    transparent
+  );
+  --pw-teal: #3fbfb0;
+  --pw-teal-tint: rgba(63, 191, 176, 0.12);
+  --pw-teal-line: rgba(63, 191, 176, 0.3);
+  --pw-green: #3ba55d;
+  --pw-red: #ff7a8a;
+  --pw-yellow: var(--g-highlight, #e8a765);
+  --pw-yellow-soft: color-mix(
+    in srgb,
+    var(--g-highlight, #e8a765) 25%,
+    transparent
+  );
+  --pw-orange: var(--g-accent);
+  --pw-stripe: rgb(var(--g-ink) / 0.05);
+  --pw-add-bg: rgba(95, 212, 154, 0.14);
+  --pw-add-fg: #2fae74;
+  --pw-add-line: rgba(95, 212, 154, 0.45);
+  --pw-add-sign: #2fae74;
+  --pw-del-bg: rgba(255, 122, 138, 0.12);
+  --pw-del-fg: #ff7a8a;
+  --pw-del-line: #ff7a8a;
+  --pw-del-sign: #ff7a8a;
+}
+
+body[data-glass][data-ds-dark-theme] {
+  /* Dark tokens — matte, softened a step from the mockup: no glow, no
+     near-white body text; emphasis comes from weight, not brightness. */
+  --g-fg: #d0cedb;
+  --g-fg0: #e6e4ee;
+  --g-fg2: #bcbac8;
+  --g-fg3: #93909e;
+  --g-fg4: #726f7c;
+  --g-ink: 255 255 255;
+  --g-sink: 0 0 0;
+  /* Lifted, near-neutral pane tint — matches the static theme's panel step.
+     At 12 13 17 the panes were black and the scene was the only colour. */
+  --g-tint: 32 32 37;
+  --g-pop: rgb(50 50 58 / 0.98);
+  --g-raised: rgb(var(--g-ink) / 0.1);
+  color-scheme: dark;
+
+  /* Panes follow the Glass tint slider so the scene shows through the
+     sidebar and workspace the same way it does through the chat. */
+  --pw-panel: rgb(var(--g-tint) / var(--g-tint-a, 0));
+  --pw-rail: rgb(var(--g-tint) / var(--g-tint-a, 0));
+  --dsw-alias-bg-layer-3: rgb(var(--g-tint) / var(--g-tint-a, 0));
+  --dsw-specific-sidebar-fill: rgb(var(--g-tint) / var(--g-tint-a, 0));
+  /* Code themes (VS Code etc.) paint the editor with a solid background;
+     in glass mode the scene must show through the workspace editor too. */
+  --pw-code-bg: transparent;
+
+  --ds-status-success: #5fd49a;
+  --pw-green: #5fd49a;
+  --pw-add-fg: #5fd49a;
+  --pw-add-sign: #5fd49a;
+  --dsw-alias-state-error-primary: #ff7a8a;
+  --pw-del-fg: #ffb3bc;
+  --pw-del-bg: rgba(255, 90, 110, 0.12);
+  --pw-del-line: #ff7a8a;
+}
+
+/* The blur lives on the scene canvas (canvasFilter), not per pane: one
+   blurred image under every surface, so panes never read as overlays. */
+
+/* The scene canvas sits behind everything; the app frame must not paint
+   over it (bg-base is transparent in glass mode, but child rules that set
+   solid colors on html/body stay guarded here too). */
+body[data-glass] .app-frame {
+  background: transparent;
+  z-index: 1;
+}
+body[data-glass] .center {
+  background: rgb(var(--g-tint) / var(--g-tint-a, 0));
+}
+.app-frame {
+  position: relative;
+}
+
+/* ---------- 2. Layout grid ---------- */
+
+@media (min-width: 761px) {
+  /* Explicit placement for every pane — auto flow put the center in the
+     sidebar's track because the nav-toggle button also participates. */
+  .app-frame > .sidebar {
+    grid-column: 1;
+    grid-row: 1 / -1;
+  }
+  .app-frame > .center {
+    grid-column: 2;
+    grid-row: 1;
+  }
+
+  /* Classic: sidebar | center. */
+  .app-frame[data-layout="classic"] {
+    grid-template-columns: var(--pw-sidebar-width, 232px) minmax(0, 1fr);
+  }
+}
+
+
+/* Segmented control, from the mockup's raised pill (settings modal). */
+.seg-control {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: 1fr;
+  gap: 2px;
+  padding: 2px;
+  margin: 8px;
+  border-radius: 9px;
+  background: var(--pw-sunken);
+  box-shadow:
+    inset 0 1px 2px rgba(0, 0, 0, 0.12),
+    inset 0 0 0 1px var(--dsw-alias-border-l1);
+}
+.seg-control__option {
+  height: 24px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--pw-fg-3);
+  font: 500 12px var(--dsw-font-family);
+}
+.seg-control__option.is-active {
+  background: var(--g-raised, var(--pw-card-strong));
+  color: var(--pw-fg);
+  font-weight: 500;
+  box-shadow: inset 0 0 0 1px rgb(var(--g-ink, 38 32 24) / 0.1);
+}
+.seg-control__option:focus-visible {
+  outline: 2px solid var(--pw-accent);
+  outline-offset: 1px;
+}
+
+/* ---------- 4. Settings → Appearance panels ---------- */
+
+.settings-section-label {
+  padding: 0 0 8px;
+  color: var(--pw-fg-4);
+  font: 500 10.5px var(--ds-font-family-code);
+  letter-spacing: 0.1em;
+}
+.settings-panel {
+  padding: 10px 16px;
+  border-radius: 16px;
+  background: var(--dsw-alias-bg-skeleton);
+  box-shadow: inset 0 0 0 1px var(--dsw-alias-border-l1);
+  margin-bottom: 18px;
+}
+.settings-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 8px 0;
+  flex-wrap: wrap;
+  color: var(--pw-fg-2);
+}
+.settings-row__label {
+  color: var(--pw-fg-2);
+}
+.settings-toggle {
+  position: relative;
+  width: 40px;
+  height: 24px;
+  border: 0;
+  border-radius: 99px;
+  background: var(--pw-chip);
+  cursor: pointer;
+  transition: background 0.2s;
+}
+.settings-toggle.is-on {
+  background: #4fbf7a;
+}
+.settings-toggle::after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #fdfdfe;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35);
+  transition: left 0.2s;
+}
+.settings-toggle.is-on::after {
+  left: 19px;
+}
+
+/* Slider row: label | custom track | value. The native range input is an
+   invisible hit-target over a styled track, exactly like the mockup. */
+.settings-slider {
+  display: grid;
+  grid-template-columns: 110px minmax(0, 1fr) 56px;
+  align-items: center;
+  gap: 14px;
+  padding: 7px 0;
+}
+.settings-slider__label {
+  color: var(--pw-fg-2);
+}
+.settings-slider__track {
+  position: relative;
+  height: 22px;
+  display: flex;
+  align-items: center;
+}
+.settings-slider__rail {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 6px;
+  border-radius: 99px;
+  background: var(--slider-track, rgb(var(--g-ink, 38 32 24) / 0.12));
+  box-shadow:
+    inset 0 1px 2px rgba(0, 0, 0, 0.18),
+    inset 0 0 0 1px var(--dsw-alias-border-l1);
+}
+.settings-slider__fill {
+  position: absolute;
+  left: 0;
+  width: var(--slider-pct, 0%);
+  height: 6px;
+  border-radius: 99px;
+  background: var(--pw-accent);
+}
+.settings-slider__knob {
+  position: absolute;
+  left: var(--slider-pct, 0%);
+  width: 16px;
+  height: 16px;
+  margin-left: -8px;
+  border-radius: 50%;
+  background: #fdfdfe;
+  box-shadow:
+    0 1px 3px rgba(0, 0, 0, 0.35),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.12);
+  pointer-events: none;
+}
+.settings-slider input[type="range"] {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+.settings-slider__value {
+  text-align: right;
+  color: var(--pw-fg-3);
+  font: 12px var(--ds-font-family-code);
+}
+
+/* Scene gallery tiles. */
+.settings-gallery {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 10px;
+  margin-bottom: 18px;
+}
+.settings-scene {
+  padding: 6px;
+  border: 0;
+  border-radius: 18px;
+  background: var(--dsw-alias-bg-skeleton);
+  box-shadow: inset 0 0 0 1px var(--dsw-alias-border-l1);
+  text-align: left;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+.settings-scene:hover {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+.settings-scene.is-active {
+  background: rgb(var(--g-ink, 38 32 24) / 0.12);
+  box-shadow:
+    0 0 0 1px var(--dsw-alias-border-l3),
+    0 10px 24px -10px rgba(0, 0, 0, 0.6);
+}
+.settings-scene__swatch {
+  height: 58px;
+  border-radius: 13px;
+  box-shadow: inset 0 0 0 1px rgb(var(--g-ink, 38 32 24) / 0.1);
+}
+.settings-scene__name {
+  padding: 7px 4px 2px;
+  font-weight: 500;
+  color: var(--pw-fg);
+}
+.settings-scene__mood {
+  padding: 0 4px 3px;
+  color: var(--pw-fg-3);
+  font-size: 11.5px;
+  line-height: 1.35;
+}
+
+/* Palette pills. */
+.settings-palettes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 0 0 12px;
+}
+.settings-palette {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  height: 30px;
+  padding: 0 11px 0 6px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--pw-chip);
+  color: var(--pw-fg-2);
+  font: 500 12px var(--dsw-font-family);
+  cursor: pointer;
+}
+.settings-palette.is-active {
+  background: var(--g-raised, var(--pw-card-strong));
+  box-shadow: 0 0 0 1px var(--dsw-alias-border-l3);
+}
+.settings-palette__swatch {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+}
+
+.settings-hint {
+  margin: 0;
+  color: var(--pw-fg-4);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+/* ---------- 7. Conversation UI, from the mockup ---------- */
+
+/* Highlighted words: strong, headings and list markers follow the picked
+   color (plain bold in the design's grey mode). */
+body[data-glass] :is(.conversation-stage, .subagent-panel) .rich-text strong,
+body[data-glass] :is(.conversation-stage, .subagent-panel) .md-heading,
+body[data-glass] :is(.conversation-stage, .subagent-panel) .md-list li::before,
+body[data-glass][data-ds-dark-theme] :is(.conversation-stage, .subagent-panel) .rich-text strong,
+body[data-glass][data-ds-dark-theme] :is(.conversation-stage, .subagent-panel) .md-heading,
+body[data-glass][data-ds-dark-theme] :is(.conversation-stage, .subagent-panel) .md-list li::before {
+  color: var(--hl-text, var(--g-fg));
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Inline code chips: the design's grey (or picked-color) rounded box with an
+   inset ring, mono text in the message's own color. */
+body[data-glass] :is(.conversation-stage, .subagent-panel) .rich-text :not(pre) > code,
+body[data-glass][data-ds-dark-theme]
+  :is(.conversation-stage, .subagent-panel)
+  .rich-text
+  :not(pre)
+  > code {
+  border: 0;
+  border-radius: 6px;
+  padding: 0 6px;
+  margin: 0 1px;
+  background: var(--hl-chip-bg, rgb(var(--g-ink) / 0.08));
+  box-shadow: inset 0 0 0 1px var(--hl-ring, rgb(var(--g-ink) / 0.06));
+  color: var(--hl-chip-color, var(--g-fg));
+  font-size: 12.5px;
+  line-height: 1.7;
+  vertical-align: 1px;
+}
+
+/* User bubble: matte raised card, right-tailed. */
+body[data-glass] :is(.conversation-stage, .subagent-panel) .user-msg,
+body[data-glass][data-ds-dark-theme] :is(.conversation-stage, .subagent-panel) .user-msg {
+  border: 0;
+  border-radius: 14px 14px 4px 14px;
+  padding: 7px 12px;
+  background: var(--g-raised);
+}
+body[data-glass] :is(.conversation-stage, .subagent-panel) .user-msg.is-editing {
+  box-shadow: inset 0 0 0 1px var(--g-accent);
+}
+
+/* Composer card: matte rounded input box. */
+body[data-glass] .composer__card {
+  border: 0;
+  border-radius: 16px;
+  background: var(--g-raised);
+  box-shadow: inset 0 0 0 1px rgb(var(--g-ink) / 0.08);
+}
+body[data-glass] .composer__card:focus-within {
+  box-shadow: inset 0 0 0 1px var(--g-accent);
+}
+body[data-glass] .composer__textarea {
+  color: var(--g-fg);
+}
+body[data-glass] .composer__textarea::placeholder {
+  color: var(--g-fg3);
+}
+
+/* ---------- 8. Workspace file dots ---------- */
+
+/* Per-file colored dots replace the file glyph, per the design tree. */
+.workspace-tree__dot {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 2px;
+}
+
+/* ---------- 9. Opaque overlaps ---------- */
+
+/* Surfaces that cover other panes paint an opaque fill: bg-base is
+   transparent in glass mode, which showed the conversation through the
+   full-screen editor. */
+/* Docked beside the chat, the explorer is just another glass pane (mock's
+   editor section): tinted blur, no opaque editor slab. */
+body[data-glass] .workspace-explorer.is-side,
+body[data-glass] .workspace-explorer.is-side .workspace-explorer__head,
+body[data-glass] .workspace-explorer.is-side .workspace-explorer__tree,
+body[data-glass] .workspace-explorer.is-side .workspace-explorer__editor {
+  background: transparent;
+}
+
+body[data-glass] .workspace-explorer.is-full {
+  background: rgb(var(--g-tint) / 0.98);
+}
+
+/* Floating panels that overlap pane content (sidebar popovers, transcript
+   search, the file viewer) paint the near-opaque pop fill instead of the
+   5%-opaque layer-1 they inherit from the static theme. */
+body[data-glass] .sidebar__session-popover,
+body[data-glass] .sidebar__search-panel,
+body[data-glass] .sidebar__search-modal,
+body[data-glass] .viewer__panel {
+  background: var(--pw-pop);
+}
+
+/* Sticky toolbars that float over scrolling rows: opaque pane fill, no
+   blur-through. */
+body[data-glass] .trajectory__toolbar,
+body[data-glass] .backend-log__toolbar {
+  background: rgb(var(--g-tint) / 0.98);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+/* Split view sits on the backdrop like a single session: the grid used to
+   paint border-l3 behind its 1px gaps, which showed through the transparent
+   panes as a grey sheet. Panes now separate by a transparent gutter. */
+body[data-glass] .session-grid.is-split {
+  gap: 8px;
+  background: transparent;
+}
+
+/* Subagent panel floats over the chat: same tinted blur as other glass
+   popovers so it reads like the main UI, not an opaque slab. */
+body[data-glass] .subagent-panel {
+  background: rgb(var(--g-tint) / 0.62);
+  border-color: var(--dsw-alias-border-l1);
+  backdrop-filter: blur(var(--g-blur, 18px)) saturate(1.2);
+  -webkit-backdrop-filter: blur(var(--g-blur, 18px)) saturate(1.2);
+  box-shadow: 0 18px 40px -18px rgb(0 0 0 / 0.55);
+}
+body[data-glass] .subagent-panel--running {
+  box-shadow: inset 3px 0 0 var(--pw-accent-line), 0 18px 40px -18px rgb(0 0 0 / 0.55);
+}
+body[data-glass] .subagent-panel--error {
+  box-shadow: inset 3px 0 0 rgba(236, 19, 19, 0.4), 0 18px 40px -18px rgb(0 0 0 / 0.55);
+}
+
+/* ---------- 8. Wallpaper photo backdrop (workbench redesign) ---------- */
+
+/* Full-screen photo behind everything. Drift is one keyframe scaled by the
+   --mi custom property (0–1.67, design default 60 → 1) — no per-frame JS.
+   Parallax translates the wrapper from a single pointermove handler in
+   Backdrop.tsx. prefers-reduced-motion freezes all of it from the component
+   side; this block only guards the rare stylesheet-only path. */
+.backdrop {
+ position: fixed;
+ inset: 0;
+ z-index: 0;
+ overflow: hidden;
+ background: #0b0c10;
+ pointer-events: none;
+}
+.backdrop__parallax {
+ position: absolute;
+ inset: -4%;
+ transition: transform 0.9s cubic-bezier(0.2, 0.7, 0.2, 1);
+ will-change: transform;
+}
+.backdrop__photo {
+ position: absolute;
+ /* Bleed past the wrapper so the blur doesn't fade the edges. */
+ inset: calc(-2 * var(--wb-blur, 0px));
+ background-size: cover;
+ background-position: center;
+ will-change: transform;
+}
+.backdrop__photo.is-drifting {
+ animation: wb-drift var(--wb-dur, 36s) ease-in-out infinite alternate;
+}
+/* Warm light sweep every 14s, scaled by intensity via opacity inline. */
+.backdrop__glint {
+ position: absolute;
+ inset: -20%;
+ background: radial-gradient(
+  60% 40% at 50% 30%,
+  rgba(255, 240, 210, 0.22),
+  transparent 70%
+ );
+ mix-blend-mode: screen;
+ animation: wb-glint 14s ease-in-out infinite;
+}
+/* Dark overlay so frosted panels stay readable over any photo. */
+.backdrop__overlay {
+ position: fixed;
+ inset: 0;
+ z-index: 0;
+ background: linear-gradient(180deg, rgba(6, 7, 10, 0.45), rgba(6, 7, 10, 0.62));
+ pointer-events: none;
+}
+
+@keyframes wb-drift {
+ 0% {
+  transform: scale(calc(1 + 0.06 * var(--mi))) translate(0, 0);
+ }
+ 33% {
+  transform: scale(calc(1 + 0.16 * var(--mi)))
+   translate(calc(-3% * var(--mi)), calc(2% * var(--mi)));
+ }
+ 66% {
+  transform: scale(calc(1 + 0.12 * var(--mi)))
+   translate(calc(2.6% * var(--mi)), calc(-1.6% * var(--mi)));
+ }
+ 100% {
+  transform: scale(calc(1 + 0.18 * var(--mi)))
+   translate(calc(-1% * var(--mi)), calc(-2.8% * var(--mi)));
+ }
+}
+@keyframes wb-glint {
+ 0%,
+ 100% {
+  transform: translateX(-35%) translateY(-5%);
+ }
+ 50% {
+  transform: translateX(35%) translateY(5%);
+ }
+}
+
+/* Photo thumbnails in the Scenic backgrounds gallery. */
+.settings-scene__swatch--photo {
+ background-size: cover;
+ background-position: center;
+}
