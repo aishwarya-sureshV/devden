@@ -1172,6 +1172,8 @@ export class ClaudeAgentProcess {
       args.push("--permission-mode", "plan");
     } else if (this.options.accessMode === "read-only") {
       args.push("--disallowedTools", "Bash Write Edit");
+    } else if (this.options.agentMode === "auto-edit") {
+      args.push("--permission-mode", "acceptEdits");
     } else if (this.options.agentMode === "manual") {
       // No bypass flag: the CLI then asks permission per tool via a
       // can_use_tool control request, which the gate routes to the UI.

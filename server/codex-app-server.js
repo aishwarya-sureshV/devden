@@ -43,6 +43,7 @@ export class CodexAppServer {
     this.pending = new Map();
     this.notificationListeners = new Set();
     this.requestListeners = new Set();
+    this.failureListeners = new Set();
     this.starting = undefined;
     this.stderr = "";
   }
@@ -73,6 +74,9 @@ export class CodexAppServer {
       },
     );
     this.child = child;
+    this.buffer = "";
+    this.stderr = "";
+    child.stdin.on("error", (error) => { if (this.child === child) this.fail(error); });
     child.stdout.setEncoding("utf8");
     child.stdout.on("data", (chunk) => this.consume(chunk));
     child.stderr.setEncoding("utf8");
@@ -80,9 +84,9 @@ export class CodexAppServer {
       // codex logs tracing output here; keep a tail for error messages only.
       this.stderr = `${this.stderr}${chunk}`.slice(-8000);
     });
-    child.once("error", (error) => this.fail(error));
+    child.once("error", (error) => { if (this.child === child) this.fail(error); });
     child.once("exit", (code, signal) =>
-      this.fail(
+      this.child === child && this.fail(
         new Error(
           `codex app-server exited (${signal ?? code ?? "unknown"})${
             this.stderr.trim()
@@ -94,6 +98,7 @@ export class CodexAppServer {
     );
     const initialize = await this.request("initialize", {
       clientInfo: CLIENT_INFO,
+      capabilities: { experimentalApi: true },
     });
     this.notify("initialized", {});
     return initialize;
@@ -136,6 +141,7 @@ export class CodexAppServer {
   }
 
   fail(error) {
+    const wasRunning = Boolean(this.child);
     this.child = undefined;
     this.starting = undefined;
     for (const waiter of this.pending.values()) {
@@ -143,6 +149,8 @@ export class CodexAppServer {
       waiter.reject(error);
     }
     this.pending.clear();
+    if (wasRunning)
+      for (const listener of this.failureListeners) listener(error);
   }
 
   write(message) {
@@ -179,6 +187,15 @@ export class CodexAppServer {
     this.write({ id, result });
   }
 
+  respondError(id, message) {
+    this.write({ id, error: { code: -32601, message } });
+  }
+
+  onFailure(listener) {
+    this.failureListeners.add(listener);
+    return () => this.failureListeners.delete(listener);
+  }
+
   onNotification(listener) {
     this.notificationListeners.add(listener);
     return () => this.notificationListeners.delete(listener);
@@ -191,6 +208,7 @@ export class CodexAppServer {
 
   close() {
     const child = this.child;
+    this.failureListeners.clear();
     this.fail(new Error("codex app-server closed"));
     this.notificationListeners.clear();
     this.requestListeners.clear();

@@ -60,6 +60,13 @@ describe("parseAsk", () => {
     assert.equal(parseAsk('{"questions":[{"question":"Whi'), null);
   });
 
+  it("repairs a payload missing its final root brace (claude)", () => {
+    const body =
+      '{"questions":[{"question":"Which?","options":' +
+      '[{"label":"A"},{"label":"B"}]}]';
+    assert.equal(parseAsk(body)?.length, 1);
+  });
+
   it("returns null when no question carries options", () => {
     assert.equal(parseAsk('{"questions":[{"question":"Which?"}]}'), null);
   });

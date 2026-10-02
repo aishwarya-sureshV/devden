@@ -54,7 +54,7 @@ export interface ConversationTab {
   /** Guest tabs (cross-backend review) stay off the grid until opened. */
   guest?: boolean;
   accessMode?: "workspace-write" | "read-only";
-  agentMode?: "standard" | "plan" | "routed" | "manual";
+  agentMode?: "standard" | "plan" | "routed" | "manual" | "auto-edit";
   timeline: Timeline;
 }
 
@@ -66,7 +66,7 @@ export interface OpenConversationOptions {
   /** Skip the sessionPath reuse check. Forks must mint a new tab. */
   forceNew?: boolean;
   accessMode?: "workspace-write" | "read-only";
-  agentMode?: "standard" | "plan" | "routed" | "manual";
+  agentMode?: "standard" | "plan" | "routed" | "manual" | "auto-edit";
   /** Explicit model/effort for the new session (battle races pick these per
    *  backend); left undefined they fall back to the preferred/default pick. */
   model?: ModelInfo;
@@ -118,7 +118,7 @@ interface StoreValue {
     label?: string;
     backend?: AgentBackend;
     accessMode?: "workspace-write" | "read-only";
-    agentMode?: "standard" | "plan" | "routed" | "manual";
+    agentMode?: "standard" | "plan" | "routed" | "manual" | "auto-edit";
   }) => string;
   closeConversation: (key: string) => void;
   setActiveKey: (key: string) => void;
@@ -235,7 +235,7 @@ export const BACKEND_DEFAULT_MODEL: Partial<Record<AgentBackend, ModelInfo>> = {
   pi: {
     provider: "ollama",
     id: "glm-5.3-flash:cloud",
-    name: "glm 5.3 flash (cloud)",
+    name: "glm 5.3 flash ☁",
   },
 };
 
@@ -526,27 +526,19 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     return () => document.removeEventListener("visibilitychange", onVisible);
   }, []);
 
-  const refreshSessions = useCallback(() => {
+  const sessionRefresh = useRef({ running: false, pending: false });
+  const refreshSessions = useCallback(function refresh() {
+    if (sessionRefresh.current.running) {
+      sessionRefresh.current.pending = true;
+      return;
+    }
+    sessionRefresh.current.running = true;
     // Every agent's sessions, not just the current one: the sidebar shows
     // them together and each carries its own backend, so opening one always
     // resumes it on the agent that wrote it.
-    // The merged `backend=all` call 500s when one lister throws while the
-    // array is built (a non-promise `.catch`), and that used to leave the
-    // sidebar on "No saved sessions yet." Each built-in still answers alone.
     const load = async (view: "recent" | "archived") => {
-      const merged = await api.sessions(view, "all").catch(() => null);
-      if (merged?.ok && Array.isArray(merged.sessions)) return merged.sessions;
-      const parts = await Promise.all(
-        AGENT_BACKENDS.map((backend) =>
-          api.sessions(view, backend).catch(() => null),
-        ),
-      );
-      if (!parts.some((part) => part?.ok)) return null;
-      const sessions = parts.flatMap((part) =>
-        part?.ok && Array.isArray(part.sessions) ? part.sessions : [],
-      );
-      sessions.sort((a, b) => b.modifiedAt - a.modifiedAt);
-      return sessions;
+      const result = await api.sessions(view, "all").catch(() => null);
+      return result?.ok ? result.sessions : null;
     };
     void Promise.all([load("recent"), load("archived")])
       .then(([recent, archived]) => {
@@ -558,7 +550,14 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       })
       // Also on failure: a sidebar stuck on "Loading…" forever is worse than
       // one that says it found nothing.
-      .finally(() => setSessionsLoaded(true));
+      .finally(() => {
+        setSessionsLoaded(true);
+        sessionRefresh.current.running = false;
+        if (sessionRefresh.current.pending) {
+          sessionRefresh.current.pending = false;
+          refresh();
+        }
+      });
   }, []);
 
   const restoreLiveTurn = useCallback((key: string, timeline: Timeline) => {
@@ -1046,7 +1045,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         // have resolved to an empty timeline and cached that. Re-fetch the
         // history instead of showing the ghost forever.
         if (
-          existing.timeline.items.length === 0 &&
+          existing.timeline.items.every((item) => item.kind === "notice") &&
           (existing.sessionPath ?? existing.timeline.state?.sessionFile)
         ) {
           const existingKey = existing.key;
@@ -1063,7 +1062,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
               tabsRef.current.some(
                 (candidate) =>
                   candidate.key === existingKey &&
-                  candidate.timeline.items.length === 0,
+                  candidate.timeline.items.every((item) => item.kind === "notice"),
               )
             ) {
               existing.timeline.hydrate(result.messages, {
@@ -1078,6 +1077,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
                 isStreaming: false,
               });
             }
+          }).catch((error) => {
+            existing.timeline.appendNotice(`Could not load this session: ${String(error?.message ?? error)}`, "error");
           });
         }
         return existing.key;
@@ -1137,6 +1138,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           ...(timeline.state ?? placeholderState),
           isStreaming: false,
         });
+      }).catch((error) => {
+        timeline.appendNotice(`Could not load this session: ${String(error?.message ?? error)}`, "error");
       });
       if (capabilitiesFor(tab.backend).lazyStart) {
         // Lazy backends stay unspawned for viewing — the transcript above
@@ -1303,7 +1306,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       label?: string;
       backend?: AgentBackend;
       accessMode?: "workspace-write" | "read-only";
-      agentMode?: "standard" | "plan" | "routed" | "manual";
+      agentMode?: "standard" | "plan" | "routed" | "manual" | "auto-edit";
     }): string => {
       const forkBackend = backend ?? defaultBackendRef.current;
       const tab = createConversationTab(
@@ -1793,11 +1796,26 @@ export function useStore(): StoreValue {
  * from disk (no later start() to notify again). A missed notify leaves the
  * empty hero up forever.
  */
-export function useTimeline(timeline: Timeline | undefined) {
+export function useTimeline(timeline: Timeline | undefined, visible = true) {
   const subscribe = useCallback(
-    (onChange: () => void) =>
-      timeline ? timeline.subscribe(onChange) : () => {},
-    [timeline],
+    (onChange: () => void) => {
+      if (!timeline) return () => {};
+      // Keep background bookkeeping/autosave alive without rendering every token.
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const unsubscribe = timeline.subscribe(() => {
+        if (visible) onChange();
+        else if (timer === undefined)
+          timer = setTimeout(() => {
+            timer = undefined;
+            onChange();
+          }, 1000);
+      });
+      return () => {
+        unsubscribe();
+        clearTimeout(timer);
+      };
+    },
+    [timeline, visible],
   );
   const getSnapshot = useCallback(
     () => (timeline ? timeline.revision : 0),

@@ -1,17 +1,20 @@
 import { strict as assert } from "node:assert";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-// The module resolves its state file from HOME at import time, so the fake
-// home has to exist before the first import.
+// The database lives under HOME/.devden and the legacy JSON record under
+// HOME/.pi/agent, so the fake home has to exist before the first import.
+// The writeFileSync(STATE, ...) cases cover adopting that legacy record.
 const home = mkdtempSync(join(tmpdir(), "devden-inflight-"));
 process.env.HOME = home;
 const { mkdirSync } = await import("node:fs");
 mkdirSync(join(home, ".pi", "agent"), { recursive: true });
 const STATE = join(home, ".pi", "agent", "devden-inflight.json");
 const inflight = await import("./inflight.js");
+const { docGet } = await import("./db.js");
+const stored = () => docGet("inflight", "running") ?? [];
 
 test("runningSessionPaths lists live session files and drops them on settle", () => {
   inflight.noteTurnStarted({ sessionKey: "live", backend: "grok", cwd: home });
@@ -28,14 +31,14 @@ test("runningSessionPaths lists live session files and drops them on settle", ()
 test("a settled turn leaves nothing to resume", () => {
   inflight.noteTurnStarted({ sessionKey: "k1", backend: "pi", cwd: home });
   inflight.noteTurnContext("k1", { sessionPath: join(home, "s.jsonl") });
-  assert.equal(JSON.parse(readFileSync(STATE, "utf8")).length, 1);
+  assert.equal(stored().length, 1);
   inflight.noteTurnSettled("k1");
-  assert.deepEqual(JSON.parse(readFileSync(STATE, "utf8")), []);
+  assert.deepEqual(stored(), []);
 });
 
 test("a turn with no session path is not resumable", () => {
   inflight.noteTurnStarted({ sessionKey: "k2", backend: "pi", cwd: home });
-  assert.deepEqual(JSON.parse(readFileSync(STATE, "utf8")), []);
+  assert.deepEqual(stored(), []);
   inflight.noteTurnSettled("k2");
 });
 
@@ -45,7 +48,7 @@ test("queued prompts ride along with the interrupted turn", () => {
     sessionPath: join(home, "s.jsonl"),
     queued: [{ id: "q1", message: "then do the other thing" }],
   });
-  const [entry] = JSON.parse(readFileSync(STATE, "utf8"));
+  const [entry] = stored();
   assert.equal(entry.queued[0].message, "then do the other thing");
   inflight.noteTurnSettled("k3");
 });
@@ -127,7 +130,7 @@ test("a rekeyed turn settles on the key that adopted it", () => {
   inflight.rekeySession("old", "new");
   // The abandoned key is gone, so a settle on it no longer misses.
   inflight.noteTurnSettled("old");
-  assert.equal(JSON.parse(readFileSync(STATE, "utf8")).length, 1);
+  assert.equal(stored().length, 1);
   inflight.noteTurnSettled("new");
-  assert.deepEqual(JSON.parse(readFileSync(STATE, "utf8")), []);
+  assert.deepEqual(stored(), []);
 });

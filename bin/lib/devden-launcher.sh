@@ -3,27 +3,22 @@
 # Sourced by bin/devden; LAUNCHER_NAME must be set by the caller for messages.
 set -euo pipefail
 
-# Resolve the real launcher location before finding the project root. npm's
-# global installs and npm link expose these scripts through symlinks, and
-# BASH_SOURCE otherwise points at the symlink instead of the devden checkout.
-resolve_devden_root() {
-  local launcher_path="${BASH_SOURCE[1]}"
-  while [[ -L "$launcher_path" ]]; do
-    local launcher_dir
-    launcher_dir="$(cd -P "$(dirname "$launcher_path")" && pwd)"
-    local link_target
-    link_target="$(readlink "$launcher_path")"
-    if [[ "$link_target" == /* ]]; then
-      launcher_path="$link_target"
-    else
-      launcher_path="$launcher_dir/$link_target"
-    fi
-  done
-  DEVDEN_ROOT="$(cd -P "$(dirname "$launcher_path")/.." && pwd)"
-  PORT="${DEVDEN_PORT:-4319}"
-  HOST="${DEVDEN_HOST:-127.0.0.1}"
-  # One place for the server log path; overridable per invocation.
-  DEVDEN_LOG="${DEVDEN_LOG:-${TMPDIR:-/tmp}/devden.log}"
+PORT="${DEVDEN_PORT:-4319}"
+HOST="${DEVDEN_HOST:-127.0.0.1}"
+DEVDEN_LOG="${DEVDEN_LOG:-${TMPDIR:-/tmp}/devden.log}"
+
+# Stop the supervisor too, or --stop and build refresh immediately respawn it.
+terminate_server() {
+  local server_pid="$1" parent_pid parent_command
+  # -ww: macOS ps otherwise clips the command to the window width.
+  parent_pid="$(ps -p "$server_pid" -o ppid= -ww 2>/dev/null | tr -d '[:space:]')"
+  parent_command="$(ps -p "$parent_pid" -o command= -ww 2>/dev/null || true)"
+  # npm starts it as `node scripts/supervise.mjs`; the CLI uses an absolute path.
+  if [[ "$parent_command" == *"scripts/supervise.mjs"* ]]; then
+    kill -TERM "$parent_pid"
+  else
+    kill -TERM "$server_pid"
+  fi
 }
 
 health_json() {
@@ -42,7 +37,7 @@ clear_unresponsive_project_server() {
   server_command="$(ps -p "$server_pid" -o command= 2>/dev/null || true)"
   if [[ "$server_cwd" == "$DEVDEN_ROOT" && "$server_command" == *"server/index.js"* ]]; then
     echo "$LAUNCHER_NAME: recovering an unresponsive local workbench…" >&2
-    kill "$server_pid"
+    terminate_server "$server_pid"
     for _ in $(seq 1 20); do
       lsof -tiTCP:"$PORT" -sTCP:LISTEN >/dev/null 2>&1 || return 0
       sleep 0.1
@@ -76,7 +71,7 @@ refresh_stale_server() {
     stale_pid="$(lsof -tiTCP:"$PORT" -sTCP:LISTEN 2>/dev/null || true)"
     if [[ -n "$stale_pid" ]]; then
       echo "$LAUNCHER_NAME: refreshing the running workbench…" >&2
-      kill "$stale_pid"
+      terminate_server "$stale_pid"
       for _ in $(seq 1 30); do
         health_ready || break
         sleep 0.1
@@ -88,7 +83,7 @@ refresh_stale_server() {
 start_server() {
   if ! health_ready; then
     clear_unresponsive_project_server
-    nohup node "$DEVDEN_ROOT/server/index.js" </dev/null >"$DEVDEN_LOG" 2>&1 &
+    nohup node "$DEVDEN_ROOT/scripts/supervise.mjs" </dev/null >"$DEVDEN_LOG" 2>&1 &
     for _ in $(seq 1 30); do
       health_ready && break
       sleep 0.1

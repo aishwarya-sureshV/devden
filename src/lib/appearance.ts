@@ -9,7 +9,25 @@
 
 export type WallpaperMotion = "still" | "drift" | "drift-parallax";
 
-export type AppearanceMode = "light" | "dark";
+export type AppearanceMode = "light" | "dark" | "system";
+
+/** Workbench surface. Glass keeps the current backdrop. The others are solid
+ *  or, for Aurora, a painted field. Cream's panel is the existing warm
+ *  paper (`#f4f1e9` in theme.css). */
+export type WorkbenchBackground =
+  | "glass"
+  | "black"
+  | "white"
+  | "cream"
+  | "aurora";
+
+export const WORKBENCH_BACKGROUNDS: WorkbenchBackground[] = [
+  "glass",
+  "black",
+  "white",
+  "cream",
+  "aurora",
+];
 
 export interface AppearanceSettings {
   /** "Static" keeps the original solid theme; otherwise a scene name. */
@@ -36,6 +54,12 @@ export interface AppearanceSettings {
   contrast: number;
   /** Highlighted words + every amber accent: "grey" (design chips) or hex. */
   highlight: string;
+  /** Hexes the user saved from the wheel picker, newest first. Preferences. */
+  savedHighlights: string[];
+  /** Panel skin. Glass is the backdrop already in use. */
+  background: WorkbenchBackground;
+  /** Diff viewer colors per surface tone. */
+  diffColors: DiffColors;
   /** Uploaded backdrop image (data URL), shown by the "Custom" scene. */
   customImage: string | null;
 }
@@ -213,14 +237,71 @@ export const HIGHLIGHTS: [string, string][] = [
   ["Gold", "#d9b972"],
   ["Bronze", "#c4a06a"],
   ["Grey", "grey"],
-  ["Rose", "#ff5f8f"],
-  ["Peach", "#ff8f66"],
-  ["Mint", "#5fd49a"],
-  ["Teal", "#3fbfb0"],
-  ["Sky", "#4aa3ff"],
-  ["Lavender", "#a585ff"],
-  ["Plum", "#d06ad8"],
+  // Rose onward are intensity-reduced versions of the original neons so the
+  // first four (project ambers + neutral) keep their warm identity while the
+  // cool colors read as tints, not neon signs.
+  ["Rose", "#e28ca3"],
+  ["Peach", "#e8a583"],
+  ["Mint", "#8ecdb2"],
+  ["Teal", "#7cb5ad"],
+  ["Sky", "#84aade"],
+  ["Lavender", "#a99bdc"],
+  ["Plum", "#b98ac4"],
 ];
+
+/** Diff viewer colors, one picker per role. `dark` paints Glass/Black/Aurora,
+ *  `light` paints White/Cream. App.tsx exposes them as `--dv-<role>`. */
+export const DIFF_ROLES = [
+  ["kw", "Keywords"],
+  ["cmd", "Commands & storage"],
+  ["fn", "Functions"],
+  ["var", "Variables & types"],
+  ["str", "Strings"],
+  ["flag", "Flags & properties"],
+  ["pun", "Punctuation"],
+  ["com", "Comments"],
+  ["cst", "Numbers & constants"],
+  ["add", "Added lines"],
+  ["del", "Removed lines"],
+] as const;
+export type DiffRole = (typeof DIFF_ROLES)[number][0];
+export type DiffTone = "dark" | "light";
+export type DiffColors = Record<DiffTone, Record<DiffRole, string>>;
+
+const diffSet = (hexes: string): Record<DiffRole, string> => {
+  const list = hexes.split(" ");
+  return Object.fromEntries(DIFF_ROLES.map(([role], i) => [role, list[i]!])) as Record<DiffRole, string>;
+};
+export const DEFAULT_DIFF_COLORS: DiffColors = {
+  dark: diffSet("#d58cff #ff9f43 #4dabff #3ee0ff #ffd84d #ff6bcb #a0a8ff #7a7f9a #ff5f6d #62e3b4 #ff8f9c"),
+  light: diffSet("#9d1ff0 #e8590c #0b63f6 #0091c2 #b8860b #d6247a #5b5bd6 #8e93a6 #e01e3c #0f8259 #c4304a"),
+};
+
+export const diffTone = (background: WorkbenchBackground): DiffTone =>
+  background === "white" || background === "cream" ? "light" : "dark";
+
+export function setDiffColor(tone: DiffTone, role: DiffRole, hex: string): void {
+  const colors = settings.diffColors;
+  setAppearance({ diffColors: { ...colors, [tone]: { ...colors[tone], [role]: hex } } });
+}
+
+export function resetDiffColors(tone: DiffTone): void {
+  setAppearance({ diffColors: { ...settings.diffColors, [tone]: DEFAULT_DIFF_COLORS[tone] } });
+}
+
+/** Stored colors over the defaults; anything that isn't a #rrggbb is dropped. */
+function loadDiffColors(stored: unknown): DiffColors {
+  const pick = (tone: DiffTone) => {
+    const saved = (stored as Partial<DiffColors> | undefined)?.[tone] ?? {};
+    const out = { ...DEFAULT_DIFF_COLORS[tone] };
+    for (const [role] of DIFF_ROLES) {
+      const hex = (saved as Record<string, unknown>)[role];
+      if (typeof hex === "string" && /^#[0-9a-f]{6}$/i.test(hex)) out[role] = hex;
+    }
+    return out;
+  };
+  return { dark: pick("dark"), light: pick("light") };
+}
 
 const DEFAULT_APPEARANCE: AppearanceSettings = {
   scene: STATIC_SCENE,
@@ -241,10 +322,18 @@ const DEFAULT_APPEARANCE: AppearanceSettings = {
   brightness: 1,
   contrast: 1,
   highlight: "#e8a765",
+  // First migration seeds the saved list with the shipped swatches so the
+  // dropdown isn't empty; from then on the list is purely user-saved.
+  savedHighlights: HIGHLIGHTS.flatMap(([, value]) =>
+    value === "grey" ? [] : [value],
+  ),
   customImage: null,
+  background: "glass",
+  diffColors: DEFAULT_DIFF_COLORS,
 };
 
 const STORAGE_KEY = "devden.appearance.v1";
+
 
 const listeners = new Set<() => void>();
 let settings: AppearanceSettings = load();
@@ -266,6 +355,12 @@ function load(): AppearanceSettings {
       motionIntensity?: unknown;
     };
     const merged = { ...DEFAULT_APPEARANCE, ...parsed };
+    if (Array.isArray(parsed.savedHighlights))
+      merged.savedHighlights = parsed.savedHighlights.filter(
+        (hex): hex is string =>
+          typeof hex === "string" && /^#[0-9a-f]{6}$/i.test(hex),
+      );
+    else merged.savedHighlights = DEFAULT_APPEARANCE.savedHighlights;
     // Islands/Rail/Top were removed; the app is always classic now.
     merged.layout = "classic";
     // Scene users keep their scene: the wallpaper only enters when they pick
@@ -293,6 +388,15 @@ function load(): AppearanceSettings {
       0,
       Math.min(100, merged.wallpaperIntensity),
     );
+    merged.diffColors = loadDiffColors(parsed.diffColors);
+    if (!WORKBENCH_BACKGROUNDS.includes(merged.background))
+      merged.background = "glass";
+    if (
+      merged.mode !== "light" &&
+      merged.mode !== "dark" &&
+      merged.mode !== "system"
+    )
+      merged.mode = DEFAULT_APPEARANCE.mode;
     return merged;
   } catch {
     return { ...DEFAULT_APPEARANCE };
@@ -313,8 +417,8 @@ export function getAppearance(): AppearanceSettings {
 
 export function setAppearance(patch: Partial<AppearanceSettings>): void {
   const next: AppearanceSettings = { ...settings, ...patch };
-  const sceneTouched = Object.prototype.hasOwnProperty.call(patch, "scene");
-  const wallTouched = Object.prototype.hasOwnProperty.call(patch, "wallpaper");
+  const sceneTouched = Object.hasOwn(patch, "scene");
+  const wallTouched = Object.hasOwn(patch, "wallpaper");
   // A shader theme and a photo can't show at once: the photo layer used to
   // win, so picking a restored theme did nothing while a wallpaper was on.
   if (sceneTouched && !wallTouched) next.wallpaper = NO_WALLPAPER;
@@ -333,6 +437,22 @@ export function setAppearance(patch: Partial<AppearanceSettings>): void {
 export function subscribeAppearance(listener: () => void): () => void {
   listeners.add(listener);
   return () => listeners.delete(listener);
+}
+
+/** Persist the picked color to the saved list (deduped, newest first). */
+export function addSavedHighlight(hex: string): void {
+  setAppearance({
+    savedHighlights: [
+      hex,
+      ...settings.savedHighlights.filter((saved) => saved !== hex),
+    ].slice(0, 30),
+  });
+}
+
+export function removeSavedHighlight(hex: string): void {
+  setAppearance({
+    savedHighlights: settings.savedHighlights.filter((saved) => saved !== hex),
+  });
 }
 
 /** Shader scene index, or -1 for the static theme. */
@@ -372,9 +492,7 @@ export function sceneSwatch(name: string): string {
     : SCENES[index][2];
 }
 
-export function wallpaperByName(
-  name = settings.wallpaper,
-): Wallpaper | null {
+export function wallpaperByName(name = settings.wallpaper): Wallpaper | null {
   return WALLPAPERS.find((wallpaper) => wallpaper.name === name) ?? null;
 }
 
@@ -386,9 +504,7 @@ export function photoBackdrop(s = settings): string | null {
 
 /** Wallpaper photo, or the uploaded image when the Custom theme is selected. */
 export function activePhoto(s = settings): string | null {
-  return (
-    photoBackdrop(s) ?? (s.scene === CUSTOM_SCENE ? s.customImage : null)
-  );
+  return photoBackdrop(s) ?? (s.scene === CUSTOM_SCENE ? s.customImage : null);
 }
 
 /** ‹ › and [ ] step through wallpapers when one is active (or chosen). */
@@ -426,7 +542,11 @@ export function intensityLabel(value: number): string {
 
 /** True when a scene or an uploaded image paints the backdrop (glass on). */
 export function hasBackdrop(s = settings): boolean {
-  return sceneIndex(s.scene) >= 0 || s.scene === CUSTOM_SCENE || photoBackdrop(s) !== null;
+  return (
+    sceneIndex(s.scene) >= 0 ||
+    s.scene === CUSTOM_SCENE ||
+    photoBackdrop(s) !== null
+  );
 }
 
 export function isGlass(): boolean {
@@ -487,11 +607,31 @@ export function photoFilter(s: AppearanceSettings): string {
  * chip; any other choice colors highlighted words and replaces every amber
  * accent (--pw-yellow / --ds-status-warning / js file dots) with the hex.
  */
+function relativeLuminance(hex: string): number {
+  const value = Number.parseInt(hex.slice(1), 16);
+  // Rec. 709 approximation from the 8-bit channels.
+  return (
+    (0.299 * ((value >> 16) & 255) +
+      0.587 * ((value >> 8) & 255) +
+      0.114 * (value & 255)) /
+    255
+  );
+}
+
 export function highlightVars(highlight: string): Record<string, string> {
   const grey = highlight === "grey";
   const hex = grey ? "#b9b7c4" : highlight;
+  // Send button follows the accent too. Pick a legible foreground from the
+  // hex's luminance; grey keeps the design's neutral send button.
+  const send: Record<string, string> = {};
+  if (!grey) {
+    const darkFg = relativeLuminance(hex) > 0.45;
+    send["--send"] = hex;
+    send["--sendFg"] = darkFg ? "#1b0f0a" : "rgb(255 255 255 / 0.92)";
+  }
   return {
     "--g-highlight": hex,
+    ...send,
     "--hl-text": grey ? "var(--g-fg)" : hex,
     "--hl-chip-color": grey ? "var(--g-fg)" : hex,
     "--hl-chip-bg": grey

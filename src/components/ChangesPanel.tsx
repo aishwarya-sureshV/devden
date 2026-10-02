@@ -1,20 +1,28 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   api,
+  type ChangesResponse,
   type GitChange,
   type GitChangesResponse,
   type GitOp,
   type GitOpOptions,
+  type RecordedChange,
 } from "../lib/api";
-import { DiffPreview } from "./ToolCard";
-import { IconChevronDown } from "./icons";
-import type { DiffLine, ToolDiff } from "../lib/toolCards";
+import {
+  IconBranch,
+  IconChevronDown,
+  IconExpand,
+  IconRefresh,
+  IconRestore,
+} from "./icons";
+import type { DiffLine, ToolDiff, ToolFileView } from "../lib/toolCards";
+import { fileKind, isSessionPath } from "../lib/turnFold";
 
 /** Cap rendered diff lines so a huge generated file can't freeze the tab. */
 const MAX_DIFF_LINES = 2000;
 
-/** Parse a unified diff into the shared DiffPreview model. */
-function parseUnifiedDiff(text: string): ToolDiff {
+/** Parse a unified diff into the shared diff model. */
+export function parseUnifiedDiff(text: string): ToolDiff {
   const rows = text.split("\n").slice(0, MAX_DIFF_LINES);
   const lines: DiffLine[] = [];
   let added = 0;
@@ -50,21 +58,6 @@ function parseUnifiedDiff(text: string): ToolDiff {
   }
   return { added, removed, lines };
 }
-
-/** The "@@ …" headers of a unified diff, in the order git emits them. */
-function diffHunkHeaders(text: string): string[] {
-  return text
-    .split("\n")
-    .filter((line) => line.startsWith("@@"))
-    .map((line) => line.replace(/^(@@[^@]*@@).*$/, "$1"));
-}
-
-const STATUS_LETTER: Record<GitChange["status"], string> = {
-  added: "A",
-  modified: "M",
-  deleted: "D",
-  conflicted: "!",
-};
 
 /** What git calls the operation behind each in-progress state. */
 const STATE_VERB: Record<string, string> = {
@@ -104,14 +97,7 @@ const OP_LABEL: Record<GitOp, string> = {
   pr: "Open pull request",
 };
 
-/**
- * Post-turn "Changes" card: lists the working tree's uncommitted changes and
- * offers a one-click commit + push to the repo's origin (GitHub). Everything
- * beyond that primary action — fetch, pull (merge or rebase), push, commit
- * without pushing, branch create/switch, and the stash list — lives behind the
- * one "Git" menu so the card stays a card. Renders nothing outside a git repo.
- */
-/** The folder a workspace path ends in, for the identity card. */
+/** The folder a workspace path ends in, for the workspace row. */
 function folderName(path: string): string {
   return path.split("/").filter(Boolean).at(-1) ?? path;
 }
@@ -127,29 +113,101 @@ function homeRelative(path: string): string {
   return home ? (home[1] ? `~/${home[1]}` : "~") : parent;
 }
 
+const plural = (count: number, word: string) =>
+  `${count} ${word}${count === 1 ? "" : "s"}`;
+
+/**
+ * Last git snapshot per folder. Switching sessions remounts the panel; it
+ * paints this at once and revalidates, instead of sitting blank for the
+ * whole git round trip.
+ */
+const lastSnapshot = new Map<string, GitChangesResponse>();
+
+/** Changes bucketed by folder, folders in path order, files in git's order. */
+function groupByDir(changes: GitChange[]): [string, GitChange[]][] {
+  const groups = new Map<string, GitChange[]>();
+  for (const change of changes) {
+    const cut = change.path.lastIndexOf("/");
+    const dir = cut < 0 ? "" : change.path.slice(0, cut);
+    const list = groups.get(dir);
+    if (list) list.push(change);
+    else groups.set(dir, [change]);
+  }
+  return [...groups].sort(([a], [b]) => a.localeCompare(b));
+}
+
+const sumAdd = (list: GitChange[]) =>
+  list.reduce((sum, change) => sum + change.additions, 0);
+const sumDel = (list: GitChange[]) =>
+  list.reduce((sum, change) => sum + change.deletions, 0);
+
+type Scope = "turn" | "session" | "tree";
+
+const WIDENING: Scope[] = ["turn", "session", "tree"];
+
+/**
+ * Which scope to show when the one the user picked has nothing in it: widen
+ * turn → session → tree, never narrow, so the pill never goes blank while
+ * something is still changed.
+ */
+function pickScope(wanted: Scope, lists: Record<Scope, GitChange[]>): Scope {
+  return (
+    WIDENING.slice(WIDENING.indexOf(wanted)).find((s) => lists[s].length > 0) ??
+    "tree"
+  );
+}
+
+/**
+ * Changes dock above the composer. One line at rest; open, it lists changes
+ * grouped by folder, scoped to the latest turn by default (Session and
+ * Working tree one click away). It stands in for the latest turn's inline
+ * receipt (see `.turn-files--latest`), so only one changes pill shows.
+ * A file opens in the review pane — never inline. Git lives behind the branch
+ * chip (sync, switch/create, stash) and the Commit split button (commit,
+ * commit + push, PR). Renders nothing outside a git repo.
+ */
 export function ChangesPanel({
   sessionKey,
   cwd,
   streaming,
   compact = false,
+  sessionPaths = [],
+  sessionPath,
   onWorkspaceClick,
   onAskAgent,
   onLeaveWorktree,
+  onOpenChanges,
+  onOpenDiff,
+  actions,
 }: {
   sessionKey: string;
   cwd?: string;
   streaming: boolean;
-  /** Narrow split panes: +/− pill, no folder identity. */
+  /** Narrow split panes: short scope labels; branch chip only when open. */
   compact?: boolean;
-  /** Opens the workspace folder browser; the identity card's only action. */
+  /** Files this session's tools wrote: the "Session" scope's fallback for
+   *  conversations from before change recording existed. */
+  sessionPaths?: readonly string[];
+  /** The session file, so recorded changes survive a reload's new key. */
+  sessionPath?: string;
+  /** Opens the workspace folder browser (from the branch menu). */
   onWorkspaceClick?: () => void;
   /** Drops a prompt in the composer; the user still presses send. */
   onAskAgent?: (prompt: string) => void;
+  /** Opens the workspace explorer on its Changes tab. */
+  onOpenChanges?: () => void;
+  /** Shows one file's diff in the review pane. */
+  onOpenDiff?: (view: ToolFileView) => void;
+  /** Actions on the diff (Review), placed after the stats, before the view
+   *  icons. Still rendered when the card itself is hidden. */
+  actions?: React.ReactNode;
   /** Deleting the worktree this session lives in leaves its cwd gone, so the
    *  parent has to move the tab back to the main checkout. */
   onLeaveWorktree?: (mainPath: string) => void;
 }) {
-  const [data, setData] = useState<GitChangesResponse | null>(null);
+  const [data, setData] = useState<GitChangesResponse | null>(
+    () => lastSnapshot.get(cwd || "") ?? null,
+  );
   const [dismissed, setDismissed] = useState(false);
   // Always collapsed: the card stays a one-line pill until clicked.
   const [collapsed, setCollapsed] = useState(true);
@@ -164,28 +222,29 @@ export function ChangesPanel({
       return next;
     });
   }, []);
-  const [openFile, setOpenFile] = useState<string | null>(null);
-  const [diffs, setDiffs] = useState<Record<string, ToolDiff | undefined>>({});
-  // Hunk headers per file, so each change can be reverted on its own.
-  const [hunks, setHunks] = useState<Record<string, string[]>>({});
-  const [revertingHunk, setRevertingHunk] = useState<string | null>(null);
+  const [scope, setScope] = useState<Scope>("turn");
+  // Recorded per-turn / per-session views (server/changes.js).
+  const [recorded, setRecorded] = useState<{
+    turn?: ChangesResponse;
+    session?: ChangesResponse;
+  }>({});
+  const [closedDirs, setClosedDirs] = useState<ReadonlySet<string>>(new Set());
+  const [opening, setOpening] = useState<string | null>(null);
   const [message, setMessage] = useState("");
   const [pushBusy, setPushBusy] = useState(false);
   // Only one secondary op runs at a time; this is which.
   const [busyOp, setBusyOp] = useState<GitOp | null>(null);
-  // Every git outcome — primary push included — lands here and is shown as a
-  // floating toast. Inline result lines pushed the card's own controls around
-  // and scrolled out of view with the transcript.
+  // Failures render inline in the card they came from; successes are said
+  // by the receipt header.
   const [feedback, setFeedback] = useState<{
     ok: boolean;
     title: string;
     output?: string;
   } | null>(null);
-  const [menuOpen, setMenuOpen] = useState(false);
-  const [newBranch, setNewBranch] = useState("");
-  const menuRef = useRef<HTMLDivElement | null>(null);
-  // Stays on screen after a successful push (which empties the change list)
-  // so the outcome is visible in-app instead of only on GitHub.
+  const [menu, setMenu] = useState<"branch" | "commit" | null>(null);
+  const [branchQuery, setBranchQuery] = useState("");
+  // Stays on screen after a successful commit/push (which empties the change
+  // list) so the outcome is visible in-app instead of only on GitHub.
   const [pushed, setPushed] = useState<{
     branch?: string;
     output?: string;
@@ -236,8 +295,18 @@ export function ChangesPanel({
 
   const refresh = useCallback(async () => {
     const token = ++fetchToken.current;
+    // Independent of git: a failure here leaves the git view working.
+    void Promise.all([
+      api.changes(sessionKey, "turn", sessionPath),
+      api.changes(sessionKey, "session", sessionPath),
+    ])
+      .then(([turn, session]) => {
+        if (token === fetchToken.current) setRecorded({ turn, session });
+      })
+      .catch(() => {});
     try {
       const result = await api.gitChanges(sessionKey, cwd || "");
+      lastSnapshot.set(cwd || "", result);
       if (token === fetchToken.current) {
         setData(result);
         // Prune exclusions whose files left the working tree (committed
@@ -269,7 +338,12 @@ export function ChangesPanel({
     } catch {
       /* offline or unauthed; keep the previous snapshot */
     }
-  }, [sessionKey, cwd]);
+  }, [sessionKey, cwd, sessionPath]);
+
+  // Same panel, new folder: show that folder's last snapshot, not this one's.
+  useEffect(() => {
+    setData(lastSnapshot.get(cwd || "") ?? null);
+  }, [cwd]);
 
   // Initial load + explicit reloads (e.g. after a push).
   useEffect(() => {
@@ -283,8 +357,6 @@ export function ChangesPanel({
     wasStreaming.current = streaming;
     if (was && !streaming) {
       setDismissed(false);
-      setOpenFile(null);
-      setDiffs({});
       setPushed(null);
       setFeedback(null);
       setReloadToken((token) => token + 1);
@@ -299,14 +371,15 @@ export function ChangesPanel({
     return () => window.clearTimeout(timer);
   }, [pushed]);
 
-  // Popover hygiene: a click anywhere else, or Escape, closes the Git menu.
+  // Popover hygiene: a click outside any menu, or Escape, closes it.
   useEffect(() => {
-    if (!menuOpen) return;
+    if (!menu) return;
     const onPointerDown = (event: MouseEvent) => {
-      if (!menuRef.current?.contains(event.target as Node)) setMenuOpen(false);
+      if (!(event.target as Element).closest?.(".changes__menu-wrap"))
+        setMenu(null);
     };
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setMenuOpen(false);
+      if (event.key === "Escape") setMenu(null);
     };
     document.addEventListener("mousedown", onPointerDown);
     document.addEventListener("keydown", onKeyDown);
@@ -314,42 +387,79 @@ export function ChangesPanel({
       document.removeEventListener("mousedown", onPointerDown);
       document.removeEventListener("keydown", onKeyDown);
     };
-  }, [menuOpen]);
+  }, [menu]);
 
-  const toggleFile = async (path: string) => {
-    if (openFile === path) {
-      setOpenFile(null);
+  const absPath = (path: string) =>
+    cwd ? `${cwd.replace(/\/$/, "")}/${path}` : path;
+
+  // The diff goes to the review pane, where it has room and line numbers.
+  const openDiff = async (path: string, change?: GitChange) => {
+    if (!onOpenDiff || opening) return;
+    if (change && "diff" in change) {
+      const entry = change as RecordedChange;
+      if (entry.skipped)
+        setFeedback({ ok: false, title: `${path} is too large to keep a diff of.` });
+      else onOpenDiff({ title: absPath(path), diff: parseUnifiedDiff(entry.diff) });
       return;
     }
-    setOpenFile(path);
-    if (diffs[path] === undefined) {
-      try {
-        const result = await api.gitFileDiff(sessionKey, cwd || "", path);
-        const parsed = result.ok
-          ? parseUnifiedDiff(result.diff ?? "")
-          : undefined;
-        if (parsed) {
-          setDiffs((current) => ({ ...current, [path]: parsed }));
-          setHunks((current) => ({
-            ...current,
-            [path]: diffHunkHeaders(result.diff ?? ""),
-          }));
+    setOpening(path);
+    try {
+      const result = await api.gitFileDiff(sessionKey, cwd || "", path);
+      if (result.ok)
+        onOpenDiff({
+          title: absPath(path),
+          diff: parseUnifiedDiff(result.diff ?? ""),
+        });
+      else
+        setFeedback({
+          ok: false,
+          title: `Could not load the diff of ${path}.`,
+          output: result.error,
+        });
+    } catch (error) {
+      setFeedback({
+        ok: false,
+        title: `Could not load the diff of ${path}.`,
+        output: error instanceof Error ? error.message : String(error),
+      });
+    } finally {
+      setOpening(null);
+    }
+  };
+
+  // Discard = revert hunk 0 until none remain. Uncommitted work has no
+  // reflog, so this is the one action that always asks first.
+  const discardFile = async (path: string) => {
+    if (busy) return;
+    if (
+      !window.confirm(`Discard every change to ${path}? This can't be undone.`)
+    )
+      return;
+    setBusyOp("abort");
+    try {
+      for (let guard = 0; guard < 500; guard += 1) {
+        const result = await api.revertHunk(sessionKey, cwd || "", path, 0);
+        if (!result.ok) {
+          setFeedback({
+            ok: false,
+            title: result.error ?? `Could not discard ${path}.`,
+          });
+          break;
         }
-      } catch {
-        // A failed fetch collapses the row; toggling again retries.
-        setOpenFile(null);
+        if (!result.data?.remaining) break;
       }
+    } finally {
+      setBusyOp(null);
+      setReloadToken((token) => token + 1);
     }
   };
 
   // `remote` false commits without pushing — the same staging path, minus the
   // network step, for work that is not ready to leave the machine.
-  const pushToGithub = async (remote = true) => {
+  const commit = async (remote: boolean) => {
     if (pushBusy || busyOp) return;
-    setMenuOpen(false);
-    const paths = changes
-      .filter((change) => !excluded.has(change.path))
-      .map((change) => change.path);
+    setMenu(null);
+    const paths = included.map((change) => change.path);
     if (paths.length === 0) {
       setFeedback({
         ok: false,
@@ -367,14 +477,7 @@ export function ChangesPanel({
         remote,
       );
       if (result.ok) {
-        const count = `${paths.length} file${paths.length === 1 ? "" : "s"}`;
-        // The receipt card keeps the git output; the toast only announces it.
-        setFeedback({
-          ok: true,
-          title: remote
-            ? `Committed and pushed ${count} to GitHub.`
-            : `Committed ${count} locally — not pushed.`,
-        });
+        setFeedback(null);
         setPushed({
           branch: data?.branch,
           output: result.output,
@@ -382,8 +485,6 @@ export function ChangesPanel({
           remote,
         });
         setMessage("");
-        setOpenFile(null);
-        setDiffs({});
         setReloadToken((token) => token + 1);
       } else {
         setFeedback({
@@ -406,27 +507,28 @@ export function ChangesPanel({
   // Every secondary git op goes through here: one in flight at a time, one
   // result line, and a refresh so the header counters follow the repo.
   const runGit = async (op: GitOp, options?: GitOpOptions) => {
-    if (busy) return;
-    setMenuOpen(false);
+    setMenu(null);
     setBusyOp(op);
     try {
       const result = await api.gitRun(sessionKey, cwd || "", op, options);
-      setFeedback({
-        ok: result.ok,
-        title: result.ok ? `${OP_LABEL[op]} done.` : `${OP_LABEL[op]} failed.`,
-        output: result.ok ? result.output : (result.error ?? result.output),
-      });
-      if (result.ok) {
-        setOpenFile(null);
-        setDiffs({});
-        setReloadToken((token) => token + 1);
-      }
+      setFeedback(
+        result.ok
+          ? null
+          : {
+              ok: false,
+              title: `${OP_LABEL[op]} failed.`,
+              output: result.error ?? result.output,
+            },
+      );
+      if (result.ok) setReloadToken((token) => token + 1);
+      return result.ok;
     } catch (error) {
       setFeedback({
         ok: false,
         title: `${OP_LABEL[op]} failed.`,
         output: error instanceof Error ? error.message : String(error),
       });
+      return false;
     } finally {
       setBusyOp(null);
     }
@@ -438,7 +540,7 @@ export function ChangesPanel({
    */
   const discardWorktree = async () => {
     if (!worktree?.main || busy) return;
-    setMenuOpen(false);
+    setMenu(null);
     setBusyOp("abort");
     try {
       let result = await api.removeWorktree(sessionKey, cwd || "", cwd || "");
@@ -472,13 +574,30 @@ export function ChangesPanel({
   };
 
   const changes = data?.changes ?? [];
-  // Pill diffstat: the whole turn's additions/deletions, GitHub style.
-  const totalAdd = changes.reduce((sum, change) => sum + change.additions, 0);
-  const totalDel = changes.reduce((sum, change) => sum + change.deletions, 0);
+  const sessionChanges = cwd
+    ? changes.filter((change) => isSessionPath(change.path, sessionPaths, cwd))
+    : [];
+  // Recorded views know whose change is whose and outlive a commit; the
+  // path filter is only for conversations recorded before that existed.
+  const recordedSession = recorded.session?.files ?? [];
+  const lists: Record<Scope, GitChange[]> = {
+    turn: recorded.turn?.files ?? [],
+    session: recordedSession.length ? recordedSession : sessionChanges,
+    tree: changes,
+  };
+  const activeScope = pickScope(scope, lists);
+  const shown = lists[activeScope];
+  const hasScopes = lists.turn.length > 0 || lists.session.length > 0;
+  // Commit and discard act on the working tree, so a recorded row that has
+  // since been committed (or reverted) is listed but not selectable.
+  const dirty = new Set(changes.map((change) => change.path));
+  const totalAdd = sumAdd(shown);
+  const totalDel = sumDel(shown);
   const stashes = data?.stashes ?? [];
   const branches = data?.branches ?? [];
   const ahead = data?.ahead ?? 0;
   const behind = data?.behind ?? 0;
+  const unpublished = data?.upstream === false;
   const connected = Boolean(data?.connected);
   const remoteBranches = data?.remoteBranches ?? [];
   const conflicts = data?.conflicts ?? [];
@@ -487,234 +606,273 @@ export function ChangesPanel({
   const inProgress = Boolean(data?.state && data.state !== "clean");
   const verb = STATE_VERB[data?.state ?? ""] ?? "operation";
   const busy = pushBusy || busyOp !== null;
-  const included = changes.filter((change) => !excluded.has(change.path));
-  // A partial selection stashes exactly what is checked; a full one stashes
-  // the tree, which is what "stash" means everywhere else.
+  const included = shown.filter(
+    (change) => !excluded.has(change.path) && dirty.has(change.path),
+  );
+  // A partial selection stashes exactly what is shown and checked; all of it
+  // stashes the tree, which is what "stash" means everywhere else.
   const stashPaths =
     included.length && included.length < changes.length
       ? included.map((change) => change.path)
       : undefined;
 
-  const createBranch = () => {
-    const name = newBranch.trim();
-    if (!name) return;
-    setNewBranch("");
-    void runGit("branch-create", { branch: name });
+  // One button for the round trip: rebase onto upstream (the server
+  // autostashes), then push whatever is local-only.
+  const sync = async () => {
+    if (behind > 0 && !(await runGit("pull-rebase"))) return;
+    if (ahead > 0 || unpublished) await runGit("push");
+  };
+  const syncLabel = unpublished
+    ? "Publish branch"
+    : ahead && behind
+      ? `Sync — pull ${behind}, push ${ahead}`
+      : behind
+        ? `Pull ${behind}`
+        : ahead
+          ? `Push ${ahead}`
+          : "Up to date";
+
+  const query = branchQuery.trim();
+  const matches = (name: string) =>
+    !query || name.toLowerCase().includes(query.toLowerCase());
+  const localList = branches
+    .filter((name) => name !== data?.branch && matches(name))
+    .slice(0, query ? 8 : 5);
+  const remoteList = remoteBranches.filter(matches).slice(0, query ? 6 : 3);
+  const canCreate =
+    query &&
+    query !== data?.branch &&
+    !branches.includes(query) &&
+    !remoteBranches.includes(query);
+  const pickBranch = () => {
+    if (!query) return;
+    setBranchQuery("");
+    if (canCreate) void runGit("branch-create", { branch: query });
+    else if (localList[0] ?? remoteList[0])
+      void runGit("branch-switch", { branch: localList[0] ?? remoteList[0] });
   };
 
-  const gitMenu = (
+  const branchChip = (
     <div
       className="changes__menu-wrap"
-      ref={menuRef}
       onClick={(event) => event.stopPropagation()}
     >
       <button
         type="button"
-        className="changes__git"
+        className="cdock__branch"
         aria-haspopup="menu"
-        aria-expanded={menuOpen}
+        aria-expanded={menu === "branch"}
         disabled={busy}
-        onClick={() => setMenuOpen((open) => !open)}
-        title="Git actions"
+        onClick={() => setMenu((open) => (open === "branch" ? null : "branch"))}
+        title={
+          worktree
+            ? "Isolated worktree — other sessions cannot see these files"
+            : "Branch, sync and stash"
+        }
       >
-        {busyOp ? `${OP_LABEL[busyOp]}…` : "Git"}
-        <span className="changes__caret" aria-hidden>
-          ▾
+        <IconBranch size={13} />
+        {worktree && <span className="cdock__wt">worktree</span>}
+        <span className="cdock__branch-name">
+          {busyOp ? `${OP_LABEL[busyOp]}…` : data?.branch}
         </span>
+        {!busyOp && (ahead > 0 || behind > 0) && (
+          <span className="cdock__drift">
+            {ahead > 0 && `↑${ahead}`}
+            {ahead > 0 && behind > 0 && " "}
+            {behind > 0 && `↓${behind}`}
+          </span>
+        )}
+        <IconChevronDown size={11} />
       </button>
-      {menuOpen && (
-        <div className="changes__menu" role="menu">
-          <p className="changes__menu-head">Sync</p>
-          <button
-            type="button"
-            role="menuitem"
-            disabled={!connected}
-            onClick={() => void runGit("fetch")}
-          >
-            Fetch <span>refresh remote refs</span>
-          </button>
-          <button
-            type="button"
-            role="menuitem"
-            disabled={!connected || inProgress}
-            onClick={() => void runGit("pull")}
-          >
-            Pull <span>merge{behind ? ` · ${behind} behind` : ""}</span>
-          </button>
-          <button
-            type="button"
-            role="menuitem"
-            disabled={!connected || inProgress}
-            onClick={() => void runGit("pull-rebase")}
-          >
-            Pull <span>rebase</span>
-          </button>
-          <button
-            type="button"
-            role="menuitem"
-            disabled={!connected || inProgress}
-            onClick={() => void runGit("push")}
-          >
-            Push <span>{ahead ? `${ahead} ahead` : "commits only"}</span>
-          </button>
-          {changes.length > 0 && (
+      {menu === "branch" && (
+        <div className="changes__menu cdock__pop" role="menu">
+          <input
+            type="text"
+            className="cdock__search"
+            value={branchQuery}
+            placeholder="Find or create a branch…"
+            aria-label="Find or create a branch"
+            autoFocus
+            onChange={(event) => setBranchQuery(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                event.preventDefault();
+                pickBranch();
+              }
+            }}
+          />
+          {!query && onWorkspaceClick && cwd && (
             <button
               type="button"
               role="menuitem"
-              disabled={included.length === 0 || inProgress}
-              onClick={() => void pushToGithub(false)}
-            >
-              Commit <span>no push</span>
-            </button>
-          )}
-          {/* Only for commits the remote has not seen: a soft reset there can
-              never leave the branch needing a force-push. */}
-          {ahead > 0 && !inProgress && (
-            <button
-              type="button"
-              role="menuitem"
-              onClick={() => void runGit("undo-commit")}
-            >
-              Undo last commit <span>keeps the changes</span>
-            </button>
-          )}
-
-          <p className="changes__menu-head">Branch</p>
-          <div className="changes__menu-form">
-            <input
-              type="text"
-              value={newBranch}
-              placeholder="new-branch-name"
-              aria-label="New branch name"
-              onChange={(event) => setNewBranch(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === "Enter") {
-                  event.preventDefault();
-                  createBranch();
-                }
+              className="cdock__workspace"
+              title={`${cwd} — change workspace`}
+              onClick={() => {
+                setMenu(null);
+                onWorkspaceClick();
               }}
-            />
-            <button
-              type="button"
-              disabled={!newBranch.trim()}
-              onClick={createBranch}
             >
-              Create
+              <span>
+                <b>{folderName(cwd)}</b> {homeRelative(cwd)}
+              </span>
+              <span>change folder</span>
             </button>
-          </div>
-          {branches
-            .filter((name) => name !== data?.branch)
-            .slice(0, 5)
-            .map((name) => (
-              <button
-                key={name}
-                type="button"
-                role="menuitem"
-                onClick={() => void runGit("branch-switch", { branch: name })}
-              >
-                <span className="changes__menu-branch">{name}</span>
-                <span>switch</span>
-              </button>
-            ))}
-          {remoteBranches.slice(0, 4).map((name) => (
+          )}
+          {!query && (
+            <div className="cdock__sync">
+              <div className="cdock__sync-row">
+                <strong>{data?.branch}</strong>
+                <span>
+                  {unpublished
+                    ? "not on the remote yet"
+                    : connected
+                      ? "vs upstream"
+                      : "no remote"}
+                </span>
+                <span className="cdock__drift">
+                  {behind > 0 && `↓${behind} `}
+                  {ahead > 0 && `↑${ahead}`}
+                </span>
+              </div>
+              <div className="cdock__sync-row">
+                <button
+                  type="button"
+                  className="changes__push cdock__sync-go"
+                  disabled={
+                    !connected ||
+                    inProgress ||
+                    (!unpublished && !ahead && !behind)
+                  }
+                  onClick={() => void sync()}
+                >
+                  {syncLabel}
+                </button>
+                <button
+                  type="button"
+                  className="cdock__icon"
+                  aria-label="Fetch from remote"
+                  title="Fetch from remote"
+                  disabled={!connected}
+                  onClick={() => void runGit("fetch")}
+                >
+                  <IconRefresh size={13} />
+                </button>
+              </div>
+              {/* Only for commits the remote has not seen: a soft reset there
+                  can never leave the branch needing a force-push. */}
+              {ahead > 0 && !inProgress && (
+                <button
+                  type="button"
+                  className="cdock__link"
+                  onClick={() => void runGit("undo-commit")}
+                >
+                  Undo last commit — keeps the changes
+                </button>
+              )}
+            </div>
+          )}
+          {canCreate && (
+            <button type="button" role="menuitem" onClick={pickBranch}>
+              Create <b className="cdock__mono">{query}</b>
+              <span>new branch</span>
+            </button>
+          )}
+          {(localList.length > 0 || remoteList.length > 0) && (
+            <p className="changes__menu-head">{query ? "Branches" : "Recent"}</p>
+          )}
+          {localList.map((name) => (
+            <button
+              key={name}
+              type="button"
+              role="menuitem"
+              onClick={() => void runGit("branch-switch", { branch: name })}
+            >
+              <span className="cdock__mono">{name}</span>
+              <span>switch</span>
+            </button>
+          ))}
+          {remoteList.map((name) => (
             <button
               key={`remote:${name}`}
               type="button"
               role="menuitem"
               onClick={() => void runGit("branch-switch", { branch: name })}
             >
-              <span className="changes__menu-branch">{name}</span>
+              <span className="cdock__mono">{name}</span>
               <span>from remote</span>
             </button>
           ))}
-
-          {worktree && (
+          {stashes.length > 0 && !query && (
             <>
-              <p className="changes__menu-head">Worktree</p>
-              <button
-                type="button"
-                role="menuitem"
-                disabled={changes.length > 0 || inProgress}
-                onClick={() => void runGit("pr")}
-              >
-                Open pull request{" "}
-                <span>
-                  {changes.length ? "commit first" : `push ${worktree.branch}`}
-                </span>
-              </button>
-              <button
-                type="button"
-                role="menuitem"
-                disabled={!worktree.main}
-                onClick={() => void discardWorktree()}
-              >
-                Delete this worktree <span>back to main checkout</span>
-              </button>
+              <p className="changes__menu-head">Stashed · {stashes.length}</p>
+              {stashes.map((stash) => (
+                <div key={stash.ref} className="changes__stash">
+                  <span className="changes__stash-label" title={stash.label}>
+                    {stashLabel(stash.label, stash.ref)}
+                  </span>
+                  <span className="changes__stash-acts">
+                    <span className="changes__stash-age">{stash.age}</span>
+                    <button
+                      type="button"
+                      title="Apply and remove this stash"
+                      onClick={() =>
+                        void runGit("stash-pop", { ref: stash.ref })
+                      }
+                    >
+                      Pop
+                    </button>
+                    <button
+                      type="button"
+                      className="is-danger"
+                      title="Delete this stash for good"
+                      onClick={() => {
+                        if (
+                          window.confirm(
+                            `Drop ${stash.ref}? Its changes are gone for good.`,
+                          )
+                        )
+                          void runGit("stash-drop", { ref: stash.ref });
+                      }}
+                    >
+                      Drop
+                    </button>
+                  </span>
+                </div>
+              ))}
             </>
           )}
-
-          <p className="changes__menu-head">
-            Stash{stashes.length ? ` · ${stashes.length}` : ""}
-          </p>
-          <button
-            type="button"
-            role="menuitem"
-            disabled={changes.length === 0 || inProgress}
-            onClick={() =>
-              void runGit("stash", {
-                ...(message.trim() ? { message: message.trim() } : {}),
-                ...(stashPaths ? { files: stashPaths } : {}),
-              })
-            }
-          >
-            {stashPaths ? "Stash selected" : "Stash all changes"}{" "}
-            <span>
-              {changes.length
-                ? `${(stashPaths ?? changes).length} file${(stashPaths ?? changes).length === 1 ? "" : "s"}`
-                : "nothing to stash"}
-            </span>
-          </button>
-          {stashes.map((stash) => (
-            <div key={stash.ref} className="changes__stash">
-              <span className="changes__stash-label" title={stash.label}>
-                {stashLabel(stash.label, stash.ref)}
+          {!query && (changes.length > 0 || worktree) && (
+            <div className="cdock__pop-foot">
+              <span>
+                {changes.length
+                  ? `${plural(changes.length, "uncommitted change")} travel with you`
+                  : `Worktree · ${worktree?.branch}`}
               </span>
-              <span className="changes__stash-acts">
-                <span className="changes__stash-age">{stash.age}</span>
+              {changes.length > 0 && (
                 <button
                   type="button"
-                  title="Apply and remove this stash"
-                  onClick={() => void runGit("stash-pop", { ref: stash.ref })}
+                  disabled={inProgress}
+                  onClick={() =>
+                    void runGit("stash", {
+                      ...(message.trim() ? { message: message.trim() } : {}),
+                      ...(stashPaths ? { files: stashPaths } : {}),
+                    })
+                  }
                 >
-                  Pop
+                  {stashPaths ? `Stash ${stashPaths.length}` : "Stash"}
                 </button>
+              )}
+              {worktree && (
                 <button
                   type="button"
-                  title="Apply but keep this stash"
-                  onClick={() => void runGit("stash-apply", { ref: stash.ref })}
+                  disabled={!worktree.main}
+                  title="Delete this worktree and go back to the main checkout"
+                  onClick={() => void discardWorktree()}
                 >
-                  Apply
+                  Delete worktree
                 </button>
-                <button
-                  type="button"
-                  className="is-danger"
-                  title="Delete this stash for good"
-                  onClick={() => {
-                    if (
-                      window.confirm(
-                        `Drop ${stash.ref}? Its changes are gone for good.`,
-                      )
-                    )
-                      void runGit("stash-drop", { ref: stash.ref });
-                  }}
-                >
-                  Drop
-                </button>
-              </span>
+              )}
             </div>
-          ))}
-          {stashes.length === 0 && (
-            <p className="changes__menu-empty">Nothing stashed.</p>
           )}
         </div>
       )}
@@ -728,7 +886,7 @@ export function ChangesPanel({
       <p className="changes__conflict-text">
         <strong>
           {conflicts.length > 0
-            ? `Conflict in ${conflicts.length} file${conflicts.length === 1 ? "" : "s"}`
+            ? `Conflict in ${plural(conflicts.length, "file")}`
             : `${verb[0].toUpperCase()}${verb.slice(1)} in progress`}
         </strong>{" "}
         {conflicts.length > 0
@@ -777,8 +935,6 @@ export function ChangesPanel({
     </div>
   );
 
-  // No floating toast: successes are said by the receipt card itself, and a
-  // failure renders as an inline line inside the card it came from.
   const failure = feedback && !feedback.ok && (
     <div className="changes__error" role="alert">
       <strong>{feedback.title}</strong>
@@ -786,45 +942,47 @@ export function ChangesPanel({
     </div>
   );
 
-  // Branch + how far it has drifted from its upstream: the one line of repo
-  // state worth showing even when the tree is clean.
-  const branchMeta = (
-    <span className="changes__meta">
-      {worktree && (
-        <span
-          className="changes__worktree"
-          title="Isolated checkout — other sessions cannot see these files"
-        >
-          worktree ·{" "}
-        </span>
-      )}
-      {data?.branch}
-      {data?.upstream === false && " · unpushed branch"}
-      {ahead > 0 && ` · ↑${ahead}`}
-      {behind > 0 && ` · ↓${behind}`}
-      {stashes.length > 0 &&
-        ` · ${stashes.length} stash${stashes.length === 1 ? "" : "es"}`}
-    </span>
+  const dismiss = (
+    <button
+      type="button"
+      className="changes__dismiss"
+      aria-label="Dismiss changes"
+      title="Dismiss"
+      onClick={() => setDismissed(true)}
+    >
+      ×
+    </button>
   );
 
   // Dismissing the card must not swallow a git error the user has not read.
-  if (!data?.repo || dismissed) return <>{failure}</>;
+  if (!data?.repo || dismissed)
+    return (
+      <>
+        {failure}
+        {actions}
+      </>
+    );
 
-  // Nothing to commit: collapse to a one-line repo bar so the Git menu (pull,
-  // branches, stashes) stays reachable without a card's worth of chrome. The
-  // post-push receipt keeps its ✓ heading until the next turn clears it.
   // Dense panes already show the folder in the header, so a clean tree stays quiet.
   if (changes.length === 0 && compact && !pushed && !inProgress)
-    return <>{failure}</>;
+    return (
+      <>
+        {failure}
+        {actions}
+      </>
+    );
+
+  // Nothing to commit: a one-line repo bar keeps the branch menu reachable,
+  // and local-only commits get the one button that matters next — Push.
   if (changes.length === 0) {
     return (
       <section
-        className={`changes changes--clean${pushed ? " changes--pushed" : ""}${
+        className={`changes cdock changes--clean${pushed ? " changes--pushed" : ""}${
           inProgress ? " changes--conflict" : ""
         }`}
-        aria-label={pushed ? "Pushed to GitHub" : "Repository"}
+        aria-label={pushed ? "Committed" : "Repository"}
       >
-        <header className="changes__head">
+        <header className="changes__head cdock__head">
           {pushed && (
             <span className="changes__check" aria-hidden>
               ✓
@@ -835,26 +993,41 @@ export function ChangesPanel({
               ? pushed.remote
                 ? "Pushed to GitHub"
                 : "Committed locally"
-              : "Repo"}
+              : "No changes"}
           </strong>
-          {pushed ? (
+          {pushed && (
             <span className="changes__meta">
-              {pushed.branch && `${pushed.branch} · `}
-              {pushed.files} file{pushed.files === 1 ? "" : "s"}
+              {plural(pushed.files, "file")}
             </span>
-          ) : (
-            branchMeta
           )}
-          {gitMenu}
-          <button
-            type="button"
-            className="changes__dismiss"
-            aria-label="Dismiss"
-            title="Dismiss"
-            onClick={() => setDismissed(true)}
-          >
-            ×
-          </button>
+          <span className="cdock__spacer" />
+          {branchChip}
+          {(ahead > 0 || unpublished) && connected && !inProgress && (
+            <button
+              type="button"
+              className="changes__push"
+              disabled={busy}
+              onClick={() => void runGit("push")}
+            >
+              {busyOp === "push"
+                ? "Pushing…"
+                : unpublished
+                  ? "Publish branch"
+                  : `Push ↑${ahead}`}
+            </button>
+          )}
+          {worktree && !inProgress && (
+            <button
+              type="button"
+              className="changes__expand cdock__text-btn"
+              disabled={busy}
+              onClick={() => void runGit("pr")}
+            >
+              Open PR
+            </button>
+          )}
+          {actions}
+          {dismiss}
         </header>
         {pushed?.output && (
           <pre className="changes__output">{pushed.output.slice(0, 800)}</pre>
@@ -865,222 +1038,300 @@ export function ChangesPanel({
     );
   }
 
-  // Clicking anywhere on the pill (except a real control) toggles the card.
+  // Clicking anywhere on the header (except a real control) toggles the card.
   const headerClick = (event: React.MouseEvent) => {
-    if ((event.target as HTMLElement).closest("button, input")) return;
+    if ((event.target as HTMLElement).closest("button, input, [role=menu]"))
+      return;
     toggleCollapsed();
+  };
+  const groups = groupByDir(shown);
+  const grouped = groups.length > 1;
+
+  const row = (change: GitChange) => {
+    const name = grouped
+      ? change.path.slice(change.path.lastIndexOf("/") + 1)
+      : change.path;
+    const total = change.additions + change.deletions || 1;
+    const isExcluded = excluded.has(change.path);
+    const entry = "diff" in change ? (change as RecordedChange) : null;
+    const inTree = dirty.has(change.path);
+    return (
+      <li
+        key={change.path}
+        className={`cdock__row${isExcluded ? " is-excluded" : ""}${
+          opening === change.path ? " is-loading" : ""
+        }`}
+      >
+        <input
+          type="checkbox"
+          className="cdock__check"
+          checked={!isExcluded && inTree}
+          onChange={() => toggleExcluded(change.path)}
+          aria-label={`Include ${change.path} in the commit`}
+          title={
+            !inTree
+              ? "No uncommitted changes left in this file"
+              : isExcluded
+                ? "Not in the commit"
+                : "In the commit"
+          }
+          disabled={busy || !inTree}
+        />
+        <button
+          type="button"
+          className="cdock__file"
+          title={change.path}
+          onClick={() => void openDiff(change.path, change)}
+        >
+          <span className="fbadge" data-kind={fileKind(change.path)}>
+            {fileKind(change.path)}
+          </span>
+          <span className="cdock__name">{name}</span>
+          {change.status !== "modified" && (
+            <span className={`cdock__tag is-${change.status}`}>
+              {change.status === "added"
+                ? "new"
+                : change.status === "deleted"
+                  ? "deleted"
+                  : "conflict"}
+            </span>
+          )}
+          {entry?.shared && (
+            <span
+              className="cdock__tag is-shared"
+              title="Another session in this checkout also changed this file — the diff may include its edits."
+            >
+              shared
+            </span>
+          )}
+          {entry && !entry.shared && !entry.exact && (
+            <span
+              className="cdock__tag is-shared"
+              title="Something else changed this file between this session's turns — the diff may include those edits."
+            >
+              mixed
+            </span>
+          )}
+          {entry?.source === "command" && (
+            <span
+              className="cdock__tag is-command"
+              title="Changed by a shell command, not an edit tool."
+            >
+              cmd
+            </span>
+          )}
+          {entry?.drift && (
+            <span
+              className="cdock__tag is-drift"
+              title="The file has changed again since — the diff shows it as this view left it."
+            >
+              edited since
+            </span>
+          )}
+          <span className="cdock__stat">
+            <b>+{change.additions}</b>
+            <i>−{change.deletions}</i>
+          </span>
+          <span className="cdock__bar" aria-hidden>
+            <span style={{ flexGrow: change.additions / total }} />
+            <span style={{ flexGrow: change.deletions / total }} />
+          </span>
+        </button>
+        {change.status === "modified" && !entry && (
+          <button
+            type="button"
+            className="cdock__icon cdock__discard"
+            aria-label={`Discard changes to ${change.path}`}
+            title="Discard changes"
+            disabled={busy}
+            onClick={() => void discardFile(change.path)}
+          >
+            <IconRestore size={13} />
+          </button>
+        )}
+      </li>
+    );
   };
 
   return (
     <section
-      className={`changes${inProgress ? " changes--conflict" : ""}${
+      className={`changes cdock${inProgress ? " changes--conflict" : ""}${
         collapsed ? " changes--collapsed" : ""
       }${compact ? " changes--dense" : ""}`}
       aria-label="Code changes"
+      data-scope={activeScope}
     >
-      <header className="changes__head" onClick={headerClick}>
+      <header className="changes__head cdock__head" onClick={headerClick}>
         <button
           type="button"
-          className="changes__pill"
+          className="cdock__title"
           aria-expanded={!collapsed}
           onClick={toggleCollapsed}
         >
-          <strong>Changes</strong>
-          {!compact && (
-            <span className="changes__meta">
-              {data.branch}
-              {ahead > 0 && ` ↑${ahead}`}
-              {behind > 0 && ` ↓${behind}`} · {changes.length} file
-              {changes.length === 1 ? "" : "s"}
-              {stashes.length > 0 && ` · ${stashes.length} stashed`}
-            </span>
-          )}
-          <span className="changes__diffstat">
-            <b>+{totalAdd.toLocaleString()}</b>
-            <i>−{totalDel.toLocaleString()}</i>
-          </span>
           <span
             className={`changes__pill-chevron${collapsed ? " is-closed" : ""}`}
             aria-hidden
           >
-            {compact ? (
-              <span className="changes__files-count">{changes.length}f ›</span>
-            ) : (
-              <IconChevronDown size={14} />
-            )}
+            <IconChevronDown size={13} />
           </span>
+          <strong>Changes</strong>
+          {(collapsed || compact || !hasScopes) && (
+            <span className="cdock__count">{plural(shown.length, "file")}</span>
+          )}
         </button>
-        {/* Git actions only matter on the expanded card. */}
-        {!collapsed && gitMenu}
-        {!collapsed && (
-          <button
-            type="button"
-            className="changes__collapse"
-            aria-expanded={!collapsed}
-            aria-label="Collapse changes"
-            title="Collapse changes"
-            onClick={toggleCollapsed}
-          >
-            <IconChevronDown size={14} />
-          </button>
-        )}
-        <button
-          type="button"
-          className="changes__dismiss"
-          aria-label="Dismiss changes"
-          title="Dismiss"
-          onClick={() => setDismissed(true)}
-        >
-          ×
-        </button>
-      </header>
-      <ul className="changes__files">
-        {changes.map((change) => (
-          <li key={change.path}>
-            <div className="changes__file">
-              <input
-                type="checkbox"
-                className="changes__file-check"
-                checked={!excluded.has(change.path)}
-                onChange={() => toggleExcluded(change.path)}
-                aria-label={`Commit ${change.path}`}
-                disabled={busy}
-              />
+        {!collapsed && hasScopes && (
+          <div className="cdock__seg" role="tablist" aria-label="Scope">
+            {lists.turn.length > 0 && (
               <button
                 type="button"
-                className="changes__file-toggle"
-                aria-expanded={openFile === change.path}
-                onClick={() => void toggleFile(change.path)}
+                role="tab"
+                aria-selected={activeScope === "turn"}
+                title={recorded.turn?.turn?.label || "The latest turn that changed files"}
+                onClick={() => setScope("turn")}
               >
-                <span
-                  className={`changes__status is-${change.status}`}
-                  title={change.status}
-                >
-                  {STATUS_LETTER[change.status]}
-                </span>
-                <span className="changes__path" title={change.path}>
-                  {change.path}
-                </span>
-                <span className="changes__stats">
-                  <b>+{change.additions}</b>
-                  <i>−{change.deletions}</i>
-                </span>
+                {compact ? "Turn" : "Last turn"} <span>{lists.turn.length}</span>
               </button>
-            </div>
-            {openFile === change.path &&
-              (diffs[change.path] ? (
-                <div className="changes__diff">
-                  <DiffPreview diff={diffs[change.path]!} />
-                  {(hunks[change.path]?.length ?? 0) > 1 && (
-                    <div className="changes__hunks">
-                      {hunks[change.path]!.map((header, index) => {
-                        const id = `${change.path}#${index}`;
-                        return (
-                          <div key={id} className="changes__hunk">
-                            <code>{header}</code>
-                            <button
-                              type="button"
-                              disabled={revertingHunk !== null}
-                              onClick={async () => {
-                                // The only action in this panel with nothing
-                                // behind it: uncommitted work, so no reflog
-                                // and no stash to recover from.
-                                if (
-                                  !window.confirm(
-                                    `Revert this hunk of ${change.path}? Those changes are gone for good.`,
-                                  )
-                                )
-                                  return;
-                                setRevertingHunk(id);
-                                try {
-                                  const result = await api.revertHunk(
-                                    sessionKey,
-                                    cwd || "",
-                                    change.path,
-                                    index,
-                                  );
-                                  if (result.ok) {
-                                    // The diff just changed underneath us —
-                                    // drop it so the next open re-fetches.
-                                    setOpenFile(null);
-                                    setDiffs({});
-                                    setHunks({});
-                                    setReloadToken((token) => token + 1);
-                                  } else {
-                                    setFeedback({
-                                      ok: false,
-                                      title:
-                                        result.error ??
-                                        "Could not revert that hunk.",
-                                    });
-                                  }
-                                } finally {
-                                  setRevertingHunk(null);
-                                }
-                              }}
-                            >
-                              {revertingHunk === id ? "Reverting…" : "Revert"}
-                            </button>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  )}
-                </div>
-              ) : (
-                <div className="changes__diff changes__diff--empty">
-                  Loading diff…
-                </div>
-              ))}
-          </li>
-        ))}
-      </ul>
-      {conflictBar}
-      {!inProgress && (
-        <footer className="changes__foot">
-          {onWorkspaceClick && !compact && (
+            )}
+            {lists.session.length > 0 && (
+              <button
+                type="button"
+                role="tab"
+                aria-selected={activeScope === "session"}
+                onClick={() => setScope("session")}
+              >
+                {compact ? "Session" : "This session"}{" "}
+                <span>{lists.session.length}</span>
+              </button>
+            )}
             <button
               type="button"
-              className="changes__workspace"
-              title={`${cwd ?? ""} — change workspace`}
-              onClick={onWorkspaceClick}
+              role="tab"
+              aria-selected={activeScope === "tree"}
+              onClick={() => setScope("tree")}
             >
-              <span className="changes__workspace-dot" aria-hidden />
-              <span className="changes__workspace-stack">
-                <strong>{folderName(cwd ?? "")}</strong>
-                <em>
-                  {[cwd ? homeRelative(cwd) : "", data?.branch]
-                    .filter(Boolean)
-                    .join(" · ")}
-                </em>
-              </span>
-              <span className="changes__workspace-chev" aria-hidden>
-                <IconChevronDown size={12} />
-              </span>
+              {compact ? "All" : "Working tree"} <span>{changes.length}</span>
             </button>
-          )}
+          </div>
+        )}
+        <span className="changes__diffstat">
+          <b>+{totalAdd.toLocaleString()}</b>
+          <i>−{totalDel.toLocaleString()}</i>
+        </span>
+        <span className="cdock__spacer" />
+        {(!compact || !collapsed) && branchChip}
+        {actions}
+        {onOpenChanges && (
+          <button
+            type="button"
+            className="changes__expand"
+            aria-label="Open changes in workspace"
+            title="Open changes in workspace"
+            onClick={(event) => {
+              event.stopPropagation();
+              onOpenChanges();
+            }}
+          >
+            <IconExpand size={13} />
+          </button>
+        )}
+        {dismiss}
+      </header>
+      {!collapsed && (
+        <ul className="cdock__files">
+          {grouped
+            ? groups.map(([dir, list]) => {
+                const open = !closedDirs.has(dir);
+                return (
+                  <li key={dir || "."} className="cdock__group">
+                    <button
+                      type="button"
+                      className="cdock__dir"
+                      aria-expanded={open}
+                      onClick={() =>
+                        setClosedDirs((current) => {
+                          const next = new Set(current);
+                          if (open) next.add(dir);
+                          else next.delete(dir);
+                          return next;
+                        })
+                      }
+                    >
+                      <span
+                        className={`changes__pill-chevron${open ? "" : " is-closed"}`}
+                        aria-hidden
+                      >
+                        <IconChevronDown size={11} />
+                      </span>
+                      <span className="cdock__mono">{dir ? `${dir}/` : "./"}</span>
+                      <span className="cdock__dim">{plural(list.length, "file")}</span>
+                      <span className="cdock__spacer" />
+                      <span className="cdock__stat">
+                        <b>+{sumAdd(list).toLocaleString()}</b>
+                        <i>−{sumDel(list).toLocaleString()}</i>
+                      </span>
+                    </button>
+                    {open && <ul>{list.map(row)}</ul>}
+                  </li>
+                );
+              })
+            : shown.map(row)}
+        </ul>
+      )}
+      {!collapsed && conflictBar}
+      {!collapsed && !inProgress && (
+        <footer className="changes__foot cdock__foot">
           <input
             type="text"
             className="changes__commit-input"
             value={message}
             onChange={(event) => setMessage(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" && (event.metaKey || event.ctrlKey))
+                void commit(false);
+            }}
             placeholder="Commit message (optional)"
             aria-label="Commit message"
             disabled={busy}
           />
-          <button
-            type="button"
-            className="changes__push"
-            onClick={() => void pushToGithub()}
-            disabled={busy || included.length === 0 || inProgress}
-            title={
-              changes.every((change) => excluded.has(change.path))
-                ? "No files selected"
-                : undefined
-            }
+          <div
+            className="changes__menu-wrap cdock__split"
+            onClick={(event) => event.stopPropagation()}
           >
-            {pushBusy ? "Pushing…" : `Push to GitHub (${included.length})`}
-          </button>
+            <button
+              type="button"
+              className="changes__push"
+              onClick={() => void commit(false)}
+              disabled={busy || included.length === 0}
+              title={included.length === 0 ? "No files selected" : "⌘↵"}
+            >
+              {pushBusy ? "Committing…" : `Commit ${plural(included.length, "file")}`}
+            </button>
+            <button
+              type="button"
+              className="changes__push cdock__caret"
+              aria-label="More commit options"
+              aria-haspopup="menu"
+              aria-expanded={menu === "commit"}
+              disabled={busy}
+              onClick={() =>
+                setMenu((open) => (open === "commit" ? null : "commit"))
+              }
+            >
+              <IconChevronDown size={12} />
+            </button>
+            {menu === "commit" && (
+              <div className="changes__menu cdock__pop is-up" role="menu">
+                <button
+                  type="button"
+                  role="menuitem"
+                  disabled={included.length === 0 || !connected}
+                  onClick={() => void commit(true)}
+                >
+                  Commit &amp; push <span>to GitHub</span>
+                </button>
+              </div>
+            )}
+          </div>
         </footer>
       )}
       {failure}

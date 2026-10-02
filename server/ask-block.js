@@ -11,8 +11,40 @@ const ASK_FENCE = /(^|\n)[ ]{0,3}(?:`{3,}|~{3,})[ \t]*ask[ \t]*(\n|$)/;
 function payloadIsAsk(raw) {
   const trimmed = String(raw ?? "").trim();
   if (!trimmed.startsWith("[") && !trimmed.startsWith("{")) return false;
+  // Models (claude) end an ask payload one bracket short — missing the final
+  // root `}` right before the closing fence. Close what is left open so the
+  // queue still treats the turn as an ask; keeps the same tolerance as
+  // parseAsk in src/lib/askBlock.ts.
+  let parsed;
   try {
-    const parsed = JSON.parse(trimmed);
+    parsed = JSON.parse(trimmed);
+  } catch {
+    const stack = [];
+    let inString = false;
+    let escaped = false;
+    for (const char of trimmed) {
+      if (escaped) {
+        escaped = false;
+        continue;
+      }
+      if (inString) {
+        if (char === "\\") escaped = true;
+        else if (char === '"') inString = false;
+        continue;
+      }
+      if (char === '"') inString = true;
+      else if (char === "{" || char === "[")
+        stack.push(char === "{" ? "}" : "]");
+      else if (char === "}" || char === "]") stack.pop();
+    }
+    if (inString || escaped || stack.length === 0) return false;
+    try {
+      parsed = JSON.parse(trimmed + stack.toReversed().join(""));
+    } catch {
+      return false;
+    }
+  }
+  try {
     const list = Array.isArray(parsed)
       ? parsed
       : (parsed ?? undefined)?.questions;
@@ -31,7 +63,9 @@ function payloadIsAsk(raw) {
 
 /** Closed ```json fence whose body is an ask payload. */
 function jsonFenceIsAsk(text) {
-  const lines = String(text ?? "").replace(/\r\n/g, "\n").split("\n");
+  const lines = String(text ?? "")
+    .replace(/\r\n/g, "\n")
+    .split("\n");
   for (let i = 0; i < lines.length; i++) {
     const open = /^( {0,3})(`{3,}|~{3,})[ \t]*([^\s`]*)[ \t]*$/.exec(
       lines[i] ?? "",

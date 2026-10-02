@@ -8,6 +8,7 @@ import type {
   RunStatus,
   SessionHistoryMessage,
   SessionState,
+  PendingUserInput,
 } from "./api";
 import { isSubagentTool } from "./subagents.ts";
 
@@ -56,6 +57,8 @@ export type TimelineItem =
       id: string;
       kind: "user";
       text: string;
+      /** Attached pictures as data: URLs, shown as thumbnails in the bubble. */
+      images?: string[];
       timestamp: number;
       versions?: UserMessageVersion[];
       versionIndex?: number;
@@ -272,6 +275,23 @@ function extractHistoryText(value: unknown, imageLabel = ""): string {
     .join("\n");
 }
 
+/** Image blocks of a stored message as data: URLs. Handles both the
+ *  `{data, mimeType}` (pi) and `{source: {data, media_type}}` (Anthropic)
+ *  shapes; anything without inline base64 is skipped. */
+export function extractHistoryImages(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((part) => {
+    const record = asRecord(part);
+    if (record.type !== "image") return [];
+    const source = asRecord(record.source);
+    const data = record.data ?? source.data;
+    const mime = record.mimeType ?? source.media_type ?? "image/png";
+    return typeof data === "string" && data
+      ? [`data:${String(mime)};base64,${data}`]
+      : [];
+  });
+}
+
 /** True when the session file already has a finished assistant reply after
  *  the last user message — the hung-Grok case where ACP never sent
  *  agent_settled but the journal is complete. A turn that still ends on a
@@ -360,6 +380,7 @@ export class Timeline {
   private messageStreamIds: string[] = [];
   /** Manual-mode tool calls waiting on the user's approval. */
   pendingApprovals: PendingApproval[] = [];
+  pendingUserInputs: PendingUserInput[] = [];
   /** Compactions seen live in this tab (X-ray markers). */
   compactions: LiveCompaction[] = [];
   /**
@@ -485,10 +506,16 @@ export class Timeline {
     });
   }
 
-  appendUser(text: string) {
+  appendUser(text: string, images?: string[]) {
     this.updateItems((current) => [
       ...current,
-      { id: crypto.randomUUID(), kind: "user", text, timestamp: Date.now() },
+      {
+        id: crypto.randomUUID(),
+        kind: "user",
+        text,
+        ...(images?.length ? { images } : {}),
+        timestamp: Date.now(),
+      },
     ]);
   }
 
@@ -757,13 +784,17 @@ export class Timeline {
         asRecord(payload.message).role === "user"
       ) {
         const message = asRecord(payload.message);
-        const text = extractHistoryText(message.content, "[Image attachment]");
-        if (!text) continue;
+        const images = extractHistoryImages(message.content);
+        const text = extractHistoryText(
+          message.content,
+          images.length ? "" : "[Image attachment]",
+        );
+        if (!text && !images.length) continue;
         // The in-flight turn's user message was never persisted, so it can't
         // be in the hydrated items — dedupe only guards the tiny race where
         // it already arrived live between SSE connect and this replay.
         if (isEchoedUserMessage(this.items, text)) continue;
-        this.appendUser(text);
+        this.appendUser(text, images);
         continue;
       }
       this.handle({
@@ -800,12 +831,17 @@ export class Timeline {
       const role = String(message.role ?? "");
       const timestamp = historyTimestamp(message);
       if (role === "user") {
-        const text = extractHistoryText(message.content, "[Image attachment]");
-        if (text)
+        const images = extractHistoryImages(message.content);
+        const text = extractHistoryText(
+          message.content,
+          images.length ? "" : "[Image attachment]",
+        );
+        if (text || images.length)
           items.push({
             id: `history-user-${messageIndex}`,
             kind: "user",
             text,
+            ...(images.length ? { images } : {}),
             timestamp,
           });
         continue;
@@ -940,6 +976,7 @@ export class Timeline {
     // repopulates them after this reset.
     this.compactions = [];
     this.state = this.withSessionName(state);
+    this.pendingUserInputs = state.pendingUserInputs ?? [];
     this.status = state.isStreaming ? "working" : "ready";
     // History is a finished transcript. A toolCall without a matching
     // toolResult means the turn died mid-command (backend restart, lost
@@ -990,6 +1027,7 @@ export class Timeline {
 
   setState(state: SessionState) {
     this.state = this.withSessionName(state);
+    this.pendingUserInputs = state.pendingUserInputs ?? [];
     this.status = state.isStreaming ? "working" : "ready";
     this.notify();
   }
@@ -1224,13 +1262,17 @@ export class Timeline {
     if (event.type === "message_start") {
       const message = asRecord(event.message);
       if (String(message.role ?? "") !== "user") return;
-      const text = extractHistoryText(message.content, "[Image attachment]");
-      if (!text) return;
+      const images = extractHistoryImages(message.content);
+      const text = extractHistoryText(
+        message.content,
+        images.length ? "" : "[Image attachment]",
+      );
+      if (!text && !images.length) return;
       // Optimistic appendUser on send already put this bubble in; a queued
       // follow-up has no optimistic bubble and must appear only now, when
       // the previous turn has actually finished printing.
       if (isEchoedUserMessage(this.items, text)) return;
-      this.appendUser(text);
+      this.appendUser(text, images);
       return;
     }
 
@@ -1459,7 +1501,27 @@ export class Timeline {
       this.status = "ready";
       // An approval cannot outlive the turn it gated.
       if (this.pendingApprovals.length > 0) this.pendingApprovals = [];
+      this.pendingUserInputs = [];
       this.settle();
+      this.notify();
+      return;
+    }
+
+    if (event.type === "user_input_request") {
+      const request = { requestId: String(event.requestId ?? ""), questions: event.questions as PendingUserInput["questions"] };
+      if (request.requestId && Array.isArray(request.questions)) {
+        this.pendingUserInputs = [...this.pendingUserInputs.filter((entry) => entry.requestId !== request.requestId), request];
+        this.notify();
+      }
+      return;
+    }
+    if (event.type === "user_input_resolved") {
+      this.pendingUserInputs = this.pendingUserInputs.filter((entry) => entry.requestId !== String(event.requestId));
+      this.notify();
+      return;
+    }
+    if (event.type === "turn_diff") {
+      if (this.state) this.state = { ...this.state, turnDiff: String(event.diff ?? "") };
       this.notify();
       return;
     }

@@ -1,5 +1,5 @@
 /** Catalog of the Pi resources shown by the workbench, plus skill authoring. */
-import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, isAbsolute, join, relative, resolve } from "node:path";
 
@@ -8,7 +8,24 @@ const SKILLS_ROOT = join(AGENT_ROOT, "skills");
 const EXTENSIONS_ROOT = join(AGENT_ROOT, "extensions");
 const NPM_ROOT = join(AGENT_ROOT, "npm", "node_modules");
 const GIT_ROOT = join(AGENT_ROOT, "git");
-const SETTINGS_PATH = join(AGENT_ROOT, "settings.json");
+export const SETTINGS_PATH = join(AGENT_ROOT, "settings.json");
+
+function skillsRoot(backend = "pi") {
+  if (backend === "pi") return SKILLS_ROOT;
+  if (backend === "codex") return join(process.env.CODEX_HOME || join(homedir(), ".codex"), "skills");
+  throw new Error("Skills are supported for Pi and Codex.");
+}
+
+async function safeSkillDir(slug, backend) {
+  const root = skillsRoot(backend);
+  const dir = skillDir(slug, root);
+  for (const path of [dir, join(dir, "SKILL.md")]) {
+    try {
+      if ((await lstat(path)).isSymbolicLink()) throw new Error("Linked skills cannot be edited here.");
+    } catch (error) { if (error.code !== "ENOENT") throw error; }
+  }
+  return dir;
+}
 
 async function jsonFile(path, fallback = {}) {
   try {
@@ -28,30 +45,30 @@ function frontmatter(source) {
   return { name: value("name"), description: value("description") };
 }
 
-async function listSkills() {
+async function listSkills(root = SKILLS_ROOT, backend = "pi") {
   try {
-    const entries = await readdir(SKILLS_ROOT, { withFileTypes: true });
+    const entries = await readdir(root, { withFileTypes: true });
     const skills = await Promise.all(
       entries
         .filter((entry) => entry.isDirectory())
         .map(async (entry) => {
-          const path = join(SKILLS_ROOT, entry.name);
+          const path = join(root, entry.name);
           let metadata = { name: "", description: "" };
           try {
             metadata = frontmatter(
               await readFile(join(path, "SKILL.md"), "utf8"),
             );
           } catch {
-            /* no readable manifest */
+            return null;
           }
           return {
             name: metadata.name || entry.name,
-            description: metadata.description || "Local Pi skill",
+            description: metadata.description || `Local ${backend === "codex" ? "Codex" : "Pi"} skill`,
             path,
           };
         }),
     );
-    return skills.sort((left, right) => left.name.localeCompare(right.name));
+    return skills.filter(Boolean).sort((left, right) => left.name.localeCompare(right.name));
   } catch {
     return [];
   }
@@ -123,8 +140,10 @@ async function listExtensions(settings) {
   );
 }
 
-export async function loadCatalog() {
+export async function loadCatalog(backend = "pi") {
   try {
+    if (backend === "codex") return { ok: true, skills: await listSkills(skillsRoot(backend), backend), extensions: [], settings: {} };
+    skillsRoot(backend);
     const settings = await jsonFile(SETTINGS_PATH);
     const [skills, extensions, themes] = await Promise.all([
       listSkills(),
@@ -184,19 +203,19 @@ function skillSlug(name) {
 }
 
 /** Resolve a skill directory, refusing anything outside the skills root. */
-function skillDir(slug) {
+function skillDir(slug, root = SKILLS_ROOT) {
   if (!slug) throw new Error("A skill needs a name.");
-  const dir = resolve(SKILLS_ROOT, slug);
-  const rel = relative(SKILLS_ROOT, dir);
+  const dir = resolve(root, slug);
+  const rel = relative(root, dir);
   if (rel === "" || rel.startsWith("..") || isAbsolute(rel))
     throw new Error("That skill name is not allowed.");
   return dir;
 }
 
 /** The SKILL.md source for one skill, for editing. */
-export async function readSkill(name) {
+export async function readSkill(name, backend = "pi") {
   try {
-    const dir = skillDir(skillSlug(name));
+    const dir = await safeSkillDir(skillSlug(name), backend);
     const source = await readFile(join(dir, "SKILL.md"), "utf8");
     return { ok: true, name: basename(dir), source };
   } catch (error) {
@@ -209,12 +228,12 @@ export async function readSkill(name) {
  * rebuilt from name + description so the file always parses back into the
  * catalog listing.
  */
-export async function writeSkill({ name, description, body }) {
+export async function writeSkill({ name, description, body, backend = "pi" }) {
   const slug = skillSlug(name);
   if (!slug)
     return { ok: false, error: "A skill needs a name with letters or digits." };
   try {
-    const dir = skillDir(slug);
+    const dir = await safeSkillDir(slug, backend);
     await mkdir(dir, { recursive: true });
     const title = String(name ?? slug)
       .replace(/\n/g, " ")
@@ -222,7 +241,7 @@ export async function writeSkill({ name, description, body }) {
     const summary = String(description ?? "")
       .replace(/\n/g, " ")
       .trim();
-    const contents = `---\nname: ${title}\ndescription: ${summary}\n---\n\n${String(body ?? "").trimStart()}\n`;
+    const contents = `---\nname: ${backend === "codex" ? slug : JSON.stringify(title)}\ndescription: ${JSON.stringify(summary)}\n---\n\n${String(body ?? "").trimStart()}\n`;
     await writeFile(join(dir, "SKILL.md"), contents, "utf8");
     return { ok: true, name: slug, path: dir };
   } catch (error) {
@@ -231,9 +250,9 @@ export async function writeSkill({ name, description, body }) {
 }
 
 /** Delete a skill directory. Confined to the skills root like the writes. */
-export async function deleteSkill(name) {
+export async function deleteSkill(name, backend = "pi") {
   try {
-    const dir = skillDir(skillSlug(name));
+    const dir = await safeSkillDir(skillSlug(name), backend);
     await rm(dir, { recursive: true, force: true });
     return { ok: true };
   } catch (error) {

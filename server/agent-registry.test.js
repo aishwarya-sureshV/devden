@@ -56,8 +56,10 @@ describe("agent-registry", () => {
     assert.equal(capabilitiesFor("grok").fork, true);
     assert.equal(capabilitiesFor("codex").fork, true);
     assert.equal(capabilitiesFor("codex").compactInstructions, false);
-    assert.equal(capabilitiesFor("claude").lazyStart, false);
+    assert.equal(capabilitiesFor("claude").lazyStart, true);
     assert.equal(capabilitiesFor("claude").contextUsage, true);
+    assert.equal(capabilitiesFor("grok").contextUsage, true);
+    assert.equal(capabilitiesFor("pi").contextUsage, true);
     assert.equal(capabilitiesFor("pi").fork, true);
     assert.equal(BACKEND_CAPABILITIES.pi.queue, true);
     assert.equal(capabilitiesFor("grok").warmStart, true);

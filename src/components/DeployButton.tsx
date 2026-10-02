@@ -1,19 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { api, type DeployStatusResponse } from "../lib/api";
-import { IconChevronDown, IconCloud, IconLaptop } from "./icons";
+import { IconLaptop } from "./icons";
 
 /**
- * One-click deploy for the project this conversation is working in — its cwd,
- * not devden's. The server confines that path to the workspace roots, keeps
- * the deploy state file inside the project, and only restarts this server when
- * the project being deployed happens to BE devden.
- *
- * Split button:
- *   - Primary click: deploy LOCAL (default) — build the working tree as-is
- *     + restart the API server + reload the page. Uncommitted changes
- *     included; nothing is pulled or pushed.
- *   - Caret ▾: menu with the two flavors. Cloud runs git pull --ff-only +
- *     npm install + build + restart, i.e. deploys the latest pushed commit.
+ * One-click local deploy for the project this conversation is working in —
+ * its cwd, not devden's. Builds the working tree as-is and restarts the API
+ * server. Nothing is pulled or pushed. The server confines that path to the
+ * workspace roots and only restarts this server when the project being
+ * deployed happens to BE devden.
  *
  * Progress is read back through /api/deploy/status — the deployer is a
  * detached process that outlives the server restart.
@@ -25,6 +20,7 @@ type Variant = "local" | "cloud";
 const IDLE_POLL_MS = 15_000;
 const ACTIVE_POLL_MS = 1_500;
 const RESTART_TIMEOUT_MS = 120_000;
+const TOAST_MS = 6_000;
 
 function formatAgo(ts?: number | null): string {
   if (!ts) return "never";
@@ -37,21 +33,13 @@ function formatAgo(ts?: number | null): string {
   return `${Math.round(hours / 24)}d ago`;
 }
 
-export function DeployButton({
-  cwd,
-  compact = false,
-}: {
-  cwd: string;
-  compact?: boolean;
-}) {
+export function DeployButton({ cwd }: { cwd: string }) {
   const [phase, setPhase] = useState<Phase>("idle");
   const [variant, setVariant] = useState<Variant>("local");
   const [status, setStatus] = useState<DeployStatusResponse | null>(null);
   const [deployStartedAt, setDeployStartedAt] = useState<number | null>(null);
   const [message, setMessage] = useState<string>("");
-  const [menuOpen, setMenuOpen] = useState(false);
   const mountedRef = useRef(true);
-  const groupRef = useRef<HTMLSpanElement | null>(null);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -59,17 +47,6 @@ export function DeployButton({
       mountedRef.current = false;
     };
   }, []);
-
-  // Close the dropdown on any click outside it.
-  useEffect(() => {
-    if (!menuOpen) return;
-    const onPointerDown = (event: PointerEvent) => {
-      if (groupRef.current && !groupRef.current.contains(event.target as Node))
-        setMenuOpen(false);
-    };
-    window.addEventListener("pointerdown", onPointerDown);
-    return () => window.removeEventListener("pointerdown", onPointerDown);
-  }, [menuOpen]);
 
   const fetchStatus =
     useCallback(async (): Promise<DeployStatusResponse | null> => {
@@ -196,10 +173,20 @@ export function DeployButton({
   const startDeploy = useCallback(
     async (which: Variant) => {
       if (phase === "deploying" || phase === "restarting") return;
-      setMenuOpen(false);
       try {
         const result = await api.deploy(which, cwd);
         if (!result.ok) {
+          // 409: another pane (or a click before the 15s idle poll caught
+          // up) already started one — follow it instead of failing.
+          const next = await fetchStatus();
+          if (next?.ok && next.deploying) {
+            setStatus(next);
+            setVariant(next.last?.mode === "cloud" ? "cloud" : "local");
+            setDeployStartedAt(next.last?.startedAt ?? Date.now());
+            setMessage("A deploy is already running — following it.");
+            setPhase("deploying");
+            return;
+          }
           setVariant(which);
           setPhase("failed");
           setMessage(result.error || "Failed to start deploy.");
@@ -217,8 +204,15 @@ export function DeployButton({
         );
       }
     },
-    [cwd, phase],
+    [cwd, phase, fetchStatus],
   );
+
+  // Messages surface as a dismissible toast that clears itself.
+  useEffect(() => {
+    if (!message) return;
+    const timer = setTimeout(() => setMessage(""), TOAST_MS);
+    return () => clearTimeout(timer);
+  }, [message]);
 
   const deploying = phase === "deploying" || phase === "restarting";
   const failed = phase === "failed";
@@ -266,15 +260,8 @@ export function DeployButton({
     `Last local deploy: ${formatAgo(status?.lastLocal?.finishedAt)}`,
   ].join("\n");
 
-  const cloudSub = status?.lastCloud?.commit
-    ? `Last deploy: @ ${status.lastCloud.commit} · HEAD: ${head ?? "unknown"}`
-    : "No cloud deploy yet";
-
   return (
-    <span
-      className={`conversation-header__deploy-group${compact ? " is-compact" : ""}`}
-      ref={groupRef}
-    >
+    <span className="conversation-header__deploy-group">
       <button
         type="button"
         className={`conversation-header__deploy${busyOnPrimary ? " is-busy" : ""}${
@@ -286,17 +273,11 @@ export function DeployButton({
         aria-label={label}
       >
         <span className="conversation-header__deploy-icon">
-          {primaryVariant === "cloud" ? (
-            <IconCloud size={14} />
-          ) : (
-            <IconLaptop size={14} />
-          )}
+          <IconLaptop size={14} />
         </span>
-        {failedOnPrimary && message && (
-          <span className="conversation-header__deploy-error" role="status">
-            {message}
-          </span>
-        )}
+        <span className="conversation-header__deploy-label">
+          {busyOnPrimary ? (phase === "restarting" ? "Restarting…" : "Deploying…") : failedOnPrimary ? "Retry" : "Deploy"}
+        </span>
         {hasPending && phase === "idle" && (
           <span
             className="conversation-header__deploy-dot"
@@ -304,57 +285,23 @@ export function DeployButton({
           />
         )}
       </button>
-      <button
-        type="button"
-        className="conversation-header__deploy-caret"
-        aria-haspopup="menu"
-        aria-expanded={menuOpen}
-        aria-label="Deploy options"
-        title="Deploy options"
-        onClick={() => setMenuOpen((open) => !open)}
-        disabled={deploying}
-      >
-        <IconChevronDown size={12} />
-      </button>
-      {menuOpen && (
-        <div className="conversation-header__deploy-menu" role="menu">
-          <p
-            className="conversation-header__deploy-menu-sub"
-            title={status?.project ?? cwd}
+      {message &&
+        createPortal(
+          <div
+            className={`deploy-toast${failed ? " is-error" : ""}`}
+            role={failed ? "alert" : "status"}
           >
-            Deploys <strong>{projectName}</strong>
-            {deploysSelf ? " (this workbench)" : ""}
-          </p>
-          <button
-            type="button"
-            role="menuitem"
-            className="conversation-header__deploy-menu-item"
-            onClick={() => void startDeploy("local")}
-            disabled={deploying}
-          >
-            <span className="conversation-header__deploy-menu-head">
-              <IconLaptop size={14} /> Local
-            </span>
-            <span className="conversation-header__deploy-menu-sub">
-              Last deploy: {formatAgo(status?.lastLocal?.finishedAt)}
-            </span>
-          </button>
-          <button
-            type="button"
-            role="menuitem"
-            className="conversation-header__deploy-menu-item"
-            onClick={() => void startDeploy("cloud")}
-            disabled={deploying}
-          >
-            <span className="conversation-header__deploy-menu-head">
-              <IconCloud size={14} /> Cloud
-            </span>
-            <span className="conversation-header__deploy-menu-sub">
-              {cloudSub}
-            </span>
-          </button>
-        </div>
-      )}
+            <span>{message}</span>
+            <button
+              type="button"
+              aria-label="Dismiss"
+              onClick={() => setMessage("")}
+            >
+              ×
+            </button>
+          </div>,
+          document.body,
+        )}
     </span>
   );
 }

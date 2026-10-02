@@ -55,6 +55,7 @@ let archiveMutation = Promise.resolve();
 
 import { messagesFromClaudeLog } from "./claude-agent.js";
 import { codexRequest } from "./codex-app-server.js";
+import { readCodexLog } from "./codex-history.js";
 import { threadIdFromPath } from "./codex-agent.js";
 
 // Every listing re-read every session file end to end (~175MB of Claude
@@ -77,9 +78,17 @@ async function cachedSummary(path, read) {
   }
   const hit = sessionSummaries.get(path);
   if (hit && hit.key === key) return hit.session;
-  const session = await read(path);
+  // Share the read itself: simultaneous sidebar refreshes used to parse the
+  // same large log repeatedly before either had populated this cache.
+  const session = read(path);
   sessionSummaries.set(path, { key, session });
-  return session;
+  try {
+    return await session;
+  } catch (error) {
+    if (sessionSummaries.get(path)?.session === session)
+      sessionSummaries.delete(path);
+    throw error;
+  }
 }
 
 export async function listSessions({ archived = false, backend = "pi" } = {}) {
@@ -282,12 +291,31 @@ async function readGrokResumeSession(sessionDir) {
 // timestamps, so one `thread/list` replaces a scan of the rollout files.
 // Archiving stays in devden's own index (as for claude and grok) rather than
 // mutating codex's, so un-archiving here never surprises the codex CLI.
+let codexThreadListing;
+
+// Recent and archived views use the same index; share concurrent pagination.
+function listCodexThreads() {
+  if (!codexThreadListing) {
+    codexThreadListing = (async () => {
+      const data = [];
+      let cursor;
+      do {
+        const page = await codexRequest("thread/list", {
+          limit: 200, ...(cursor ? { cursor } : {}),
+        });
+        data.push(...(page?.data ?? []));
+        cursor = page?.nextCursor;
+      } while (cursor);
+      return data;
+    })().finally(() => { codexThreadListing = undefined; });
+  }
+  return codexThreadListing;
+}
+
 async function listCodexSessions({ archived = false } = {}) {
   try {
-    const [threads, archivedPaths] = await Promise.all([
-      codexRequest("thread/list", { limit: 200 }),
-      readArchiveIndex(CODEX_ARCHIVE_INDEX),
-    ]);
+    const archivedPaths = await readArchiveIndex(CODEX_ARCHIVE_INDEX);
+    const threads = { data: await listCodexThreads() };
     const sessions = (threads?.data ?? [])
       .filter((thread) => typeof thread?.path === "string" && thread.path)
       .filter((thread) => archivedPaths.has(thread.path) === archived)
@@ -314,6 +342,8 @@ async function listCodexSessions({ archived = false } = {}) {
           models: [],
         };
       });
+    const summaries = await Promise.all(sessions.map((session) => cachedSummary(session.path, readCodexSummary)));
+    for (let index = 0; index < sessions.length; index++) Object.assign(sessions[index], summaries[index] ?? {});
     sessions.sort((a, b) => b.modifiedAt - a.modifiedAt);
     return { ok: true, sessions };
   } catch (error) {
@@ -864,7 +894,7 @@ function grokContentText(content) {
   return "";
 }
 
-function messagesFromPiLog(contents) {
+export function messagesFromPiLog(contents) {
   const messages = [];
   for (const line of String(contents || "").split("\n")) {
     if (!line) continue;
@@ -888,99 +918,21 @@ function messagesFromPiLog(contents) {
   return messages;
 }
 
-// A codex rollout is codex's own append-only event log. Its `event_msg`
-// entries come in two vocabularies depending on how the thread was created
-// (Codex Desktop writes `item_completed`, an app-server thread writes
-// `user_message`/`agent_message`), but both write the same `response_item`
-// entries -- the model conversation itself -- so that is what the preview
-// reads. Reasoning is skipped: rollouts store an empty summary and an
-// encrypted body, so there is nothing to show.
 export function messagesFromCodexLog(contents) {
-  const messages = [];
-  const toolNames = new Map();
-  let assistant;
-  const pushAssistant = () => {
-    if (assistant?.content.length) messages.push(assistant);
-    assistant = undefined;
-  };
-  const openAssistant = (timestamp) => {
-    if (!assistant) assistant = { role: "assistant", content: [], timestamp };
-    return assistant;
-  };
-  for (const line of String(contents || "").split("\n")) {
-    if (!line) continue;
-    let entry;
-    try {
-      entry = JSON.parse(line);
-    } catch {
-      continue;
-    }
-    if (entry.type !== "response_item") continue;
-    const item = entry.payload;
-    if (!item) continue;
-    const timestamp = Date.parse(entry.timestamp ?? "") || Date.now();
-    if (item.type === "message") {
-      const text = codexItemText(item.content);
-      if (item.role === "assistant") {
-        if (text.trim())
-          openAssistant(timestamp).content.push({
-            type: "text",
-            text: text.trim(),
-          });
-      } else if (item.role === "user") {
-        // codex injects its own context as user messages
-        // (<recommended_plugins>, <environment_context>, ...); a real prompt
-        // is not an XML block.
-        if (/^\s*<[a-z_-]+>/i.test(text)) continue;
-        const clean = stripHarnessPrefix(text.trim());
-        if (!clean) continue;
-        pushAssistant();
-        messages.push({
-          role: "user",
-          content: [{ type: "text", text: clean }],
-          timestamp,
-        });
-      }
-      continue;
-    }
-    if (item.type === "custom_tool_call" || item.type === "function_call") {
-      const id = String(item.call_id ?? item.id ?? "");
-      const name = String(item.name ?? "tool");
-      toolNames.set(id, name);
-      openAssistant(timestamp).content.push({
-        type: "toolCall",
-        id,
-        name,
-        arguments: parseGrokToolArguments(item.arguments ?? item.input),
-      });
-      continue;
-    }
-    if (
-      item.type === "custom_tool_call_output" ||
-      item.type === "function_call_output"
-    ) {
-      const id = String(item.call_id ?? "");
-      pushAssistant();
-      messages.push({
-        role: "toolResult",
-        toolCallId: id,
-        toolName: toolNames.get(id) ?? "tool",
-        content: [{ type: "text", text: codexItemText(item.output) }],
-        timestamp,
-      });
-    }
-  }
-  pushAssistant();
-  return messages;
+  return readCodexLog(contents).messages;
 }
 
-// Rollout content blocks are input_text/output_text parts; a tool output can
-// also be a bare string.
-function codexItemText(content) {
-  if (typeof content === "string") return content;
-  return (Array.isArray(content) ? content : [])
-    .map((part) => (typeof part?.text === "string" ? part.text : ""))
-    .join("");
+async function readCodexSummary(path) {
+  try {
+    const history = readCodexLog(await readFile(path, "utf8"));
+    const usage = history.tokenUsage?.total;
+    return {
+      messageCount: history.messageCount, lastModel: history.lastModel,
+      lastModelProvider: "codex", lastEffort: history.lastEffort, models: history.models,
+      ...(usage ? { usage: { input: Number(usage.input_tokens ?? usage.inputTokens ?? 0), output: Number(usage.output_tokens ?? usage.outputTokens ?? 0), total: Number(usage.total_tokens ?? usage.totalTokens ?? 0) } } : {}),
+      lastAssistantText: history.messages.at(-1)?.role === "assistant" ? history.messages.at(-1).content.filter((part) => part.type === "text").map((part) => part.text).join("\n").slice(-800) : "",
+    };
+  } catch { return {}; }
 }
 
 export async function loadSessionLog(path) {

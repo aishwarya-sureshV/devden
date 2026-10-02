@@ -6,7 +6,7 @@
  * results; the client reads that payload from /api/backends.
  */
 
-import { detectBuiltins } from "./agent-detect.js";
+import { connectionCommand, detectBuiltins } from "./agent-detect.js";
 
 export const AGENT_BACKENDS = ["pi", "claude", "grok", "codex"];
 
@@ -52,11 +52,11 @@ const DEFAULT_CAPABILITIES = {
 export const BACKEND_CAPABILITIES = {
   pi: {
     ...DEFAULT_CAPABILITIES,
+    contextUsage: true,
     setSessionName: true,
   },
   claude: {
     ...DEFAULT_CAPABILITIES,
-    lazyStart: false,
     contextUsage: true,
     settings: true,
     mcp: true,
@@ -66,6 +66,7 @@ export const BACKEND_CAPABILITIES = {
     ...DEFAULT_CAPABILITIES,
     steer: false,
     fork: true,
+    contextUsage: true,
     warmStart: true,
   },
   codex: {
@@ -73,6 +74,9 @@ export const BACKEND_CAPABILITIES = {
     fork: true,
     compactInstructions: false,
     setSessionName: true,
+    contextUsage: true,
+    settings: true,
+    mcp: true,
   },
 };
 
@@ -97,6 +101,7 @@ export async function listBackends() {
       auth: row?.auth ?? "unknown",
       installCommand: row?.installCommand ?? null,
       loginCommand: row?.loginCommand ?? null,
+      connectCommand: connectionCommand(id, row?.path),
       capabilities: capabilitiesFor(id),
     };
   });

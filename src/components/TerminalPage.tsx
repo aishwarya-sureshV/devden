@@ -13,6 +13,7 @@ type TerminalTab = {
   cwd?: string;
   runId?: string;
   command?: string;
+  interactive?: boolean;
 };
 
 const LIGHT_THEME = {
@@ -62,6 +63,14 @@ const DARK_THEME = {
   brightCyan: "#99d7d1",
   brightWhite: "#fffdf7",
 };
+
+function terminalTheme(theme: "light" | "dark", glass: boolean) {
+  const base = theme === "dark" ? DARK_THEME : LIGHT_THEME;
+  // On the glass backdrop the scene must show through the terminal like it
+  // does through every other pane, so xterm paints no surface behind the
+  // glyphs; the static solid theme keeps its tinted background.
+  return glass ? { ...base, background: "rgba(0,0,0,0)" } : base;
+}
 
 export function TerminalPage({
   cwd,
@@ -120,6 +129,7 @@ export function TerminalPage({
               ...first,
               runId: run.id,
               command: run.command,
+              interactive: run.interactive,
               label: run.tabLabel,
             },
           ];
@@ -134,6 +144,7 @@ export function TerminalPage({
             cwd,
             runId: run.id,
             command: run.command,
+            interactive: run.interactive,
           },
         ];
       });
@@ -249,6 +260,7 @@ export function TerminalPage({
             theme={theme}
             active={tab.id === activeId}
             command={tab.command}
+            interactive={tab.interactive}
             runId={tab.runId}
             onCwd={(value) =>
               setCwds((current) =>
@@ -300,6 +312,7 @@ function TerminalSession({
   theme,
   active,
   command,
+  interactive,
   runId,
   onCwd,
   onStatus,
@@ -310,6 +323,7 @@ function TerminalSession({
   theme: "light" | "dark";
   active: boolean;
   command?: string;
+  interactive?: boolean;
   runId?: string;
   onCwd: (cwd: string) => void;
   onStatus: (status: TerminalStatus) => void;
@@ -317,6 +331,21 @@ function TerminalSession({
   onRunExit?: (exitCode: number | null, error?: string) => void;
 }) {
   const hostRef = useRef<HTMLDivElement>(null);
+  // The glass attribute lives on body and can flip at runtime from the
+  // appearance picker; keep the xterm theme in step with it.
+  const [glass, setGlass] = useState(() =>
+    document.body.hasAttribute("data-glass"),
+  );
+  useEffect(() => {
+    const observer = new MutationObserver(() =>
+      setGlass(document.body.hasAttribute("data-glass")),
+    );
+    observer.observe(document.body, {
+      attributes: true,
+      attributeFilter: ["data-glass"],
+    });
+    return () => observer.disconnect();
+  }, []);
   const terminalRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
   const socketRef = useRef<WebSocket | null>(null);
@@ -356,7 +385,8 @@ function TerminalSession({
       fontSize: 13,
       lineHeight: 1.35,
       scrollback: 10_000,
-      theme: theme === "dark" ? DARK_THEME : LIGHT_THEME,
+      allowTransparency: glass,
+      theme: terminalTheme(theme, glass),
     });
     const fit = new FitAddon();
     terminal.loadAddon(fit);
@@ -372,6 +402,7 @@ function TerminalSession({
     // WebSocket cannot send Authorization headers, so with a token configured
     // the connection authenticates with a one-time ticket (cross-origin) or
     // the HttpOnly cookie (same-origin, sent automatically).
+    let disposed = false;
     const connect = async () => {
       let url = `${wsOrigin}/api/terminal?cwd=${encodeURIComponent(cwd || "")}`;
       if (hasAuthToken()) {
@@ -385,9 +416,11 @@ function TerminalSession({
           /* cookie may already authenticate; fall through */
         }
       }
+      if (disposed) return;
       const socket = new WebSocket(url);
       socketRef.current = socket;
       socket.addEventListener("open", () => {
+        if (disposed) return;
         statusCallbackRef.current("ready");
         setSocketReady(true);
         socket.send(
@@ -399,6 +432,7 @@ function TerminalSession({
         );
       });
       socket.addEventListener("message", (event) => {
+        if (disposed) return;
         const data = String(event.data);
         // Control channel from the server (NUL-prefixed JSON): live shell cwd.
         if (data.startsWith("\u0000{")) {
@@ -425,16 +459,20 @@ function TerminalSession({
         }
       });
       socket.addEventListener("close", () => {
+        if (disposed) return;
         statusCallbackRef.current("closed");
         setSocketReady(false);
-        if (capturingRef.current) {
+        if (capturingRef.current || runExitRef.current) {
           capturingRef.current = false;
           runExitRef.current?.(null, "Terminal closed");
         }
       });
-      socket.addEventListener("error", () =>
-        terminal.write("\r\n\x1b[31mTerminal connection failed.\x1b[0m\r\n"),
-      );
+      socket.addEventListener("error", () => {
+        if (disposed) return;
+        terminal.write("\r\n\x1b[31mTerminal connection failed.\x1b[0m\r\n");
+        capturingRef.current = false;
+        runExitRef.current?.(null, "Terminal connection failed. Retry the connection.");
+      });
     };
     void connect();
 
@@ -456,6 +494,7 @@ function TerminalSession({
     resizeObserver.observe(host);
 
     return () => {
+      disposed = true;
       resizeObserver.disconnect();
       input.dispose();
       socketRef.current?.close();
@@ -486,17 +525,17 @@ function TerminalSession({
       capturingRef.current = true;
       outputRef.current = "";
       socketRef.current.send(
-        JSON.stringify({ type: "input", data: commandToPtyInput(command) }),
+        JSON.stringify({ type: "input", data: commandToPtyInput(command, interactive) }),
       );
     }, 250);
     return () => window.clearTimeout(timer);
-  }, [command, runId, socketReady]);
+  }, [command, interactive, runId, socketReady]);
 
   useEffect(() => {
-    if (terminalRef.current)
-      terminalRef.current.options.theme =
-        theme === "dark" ? DARK_THEME : LIGHT_THEME;
-  }, [theme]);
+    if (!terminalRef.current) return;
+    terminalRef.current.options.allowTransparency = glass;
+    terminalRef.current.options.theme = terminalTheme(theme, glass);
+  }, [theme, glass]);
 
   useEffect(() => {
     if (!active) return;

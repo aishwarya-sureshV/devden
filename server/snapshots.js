@@ -25,7 +25,7 @@ const KEEP = 50;
  *  logged, but clocks between the server and an agent's own log can skew. */
 const SLACK_MS = 2000;
 
-async function git(dir, args, env) {
+export async function git(dir, args, env) {
   try {
     const { stdout } = await execFileAsync("git", ["-C", dir, ...args], {
       timeout: 30_000,
@@ -46,7 +46,7 @@ async function git(dir, args, env) {
  * A scratch index living in .git, so `git add -A` keeps its stat cache warm
  * across turns and the real index is never written.
  */
-async function scratchEnv(dir) {
+export async function scratchEnv(dir) {
   const gitDir = await git(dir, ["rev-parse", "--absolute-git-dir"]);
   if (!gitDir.ok) return null;
   return {
@@ -60,11 +60,34 @@ async function scratchEnv(dir) {
   };
 }
 
+/**
+ * Every session in a repo shares one scratch index, so two turns ending
+ * together raced on its index.lock and one `git add -A` failed. Work on the
+ * scratch index runs one at a time per index file.
+ */
+const indexLocks = new Map();
+
+export async function withScratchIndex(dir, fn) {
+  const env = await scratchEnv(dir);
+  if (!env) return { ok: false, error: "Not a git repository." };
+  const key = env.GIT_INDEX_FILE;
+  const previous = indexLocks.get(key) ?? Promise.resolve();
+  const run = previous.then(() => fn(env));
+  const settled = run.catch(() => {});
+  indexLocks.set(key, settled);
+  void settled.then(() => {
+    if (indexLocks.get(key) === settled) indexLocks.delete(key);
+  });
+  return run;
+}
+
 /** Snapshot the whole working tree. Returns quietly when cwd is not a repo. */
 export async function takeSnapshot(cwd, label = "") {
   if (!cwd) return { ok: false, error: "No working directory." };
-  const env = await scratchEnv(cwd);
-  if (!env) return { ok: false, error: "Not a git repository." };
+  return withScratchIndex(cwd, (env) => snapshotWith(cwd, label, env));
+}
+
+async function snapshotWith(cwd, label, env) {
   const staged = await git(cwd, ["add", "-A"], env);
   if (!staged.ok) return { ok: false, error: staged.error };
   const tree = await git(cwd, ["write-tree"], env);
@@ -188,8 +211,10 @@ export async function restoreSnapshot(cwd, timestamp, dryRun = false) {
     : snaps[0];
   if (!snap)
     return { ok: false, error: "No snapshot from before that message." };
-  const env = await scratchEnv(cwd);
-  if (!env) return { ok: false, error: "Not a git repository." };
+  return withScratchIndex(cwd, (env) => restoreWith(cwd, snap, dryRun, env));
+}
+
+async function restoreWith(cwd, snap, dryRun, env) {
   // The scratch index has to describe the tree as it is now, or read-tree
   // has no idea which files the agent added and should therefore delete.
   const staged = await git(cwd, ["add", "-A"], env);
@@ -236,8 +261,10 @@ export async function diffSinceSnapshot(cwd, timestamp, context = 15) {
     : snaps[0];
   if (!snap)
     return { ok: false, error: "No snapshot from before that turn." };
-  const env = await scratchEnv(cwd);
-  if (!env) return { ok: false, error: "Not a git repository." };
+  return withScratchIndex(cwd, (env) => diffWith(cwd, snap, context, env));
+}
+
+async function diffWith(cwd, snap, context, env) {
   const staged = await git(cwd, ["add", "-A"], env);
   if (!staged.ok) return { ok: false, error: staged.error };
   const depth = Number.isFinite(context) ? Math.max(3, Math.min(50, context)) : 15;

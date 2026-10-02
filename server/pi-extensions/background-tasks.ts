@@ -70,7 +70,12 @@ async function postJson(
 ): Promise<Record<string, unknown>> {
   const response = await fetch(url, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: {
+      "content-type": "application/json",
+      ...(process.env.DEVDEN_TOKEN
+        ? { Authorization: `Bearer ${process.env.DEVDEN_TOKEN.trim()}` }
+        : {}),
+    },
     body: JSON.stringify(body),
   });
   return (await response.json()) as Record<string, unknown>;
@@ -107,7 +112,7 @@ export default function backgroundTasks(pi: BackgroundTasksApi) {
       const outputFile = join(taskDir(), `${id}.output`);
       const description = params.description?.trim() || tail(params.command, 1);
       const child = spawn(
-        "/bin/zsh",
+        process.env.SHELL || "/bin/sh",
         ["-lc", `${params.command} >> ${JSON.stringify(outputFile)} 2>&1`],
         {
           stdio: "ignore",

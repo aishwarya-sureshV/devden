@@ -1,0 +1,488 @@
+/* Conversation column: hero, timeline with agentdeck-style cards, docked composer. */
+
+.conversation {
+ position: relative;
+ display: flex;
+ flex-direction: column;
+ flex: 1;
+ min-height: 0;
+ --pw-gutter: 24px;
+}
+
+.conversation-stage {
+ position: relative;
+ display: flex;
+ flex: 1;
+ min-width: 0;
+ min-height: 0;
+ overflow: hidden;
+}
+.conversation-stage > .conversation {
+ min-width: 0;
+}
+@keyframes pw-plan-pulse {
+ 0%,
+ 100% {
+  opacity: 0.35;
+ }
+ 50% {
+  opacity: 1;
+ }
+}
+
+.conversation__scroll {
+ flex: 1;
+ overflow-x: hidden;
+ overflow-y: auto;
+ overscroll-behavior: contain;
+ min-height: 0;
+ scrollbar-gutter: stable;
+ scrollbar-color: var(--dsw-alias-label-caption) var(--dsw-alias-bg-layer-1);
+}
+.conversation__scroll::-webkit-scrollbar {
+ width: 5px;
+ height: 5px;
+}
+.conversation__scroll::-webkit-scrollbar-track {
+ background: var(--dsw-alias-bg-layer-1);
+}
+.conversation__scroll::-webkit-scrollbar-thumb {
+ border-radius: 999px;
+ background: var(--dsw-alias-label-caption);
+}
+.conversation__scroll::-webkit-scrollbar-thumb:hover {
+ background: var(--dsw-alias-label-secondary);
+}
+.conversation__scroll:focus {
+ outline: none;
+}
+
+.conversation__column {
+ width: 100%;
+ min-width: 0;
+ box-sizing: border-box;
+ max-width: var(--pw-chat-content-width);
+ margin: 0 auto;
+ padding: 20px var(--pw-gutter) 24px;
+ display: flex;
+ flex-direction: column;
+ gap: 2px;
+}
+.chat-turn {
+ display: flex;
+ flex-direction: column;
+ gap: 2px;
+ margin-bottom: 14px;
+}
+.chat-turn:last-child {
+ margin-bottom: 0;
+}
+
+/* Session header and view tabs, following the DeepSeek harness hierarchy. */
+.conversation-header {
+ position: relative;
+ display: flex;
+ flex-direction: column;
+ align-items: stretch;
+ flex: none;
+ width: 100%;
+ min-height: 36px;
+ padding: 0 4px 0 0;
+ border-bottom: 1px solid var(--dsw-alias-border-l1);
+ background: var(--dsw-alias-bg-base);
+}
+.conversation-header__row {
+ display: flex;
+ align-items: center;
+ flex: none;
+ min-width: 0;
+ min-height: 36px;
+}
+/* Split-view fresh session: close only. Terminal and workspace live outside the pane. */
+.conversation-header--empty {
+ min-height: 0;
+ height: auto;
+ border-bottom: 0;
+ background: transparent;
+}
+.conversation-header__actions {
+ display: flex;
+ flex: 1;
+ align-items: center;
+ justify-content: flex-end;
+ gap: 8px;
+ padding: 6px 14px 0;
+}
+.conversation-header__mode {
+ display: inline-flex;
+ align-items: center;
+ gap: 5px;
+ flex: none;
+ align-self: center;
+ color: var(--dsw-alias-label-caption);
+ font-size: 12px;
+}
+.conversation-header__download,
+.conversation-header__close {
+ display: inline-flex;
+ align-items: center;
+ justify-content: center;
+ gap: 5px;
+ min-height: 30px;
+ padding: 4px 10px;
+ border: 1px solid var(--dsw-alias-border-l2);
+ border-radius: 999px;
+ background: transparent;
+ color: var(--dsw-alias-label-primary);
+ font-size: 12px;
+ line-height: 18px;
+ text-decoration: none;
+ white-space: nowrap;
+}
+.conversation-header__download.conversation-header__icon-only {
+ width: 30px;
+ padding: 0;
+}
+.conversation-header__download:hover,
+.conversation-header__close:hover {
+ background: var(--dsw-alias-interactive-bg-hover);
+}
+.conversation-header__close {
+ width: 30px;
+ padding: 0;
+ border-radius: 8px;
+ color: var(--dsw-alias-label-caption);
+ font-size: 18px;
+}
+.conversation-header__download.is-disabled,
+.conversation-header__download:disabled {
+ opacity: 0.45;
+ cursor: default;
+}
+/* One-click local deploy. Filled with the send color so it reads as the
+   header's primary action. Pending dot marks an undeployed tree. */
+.conversation-header__deploy-group {
+ position: relative;
+ display: inline-flex;
+ flex: none;
+}
+.conversation-header__deploy {
+ position: relative;
+ display: inline-flex;
+ flex-wrap: nowrap;
+ align-items: center;
+ justify-content: center;
+ gap: 6px;
+ height: 30px;
+ min-height: 30px;
+ padding: 0 10px;
+ border: 0;
+ border-radius: 7px;
+ background: var(--send, var(--pw-accent));
+ color: var(--sendFg, #1b0f0a);
+ font-size: 12.5px;
+ font-weight: 600;
+ line-height: 1;
+ white-space: nowrap;
+ cursor: pointer;
+}
+.conversation-header__deploy-icon,
+.conversation-header__deploy-label {
+ display: inline-flex;
+ align-items: center;
+}
+.conversation-header__deploy:hover:not(:disabled) {
+ filter: brightness(1.06);
+}
+.conversation-header__deploy:disabled {
+ opacity: 0.75;
+ cursor: default;
+}
+.conversation-header__deploy.is-busy .conversation-header__deploy-icon {
+ display: inline-flex;
+ animation: pw-spin 0.9s linear infinite;
+}
+.conversation-header__deploy.is-failed {
+ background: var(--del, var(--pw-red, #e5484d));
+ color: #1b0a0d;
+}
+.conversation-header__deploy-dot {
+ position: absolute;
+ top: -2px;
+ right: -2px;
+ width: 8px;
+ height: 8px;
+ border-radius: 50%;
+ background: var(--pw-accent);
+ box-shadow: 0 0 0 2px var(--dsw-alias-bg-base);
+}
+.conversation-header__tabs {
+ display: flex;
+ align-items: center;
+ gap: 12px;
+ height: 36px;
+ margin-left: auto;
+ padding: 0 8px;
+}
+.conversation-header__track {
+ /* Plain buttons: the segmented-control box that used to wrap Chat /
+    Trajectory / Backend log is gone, so the tabs read as text. */
+ display: flex;
+ align-items: center;
+ gap: 2px;
+}
+.conversation-header__track > button {
+ position: relative;
+ align-self: center;
+ padding: 4px 10px;
+ border: 0;
+ border-radius: 5px;
+ background: transparent;
+ color: var(--dsw-alias-label-tertiary);
+ font-size: 11px;
+}
+.conversation-header__track > button:hover,
+.conversation-header__track > button.is-active {
+ color: var(--pw-accent);
+}
+.conversation-header__track > button.is-active {
+ background: var(--pw-card);
+}
+.conversation-header__subagents {
+ display: inline-flex;
+ align-items: center;
+ gap: 6px;
+ margin-right: 4px;
+ color: var(--dsw-alias-label-tertiary);
+ font-size: 10.5px;
+}
+.conversation-header__subagents-dot {
+ width: 5px;
+ height: 5px;
+ border-radius: 50%;
+ background: var(--pw-accent);
+ animation: pulse 1.3s ease-in-out infinite;
+}
+
+.conversation-header__tabs-actions {
+ display: flex;
+ gap: 2px;
+ align-items: center;
+ align-self: center;
+ padding-right: 8px;
+ min-width: 0;
+}
+.conversation-header__identity {
+ display: flex;
+ align-items: center;
+ gap: 8px;
+ min-width: 0;
+ padding: 8px 10px 4px;
+}
+.conversation-header__agent {
+ flex: 1;
+ min-width: 0;
+ overflow: hidden;
+ text-overflow: ellipsis;
+ white-space: nowrap;
+ font-size: 11.5px;
+ color: var(--dsw-alias-label-primary);
+ display: flex;
+ align-items: center;
+ gap: 6px;
+}
+.conversation-header__agent-logo {
+ flex: none;
+ display: inline-flex;
+}
+.conversation-header__agent-title {
+ overflow: hidden;
+ text-overflow: ellipsis;
+ white-space: nowrap;
+}
+.conversation-header__spacer {
+ flex: 1;
+}
+/* usage lives up here in split/tight panes; the composer one is hidden */
+.conversation-header__identity .usage-summary {
+ flex: none;
+ gap: 4px;
+ font-size: 10.5px;
+}
+.conversation-header__identity .conversation-header__agent {
+ flex: 0 1 auto;
+}
+/* Split-pane title is a button (click to rename) — reset it to the old
+   plain-text look. Scoped to button so the non-split span is untouched. */
+.conversation-header__identity button.conversation-header__agent {
+ padding: 0;
+ border: 0;
+ background: transparent;
+ font-family: inherit;
+ text-align: left;
+ cursor: pointer;
+}
+.conversation-header__identity
+ button.conversation-header__agent:hover
+ .conversation-header__agent-title {
+ text-decoration: underline;
+ text-decoration-color: var(--dsw-alias-border-l2);
+}
+.conversation-header__count {
+ font-size: 8.5px;
+ color: var(--dsw-alias-label-dimmed);
+}
+.conversation-header__segment {
+ flex: none;
+ display: flex;
+ align-items: center;
+ gap: 2px;
+ padding: 2px;
+ border-radius: 7px;
+ background: var(--pw-sunken);
+}
+.conversation-header__segment > button {
+ display: inline-flex;
+ align-items: center;
+ gap: 5px;
+ padding: 3px 7px;
+ border: 0;
+ border-radius: 5px;
+ background: transparent;
+ color: var(--dsw-alias-label-caption);
+ font-size: 10.5px;
+}
+.conversation-header__segment > button:hover {
+ color: var(--dsw-alias-label-primary);
+}
+.conversation-header__segment > button.is-active {
+ background: var(--pw-card);
+ color: var(--pw-accent);
+}
+.conversation-header__more {
+ display: grid;
+ place-items: center;
+ flex: none;
+ width: 22px;
+ height: 22px;
+ padding: 0;
+ border: 0;
+ border-radius: 6px;
+ background: transparent;
+ color: var(--dsw-alias-label-caption);
+}
+.conversation-header__more:hover {
+ color: var(--dsw-alias-label-primary);
+ background: var(--dsw-alias-interactive-bg-hover);
+}
+.conversation-header__overflow {
+ position: relative;
+ flex: none;
+}
+.conversation-header__overflow-menu {
+ position: absolute;
+ top: calc(100% + 4px);
+ right: 0;
+ z-index: 40;
+ min-width: 180px;
+ max-width: min(280px, calc(100vw - 24px));
+ overflow: hidden;
+ padding: 4px;
+ border: 1px solid var(--dsw-alias-border-l2);
+ border-radius: 8px;
+ background: var(--dsw-alias-bg-layer-1);
+ box-shadow: 0 8px 24px rgb(0 0 0 / 18%);
+}
+.conversation-header__overflow-menu button {
+ display: block;
+ width: 100%;
+ padding: 7px 9px;
+ border: 0;
+ border-radius: 6px;
+ background: transparent;
+ color: var(--dsw-alias-label-primary);
+ font-size: 12px;
+ text-align: left;
+}
+.conversation-header__overflow-menu button:hover {
+ background: var(--dsw-alias-interactive-bg-hover);
+}
+.conversation-header.is-full .conversation-header__track > button.is-active,
+.conversation-header.is-compact .conversation-header__track > button.is-active {
+ background: transparent;
+ border-radius: 0;
+ box-shadow: inset 0 -2px 0 0 var(--pw-accent);
+}
+.conversation-header.is-compact,
+.conversation-header.is-dense {
+ min-height: 0;
+ padding: 0;
+}
+.conversation-header.is-compact .conversation-header__row,
+.conversation-header.is-dense .conversation-header__row {
+ min-height: 0;
+ padding: 0 8px 7px;
+ gap: 6px;
+}
+.conversation-header.is-compact .conversation-header__tabs,
+.conversation-header.is-dense .conversation-header__tabs {
+ height: auto;
+ padding: 0;
+}
+.conversation-header.is-compact .conversation-header__track {
+ gap: 12px;
+}
+.conversation-header.is-compact .conversation-header__track > button,
+.conversation-header.is-dense .conversation-header__track > button {
+ display: inline-flex;
+ align-items: center;
+ gap: 4px;
+ padding: 0 0 6px;
+ font-size: 11px;
+}
+.conversation-header.is-compact .conversation-header__agent {
+ font-size: 11.5px;
+}
+.conversation-header.is-dense .conversation-header__agent {
+ font-size: 11px;
+}
+.conversation-header.is-dense .conversation-header__identity {
+ gap: 7px;
+ padding: 7px 8px 5px;
+}
+.conversation-header.is-compact .conversation-header__tabs-actions,
+.conversation-header.is-dense .conversation-header__tabs-actions {
+ gap: 6px;
+ padding-right: 0;
+}
+
+.workspace-picker--chip {
+ max-width: 160px;
+}
+.workspace-picker--chip .workspace-picker__trigger {
+ min-height: 22px;
+ max-width: 100%;
+ padding: 2px 7px;
+ border-radius: 5px;
+ font-size: 10.5px;
+ color: var(--dsw-alias-label-caption);
+ background: transparent;
+}
+.workspace-picker--chip .workspace-picker__trigger:hover,
+.workspace-picker--chip .workspace-picker__trigger[aria-expanded="true"] {
+ color: var(--dsw-alias-label-primary);
+}
+.conversation-header.is-dense .workspace-picker--chip {
+ max-width: 110px;
+}
+.conversation-header.is-dense
+ .workspace-picker--chip
+ .workspace-picker__trigger {
+ padding: 1px 6px;
+ font-size: 9.5px;
+}
+.conversation__scroll--trajectory {
+ min-width: 0;
+ overflow-x: hidden;
+ background: var(--dsw-alias-bg-base);
+}

@@ -1,4 +1,5 @@
 import {
+  Activity,
   memo,
   useCallback,
   useEffect,
@@ -10,8 +11,8 @@ import {
   type DragEvent,
   type FormEvent,
   type KeyboardEvent,
-  type ReactNode,
 } from "react";
+import { createPortal } from "react-dom";
 import {
   AGENT_BACKENDS,
   api,
@@ -36,12 +37,21 @@ import {
   type ConversationTab,
   type TaskSeed,
 } from "../lib/store";
+import { effortStops } from "../lib/effortStops";
 import { LIVE_TEXT_STALL_MS, shouldShowThinkingRow } from "../lib/thinkingRow";
 import {
   THINKING_QUIP_MS,
   createThinkingQuips,
+  thinkingLineParts,
 } from "../lib/thinkingQuips";
-import { DeployButton } from "./DeployButton";
+import {
+  PaneChrome,
+  SessionHeader,
+  displayPath,
+  type PaneTone,
+  type SessionTone,
+  type SessionView,
+} from "./SessionHeader";
 import {
   contextualSessionTitle,
   isLocalCommandText,
@@ -57,7 +67,7 @@ import {
   runtimeModelAnswer,
 } from "../lib/modelIdentity";
 import { capabilitiesFor } from "../lib/agentCapabilities";
-import { useBackendUsage, usageLeft } from "../lib/backendUsage";
+import { useBackendUsage, usagePair } from "../lib/backendUsage";
 import {
   exhaustedWindow,
   isUsageLimitError,
@@ -69,6 +79,10 @@ import { LimitBanner } from "./LimitBanner";
 import {
   estimateContext,
   compactTokens,
+  usageCutoff,
+  usageSummaryFromCounts,
+  usageStamp,
+  usageSummaryOf,
   type ContextUsage,
 } from "../lib/sessionMetrics";
 import {
@@ -117,9 +131,10 @@ import {
 import { isAskMessage } from "../lib/askBlock";
 import { formatWorkingClock } from "../lib/toolRow";
 import { ExploredRows, ToolCard } from "./ToolCard";
-import { SubagentCard, runningSubagentSummary } from "./SubagentCard";
+import { SubagentCard } from "./SubagentCard";
 import { SubagentPanel } from "./SubagentPanel";
 import { RichText } from "./RichText";
+import { AskCard } from "./AskCard";
 import {
   getToolDiff,
   type DiffLine,
@@ -151,40 +166,56 @@ import {
   type RouteTemplate,
   type SessionRoute,
 } from "../lib/route";
-import { UsageSummary, showsUsageSummary } from "./UsageDisplay";
+import {
+  ModeChip,
+  ModelChip,
+  UsageChip,
+  type ModelOption,
+} from "./ComposerChrome";
 import { ActiveRunIndicator } from "./ToolActivity";
 import { groupTranscriptRows } from "../lib/toolRow";
 import type { PaneDensity } from "../lib/sessionLayout";
 import {
   IconArrowUp,
-  IconBranch,
-  IconChat,
-  IconChevronDown,
   IconCode,
-  IconCube,
-  IconDots,
-  IconDownload,
   IconFile,
   IconFork,
   IconPencil,
   IconHistory,
-  IconColumns,
-  IconList,
   IconPlus,
-  IconTerminal,
-  IconRefresh,
-  IconSearch,
   IconStop,
   IconUpload,
   FishLogo,
-  BackendLogo,
 } from "./icons";
+import {
+  type AccessMode,
+  type AgentMode,
+  capText,
+  collectReviewDiff,
+  getResponseActionIds,
+  lastAnswerableAssistantId,
+  promptIndexAtAssistant,
+  userTextBeforeAssistant,
+} from "./conversationHelpers";
+import {
+  SubagentWaitRow,
+  ThinkingRow,
+  TimelineRow,
+  turnStartedAt,
+} from "./ConversationRows";
+import { ConversationComposer } from "./ConversationComposer";
+const DESIGN_MODES: AgentMode[] = ["manual", "auto-edit", "plan", "standard"];
+const apiAgentMode = (
+  mode: AgentMode,
+): "standard" | "plan" | "manual" | "auto-edit" =>
+  mode === "plan"
+    ? "plan"
+    : mode === "manual"
+      ? "manual"
+      : mode === "auto-edit"
+        ? "auto-edit"
+        : "standard";
 
-type ModelOption = { provider: string; id: string; label: string };
-type AccessMode = "workspace-write" | "read-only";
-type AgentMode = "standard" | "plan" | "routed" | "manual";
-const apiAgentMode = (mode: AgentMode): "standard" | "plan" | "manual" =>
-  mode === "plan" ? "plan" : mode === "manual" ? "manual" : "standard";
 const USAGE_IDLE_REFRESH_INTERVAL_MS = 5 * 60_000 + 30_000;
 const USAGE_RUNNING_REFRESH_INTERVAL_MS = 30_000;
 
@@ -294,23 +325,48 @@ export function Conversation({
   showThinking = false,
   split = false,
   density = "full",
+  sessionCount = 1,
+  headerHost = null,
+  focused = true,
+  visible = true,
   onClose,
+  onFocus,
+  onBack,
+  sharedWorkspaceOpen = false,
+  onSharedWorkspaceToggle,
   onSessionSplit,
   terminalOpen = false,
   onTerminalToggle,
+  reviewTitle = null,
+  dockMulti = false,
+  onOpenReview,
 }: {
   tab: ConversationTab;
   showThinking?: boolean;
   split?: boolean;
   density?: PaneDensity;
+  sessionCount?: number;
+  headerHost?: HTMLElement | null;
+  focused?: boolean;
+  visible?: boolean;
   onClose?: () => void;
+  onFocus?: () => void;
+  /** Present while this session is maximized out of a split view. */
+  onBack?: () => void;
+  /** Split view: one workspace pane on the right serves every session. */
+  sharedWorkspaceOpen?: boolean;
+  onSharedWorkspaceToggle?: () => void;
   onSessionSplit?: (key: string) => void;
   terminalOpen?: boolean;
   onTerminalToggle?: () => void;
+  reviewTitle?: string | null;
+  dockMulti?: boolean;
+  onOpenReview?: (view: ToolFileView) => void;
 }) {
-  const timeline = useTimeline(tab.timeline)!;
+  const timeline = useTimeline(tab.timeline, visible)!;
   const {
     refreshSessions,
+    awaitingKeys,
     setConversationSessionPath,
     setConversationWorkspace,
     setPreferredModel,
@@ -325,19 +381,22 @@ export function Conversation({
     backendCatalog,
     setDefaultBackend,
     setConversationBackend,
+    resumeSessions,
   } = useStore();
   const backendIds = backendCatalog.length
     ? backendCatalog.map((item) => item.id)
     : [...AGENT_BACKENDS];
   const [draft, setDraft] = useState("");
   // The draft survives page reloads: keyed by conversation identity (the
-  // session file once it exists, else a fresh-conversation slot per backend
-  // + cwd). When the identity resolves in place (fresh chat gained its
-  // session file, fork, session switch) the in-progress draft is carried
-  // over rather than overwritten from storage.
-  const draftKey = `devden.draft:${
-    tab.sessionPath ?? `new:${tab.backend}:${tab.cwd}`
-  }`;
+  // session file once it exists, else this fresh tab's own slot). It used
+  // to be a shared per-backend+cwd slot, which leaked one tab's unsent
+  // draft (and stale handoff seeds) into every later new session.
+  // When the identity resolves in place (fresh chat gained its session
+  // file, fork, session switch) the in-progress draft is carried over
+  // rather than overwritten from storage.
+  // ponytail: a fresh tab's unsent draft no longer survives a reload
+  // (the tab's key changes); bring back slot-based keys if that matters.
+  const draftKey = `devden.draft:${tab.sessionPath ?? `new:${tab.key}`}`;
   const draftRef = useRef(draft);
   draftRef.current = draft;
   const draftKeyRef = useRef<string | null>(null);
@@ -359,7 +418,21 @@ export function Conversation({
   }, [draft, draftKey]);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [dragActive, setDragActive] = useState(false);
-  const [viewer, setViewer] = useState<ToolFileView | null>(null);
+  // The open file explorer / diff viewer survive navigating to settings or
+  // any other page: those routes unmount this component, which used to drop
+  // the open panel with it. Same per-session keys as the draft above.
+  const panelKey = `devden.panel:${tab.key}`;
+  const [viewer, setViewer] = useState<ToolFileView | null>(() => {
+    try {
+      const restored: ToolFileView | null = JSON.parse(
+        localStorage.getItem(`${panelKey}:viewer`) ?? "null",
+      );
+      // Image previews embed the attachment bytes; not worth persisting.
+      return restored && !restored.imageSrc ? restored : null;
+    } catch {
+      return null;
+    }
+  });
   const [hiddenSubagents, setHiddenSubagents] = useState<string[]>([]);
   const [pinnedSubagents, setPinnedSubagents] = useState<string[]>([]);
   const [focusedSubagent, setFocusedSubagent] = useState<string | null>(null);
@@ -383,9 +456,30 @@ export function Conversation({
   // navigation and the per-agent usage bars.
   const [modelQuery, setModelQuery] = useState("");
   const [modelIndex, setModelIndex] = useState(0);
-  const [agentNote, setAgentNote] = useState<AgentBackend | null>(null);
+  const [, setAgentNote] = useState<AgentBackend | null>(null);
   const modelSearchRef = useRef<HTMLInputElement | null>(null);
+  const [pickerBackend, setPickerBackend] = useState<AgentBackend | null>(null);
+  // Per-backend model catalogs for the picker. Claude's list is a fixed
+  // client-side constant (instant); the rest are warmed eagerly so browsing
+  // agents never shows the multi-second "Loading models…" spinner.
+  const [pickerModels, setPickerModels] = useState<
+    Partial<Record<AgentBackend, ModelInfo[]>>
+  >({ claude: CLAUDE_MODELS });
+  // Thinking ladders for backends browsed in the picker (not the session's
+  // own backend): fetched per backend so the track reflects what you click,
+  // not what the session happens to run on.
+  const [pickerLevels, setPickerLevels] = useState<
+    Partial<Record<AgentBackend, string[]>>
+  >({ claude: CLAUDE_EFFORT_LEVELS });
+  const [usageOpen, setUsageOpen] = useState(false);
+  const [effortHover, setEffortHover] = useState<number | null>(null);
+  const pendingModelRef = useRef<ModelInfo | null>(null);
+  const pendingBackendRef = useRef<AgentBackend | null>(null);
+  const usagePopRef = useRef<HTMLDivElement | null>(null);
   const backendUsage = useBackendUsage();
+  // Reset countdown for the active backend's nearest limit window, shown
+  // under the composer's tool row (only while that window is in flight).
+  const currentReset = usagePair(backendUsage[tab.backend]).reset;
   // Compaction is a long, silent backend job: pi/claude re-summarize the whole
   // history before answering. Without a visible in-progress state the UI looked
   // idle, so /compact got sent again and again.
@@ -436,17 +530,35 @@ export function Conversation({
   // Offering steer on a backend that cannot take a mid-turn message only
   // produced a failed send, so those sessions queue instead.
   const canSteer = caps.steer;
-  const [conversationView, setConversationView] = useState<
-    "chat" | "trajectory" | "backend"
-  >("chat");
+  const [conversationView, setConversationView] = useState<SessionView>("chat");
   const [sessionDetailsOpen, setSessionDetailsOpen] = useState(false);
   const [renaming, setRenaming] = useState(false);
   const [renameDraft, setRenameDraft] = useState("");
-  const [overflowOpen, setOverflowOpen] = useState(false);
-  const overflowRef = useRef<HTMLDivElement | null>(null);
-  const [workspaceOpen, setWorkspaceOpen] = useState(false);
+  const [workspaceOpen, setWorkspaceOpen] = useState(
+    () => localStorage.getItem(`${panelKey}:open`) === "1",
+  );
+  const [workspaceTab, setWorkspaceTab] = useState<"files" | "changes">(() =>
+    localStorage.getItem(`${panelKey}:tab`) === "changes" ? "changes" : "files",
+  );
   const [boardOpen, setBoardOpen] = useState(false);
-  const [workspaceMounted, setWorkspaceMounted] = useState(false);
+  useEffect(() => {
+    localStorage.setItem(`${panelKey}:open`, workspaceOpen ? "1" : "0");
+  }, [panelKey, workspaceOpen]);
+  useEffect(() => {
+    localStorage.setItem(`${panelKey}:tab`, workspaceTab);
+  }, [panelKey, workspaceTab]);
+  useEffect(() => {
+    try {
+      if (viewer && !viewer.imageSrc)
+        localStorage.setItem(`${panelKey}:viewer`, JSON.stringify(viewer));
+      else localStorage.removeItem(`${panelKey}:viewer`);
+    } catch {
+      /* oversized content — skip persisting */
+    }
+  }, [panelKey, viewer]);
+  // Mounted with the restored open flag so a persisted explorer renders
+  // after navigating back from settings.
+  const [workspaceMounted, setWorkspaceMounted] = useState(workspaceOpen);
   const [workspacePlacement, setWorkspacePlacement] =
     // Always opens docked beside the chat (conversation → files → editor);
     // full screen is a per-visit expand, not a sticky preference.
@@ -460,7 +572,6 @@ export function Conversation({
   const [providerUsage, setProviderUsage] = useState<ProviderUsage | null>(
     null,
   );
-  const [usageRefreshing, setUsageRefreshing] = useState(false);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const stickToBottom = useRef(true);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
@@ -477,23 +588,6 @@ export function Conversation({
   // backend changed must be dropped, not shown as the new backend's models.
   const metadataGenRef = useRef(0);
   const metadataBackendRef = useRef(tab.backend);
-
-  useEffect(() => {
-    if (!overflowOpen) return;
-    const onPointerDown = (event: PointerEvent) => {
-      if (!overflowRef.current?.contains(event.target as Node))
-        setOverflowOpen(false);
-    };
-    const onKeyDown = (event: globalThis.KeyboardEvent) => {
-      if (event.key === "Escape") setOverflowOpen(false);
-    };
-    window.addEventListener("pointerdown", onPointerDown);
-    window.addEventListener("keydown", onKeyDown);
-    return () => {
-      window.removeEventListener("pointerdown", onPointerDown);
-      window.removeEventListener("keydown", onKeyDown);
-    };
-  }, [overflowOpen]);
 
   const state = timeline.state;
 
@@ -542,6 +636,22 @@ export function Conversation({
   const subagentRunning = subagentRuns.some((run) => run.status === "running");
   const streaming =
     status === "working" || state?.isStreaming === true || subagentRunning;
+  // Belt against under-reported runs: a pane opened from saved history can
+  // miss agent adoption, leaving status "ready" while the session's real
+  // agent still streams. The sessions list — the same signal that blinks
+  // the sidebar row — is the fallback trigger for the stop button.
+  const sessionFile = tab.sessionPath ?? state?.sessionFile;
+  const serverRunning = Boolean(
+    sessionFile &&
+      resumeSessions.some(
+        (session) => session.path === sessionFile && session.isStreaming,
+      ),
+  );
+  // Three or more panes: the composer collapses to two lines total — one
+  // text line plus the model row. (density != "full" ⟺ ≥3 panes; two panes
+  // and narrow single panes stay on the roomier tight layout.)
+  const thin = split && density !== "full";
+  const agentBusy = streaming || serverRunning;
   const firstUserItem = timeline.items.find(
     (item) =>
       item.kind === "user" &&
@@ -603,7 +713,17 @@ export function Conversation({
 
   // Set by an in-place backend switch; the next prompt to the new agent
   // carries it so the agent reads what the old one did before answering.
-  const pendingHandoffRef = useRef<string | null>(null);
+  // `from` is the backend that actually produced the transcript — not the
+  // picker selection being switched away from — so a pi→claude→pi round trip
+  // that never sends a message does not claim the transcript came from Claude.
+  const pendingHandoffRef = useRef<{
+    path: string;
+    from: AgentBackend;
+  } | null>(null);
+  // Stamps from the previous backend stay on the transcript. The card only
+  // counts usage that happened after the switch.
+  const usageSinceRef = useRef(0);
+  const transcriptBackendRef = useRef<AgentBackend>(tab.backend);
   const switchBackend = async (next: AgentBackend) => {
     setModelMenuOpen(false);
     if (next === tab.backend || streaming || configuring) return;
@@ -611,35 +731,21 @@ export function Conversation({
       setDefaultBackend(next);
       return;
     }
-    const from = backendLabel(tab.backend);
+    const from = transcriptBackendRef.current;
+    // Switching back before a prompt means the transcript is still `from`.
+    usageSinceRef.current = next === from ? 0 : Date.now();
     // Save now rather than trust the last write: the brief must point at a
     // file that holds every turn so far.
     const path = await saveTranscript();
     // Free the old agent's process; the new one starts on the next prompt.
     await api.stop(tab.key);
     setConversationBackend(tab.key, next);
-    pendingHandoffRef.current = path ? handoffPrompt(path, from) : null;
+    pendingHandoffRef.current = path ? { path, from } : null;
     timeline.appendNotice(
-      `Switched from ${from} to ${backendLabel(next)}. Your next message hands it this conversation's transcript.`,
+      next === from
+        ? `Switched back to ${backendLabel(from)}.`
+        : `Switched from ${backendLabel(from)} to ${backendLabel(next)}. Your next message hands it this conversation's transcript.`,
       "info",
-    );
-  };
-
-  /** Hand this session to another agent: same folder, transcript as the brief. */
-  const continueIn = (backend: AgentBackend) => {
-    if (!transcriptPath || !tab.cwd) return;
-    const text = handoffPrompt(transcriptPath, backendLabel(tab.backend));
-    // A tab not yet mounted picks the draft up from storage on mount; the event
-    // covers a fresh tab that is already open and so will not re-read storage.
-    try {
-      localStorage.setItem(`devden.draft:new:${backend}:${tab.cwd}`, text);
-    } catch {
-      /* storage unavailable; the event path still seeds it */
-    }
-    const key = openConversation(tab.cwd, undefined, backend);
-    onSessionSplit?.(key);
-    window.dispatchEvent(
-      new CustomEvent("devden:seed-draft", { detail: { key, text } }),
     );
   };
 
@@ -790,14 +896,15 @@ export function Conversation({
     window.addEventListener("devden:seed-draft", onSeed);
     return () => window.removeEventListener("devden:seed-draft", onSeed);
   }, [tab.key]);
-  // Claude Code can count the context for real; every other backend gets the
-  // character-based estimate. Refreshed between turns, since that is when the
-  // number actually moves and when the CLI is free to answer.
+  // Every built-in backend reports the window the model is actually using.
+  // The character estimate is only for a backend that has no count at all.
+  // Claude's count is a CLI call, so it waits until the turn is idle. Grok
+  // and Codex read a number they already have, including mid-turn.
   const [exactContext, setExactContext] = useState<ContextUsageReport | null>(
     null,
   );
   const estimated = estimateContext(timeline.items, state);
-  const context: ContextUsage = exactContext
+  const reported: ContextUsage | null = exactContext
     ? {
         estimatedTokens: exactContext.totalTokens,
         contextWindow: exactContext.maxTokens,
@@ -808,7 +915,8 @@ export function Conversation({
           : undefined,
         categories: exactContext.categories,
       }
-    : estimated;
+    : null;
+  const context: ContextUsage = reported ?? estimated;
   const hasItems = timeline.items.length > 0;
   useEffect(() => {
     const el = conversationRef.current;
@@ -821,11 +929,6 @@ export function Conversation({
     ro.observe(el);
     return () => ro.disconnect();
   }, [hasItems]);
-  // The handoff field shows a single backend — the first one this session is
-  // not already running on — so the closed select stays as narrow as its mark
-  // instead of listing every other agent at once.
-  const handoffTarget =
-    backendIds.find((backend) => backend !== tab.backend) ?? "claude";
   // Reasoning summaries are intentionally not rendered in the chat view. The
   // data still flows through the timeline (Trajectory tab, context estimates),
   // but the transcript stays clean; thinking activity surfaces as a
@@ -911,6 +1014,10 @@ export function Conversation({
       : "",
   );
   const chatTurns = useMemo(() => splitTurns(visibleItems), [visibleItems]);
+  const latestChangedTurn = useMemo(
+    () => chatTurns.findLastIndex((turn) => turnChangedFiles(turn).length > 0),
+    [chatTurns],
+  );
   const lastTurnKey = chatTurns.at(-1) ? turnKey(chatTurns.at(-1)!) : "";
   useEffect(() => {
     setTurnOpen({});
@@ -1065,6 +1172,18 @@ export function Conversation({
   const lastAssistantId = streaming
     ? undefined
     : lastAnswerableAssistantId(visibleItems);
+  // Every file this session's tools wrote: the Changes dock's default scope.
+  const sessionPaths = useMemo(
+    () => turnChangedFiles(timeline.items).map((file) => file.path),
+    [timeline.items],
+  );
+  const openFileView = (view: ToolFileView) => {
+    if (view.imageSrc || !onOpenReview) {
+      setViewer(view);
+      return;
+    }
+    onOpenReview(view);
+  };
   const renderTimelineItem = (
     item: TimelineItem,
     extras?: { repeat?: number; expandDiff?: boolean },
@@ -1075,7 +1194,9 @@ export function Conversation({
       repeat={extras?.repeat}
       expandDiff={extras?.expandDiff}
       cwd={tab.cwd}
-      onOpenFile={setViewer}
+      onOpenFile={openFileView}
+      dockTitle={reviewTitle}
+      dockWord={dockMulti ? "In dock" : "In panel"}
       onFork={stableRowHandlers.onFork}
       onRewindFiles={stableRowHandlers.onRewindFiles}
       subagentChildren={subagentChildren}
@@ -1148,7 +1269,19 @@ export function Conversation({
           Array.isArray(levelResult.levels) &&
           levelResult.levels.length > 0
         )
+          // The selected model's own catalog levels win (per-model, like
+          // synara); the session's live answer is the fallback for models
+          // without catalog metadata.
           setLevels(levelResult.levels);
+        if (modelResult.ok && Array.isArray(modelResult.models)) {
+          const active = modelResult.models.find(
+            (candidate) =>
+              candidate.provider === state?.model?.provider &&
+              candidate.id === state?.model?.id,
+          );
+          if (Array.isArray(active?.levels) && active.levels.length > 0)
+            setLevels(active.levels);
+        }
         if (modelResult.ok && levelResult.ok)
           modelMetadataLoadedRef.current = true;
       })
@@ -1156,7 +1289,7 @@ export function Conversation({
         modelMetadataRequestRef.current = null;
       });
     modelMetadataRequestRef.current = request;
-  }, [status, tab.backend, tab.key]);
+  }, [status, tab.backend, tab.key, state?.model]);
 
   // Backend switched under this tab (the sidebar picker retargets unstarted
   // tabs): drop the old backend's model/effort lists and clear the guards
@@ -1178,9 +1311,9 @@ export function Conversation({
   // catalogs per backend, so this is one cheap request that turns the model
   // dropdown from a multi-second spinner into an instant open.
   useEffect(() => {
-    if (status === "starting" || status === "stopped") return;
+    if (!visible || status === "starting" || status === "stopped") return;
     loadModelMetadata();
-  }, [loadModelMetadata, status]);
+  }, [loadModelMetadata, status, visible]);
 
   const loadCommands = useCallback(() => {
     if (
@@ -1204,7 +1337,8 @@ export function Conversation({
     commandRequestRef.current = request;
   }, [status, tab.backend, tab.cwd, tab.key]);
 
-  const openWorkspace = useCallback(() => {
+  const openWorkspace = useCallback((nextTab?: "files" | "changes") => {
+    if (nextTab) setWorkspaceTab(nextTab);
     setWorkspaceMounted(true);
     setWorkspaceOpen(true);
   }, []);
@@ -1235,6 +1369,11 @@ export function Conversation({
       return !open;
     });
   };
+  // In a split the workspace buttons drive the grid's shared right pane.
+  const workspaceShown = onSharedWorkspaceToggle
+    ? sharedWorkspaceOpen
+    : workspaceOpen;
+  const workspaceButton = onSharedWorkspaceToggle ?? toggleWorkspace;
 
   useEffect(() => {
     if (draft.startsWith("/") || commandMenuOpen) loadCommands();
@@ -1278,23 +1417,11 @@ export function Conversation({
     [tab.backend, tab.key, tab.sessionPath, timeline],
   );
 
-  // The reset instants are pure arithmetic, but the percentages only move when
-  // something asks: page load, a finished turn, or the poll timer. This is the
-  // "ask now" button.
-  const refreshUsageNow = useCallback(async () => {
-    setUsageRefreshing(true);
-    try {
-      await refreshUsage(true);
-    } finally {
-      setUsageRefreshing(false);
-    }
-  }, [refreshUsage]);
-
   // The percentages lag the failure (the poll runs every 30-60s), so ask now
   // that it has landed rather than showing the banner with stale numbers.
   useEffect(() => {
-    if (limitTurn?.noticeId) void refreshUsage(true);
-  }, [limitTurn?.noticeId, refreshUsage]);
+    if (visible && limitTurn?.noticeId) void refreshUsage(true);
+  }, [limitTurn?.noticeId, refreshUsage, visible]);
 
   /**
    * Sends a harness nudge rather than the user's text again: the agent still
@@ -1320,6 +1447,8 @@ export function Conversation({
       sessionPath: tab.sessionPath ?? state?.sessionFile ?? undefined,
       model: state?.model ?? undefined,
       thinkingLevel: state?.thinkingLevel ?? undefined,
+      accessMode,
+      agentMode: apiAgentMode(agentMode),
     });
     if (!result.ok) {
       timeline.clearPendingRun();
@@ -1337,9 +1466,8 @@ export function Conversation({
     // still owns a usage quota, so ask as long as there is something to ask
     // about: a live state, or a session file the server can read. Only a
     // brand-new conversation (neither) stays quiet.
-    // ponytail: each tab polls its backend independently — N open tabs mean N
-    // fetches per interval. Provider-global dedupe if that ever shows.
-    if (status === "starting" || (!state && !tab.sessionPath)) return;
+    if (!visible || status === "starting" || (!state && !tab.sessionPath))
+      return;
     let timer: number | undefined;
     let cancelled = false;
     const running = status === "working" || state?.isStreaming === true;
@@ -1389,6 +1517,7 @@ export function Conversation({
     state?.model?.provider,
     status,
     tab.sessionPath,
+    visible,
   ]);
 
   useEffect(() => {
@@ -1413,7 +1542,11 @@ export function Conversation({
   );
 
   useEffect(() => {
-    if (!caps.contextUsage || streaming) {
+    // Pi's count asks the live process, which is busy mid-turn. Claude's
+    // count is a separate CLI call. Grok and Codex already hold the number.
+    if (!visible) return;
+    const waitUntilIdle = tab.backend === "claude" || tab.backend === "pi";
+    if (!caps.contextUsage || (streaming && waitUntilIdle)) {
       if (!caps.contextUsage) setExactContext(null);
       return;
     }
@@ -1441,6 +1574,7 @@ export function Conversation({
     tab.backend,
     streaming,
     timeline.items.length,
+    visible,
   ]);
 
   useEffect(
@@ -1448,13 +1582,13 @@ export function Conversation({
       subscribeEvents((event) => {
         if (event.sessionKey !== tab.key || event.type !== "agent_settled")
           return;
-        if (document.hidden) {
+        if (!visible || document.hidden) {
           usageRefreshPendingRef.current = true;
           return;
         }
         void refreshUsage(true);
       }),
-    [refreshUsage, tab.key],
+    [refreshUsage, tab.key, visible],
   );
 
   useEffect(() => {
@@ -1467,7 +1601,7 @@ export function Conversation({
   // only write when the position actually has to move.
   useLayoutEffect(() => {
     const el = scrollRef.current;
-    if (!stickToBottom.current || !el) return;
+    if (!visible || !stickToBottom.current || !el) return;
     const bottom = el.scrollHeight - el.clientHeight;
     if (Math.abs(el.scrollTop - bottom) > 1) el.scrollTop = bottom;
   });
@@ -1597,7 +1731,7 @@ export function Conversation({
   useEffect(() => {
     // In split view each pane owns its own drop zone; a global listener would
     // make both panes race for the same files.
-    if (split) return;
+    if (!visible || split) return;
     const hasFiles = (event: globalThis.DragEvent) =>
       Array.from(event.dataTransfer?.types ?? []).includes("Files");
     const onDocDragOver = (event: globalThis.DragEvent) => {
@@ -1625,7 +1759,7 @@ export function Conversation({
       document.removeEventListener("dragover", onDocDragOver);
       document.removeEventListener("drop", onDocDrop);
     };
-  }, [split]);
+  }, [split, visible]);
 
   const configureSession = async (
     nextAccess: AccessMode,
@@ -1744,10 +1878,12 @@ export function Conversation({
     if (!silent) {
       timeline.appendNotice(
         nextMode === "plan"
-          ? "Plan mode is on — read-only exploration until you run the plan."
+          ? "Plan mode is on — read and plan, change nothing."
           : nextMode === "manual"
-            ? "Manual mode is on — the agent asks before running tools."
-            : "Auto mode is on.",
+            ? "Ask mode is on — the agent asks before every edit and command."
+            : nextMode === "auto-edit"
+              ? "Auto-edit is on — edits apply, commands still ask."
+              : "Full auto is on.",
         "info",
       );
     }
@@ -1977,7 +2113,15 @@ export function Conversation({
         const toolCalls = timeline.items.filter(
           (item) => item.kind === "tool",
         ).length;
-        // Prefer the backend's own accounting; fall back to the estimate.
+        // Prefer the backend's own accounting. A capable backend that has
+        // not answered yet has no honest number to print.
+        if (caps.contextUsage && !context.exact) {
+          timeline.appendNotice(
+            "Context usage isn't in yet. It shows up once the model reports the window.",
+            "info",
+          );
+          return;
+        }
         const usage = context;
         const qualifier = usage.exact ? "" : "~";
         const breakdown = (usage.categories ?? [])
@@ -2158,10 +2302,12 @@ export function Conversation({
       ]
         .filter(Boolean)
         .join("\n\n");
+      // Pictures show as thumbnails in the bubble; only other files are named.
+      const namedFiles = pickedAttachments.filter((a) => !a.imageData);
       const displayMessage = [
-        message || "Attached file(s)",
-        pickedAttachments.length
-          ? `Attachments: ${pickedAttachments.map((attachment) => attachment.name).join(", ")}`
+        message || (namedFiles.length ? "Attached file(s)" : ""),
+        namedFiles.length
+          ? `Attachments: ${namedFiles.map((attachment) => attachment.name).join(", ")}`
           : "",
       ]
         .filter(Boolean)
@@ -2197,7 +2343,11 @@ export function Conversation({
       // sit in the middle of the still-printing turn, then its reply arrived
       // after the handover. The queue chip is the affordance until the
       // previous turn settles; message_start then appends the bubble.
-      if (!willQueue) timeline.appendUser(displayMessage);
+      if (!willQueue)
+        timeline.appendUser(
+          displayMessage,
+          images.map((image) => `data:${image.mimeType};base64,${image.data}`),
+        );
       // Optimistic pending-run state: the RPC prompt response only arrives when
       // the whole turn completes, and agent_start can lag (a stalled model call
       // once left the UI silent for 225s). Show "working" immediately so the
@@ -2218,17 +2368,35 @@ export function Conversation({
         return;
       }
 
-      const handoff = willQueue ? null : pendingHandoffRef.current;
+      const promptBackend = pendingBackendRef.current ?? tab.backend;
+      const promptModel = pendingModelRef.current ?? state?.model ?? undefined;
+      if (!willQueue) {
+        pendingModelRef.current = null;
+        pendingBackendRef.current = null;
+      }
+      const pendingHandoff = willQueue ? null : pendingHandoffRef.current;
+      // A handoff belongs on the message only when it actually lands on a
+      // backend other than the one that produced the transcript. Switching
+      // away and back (e.g. pi→claude→pi) must not hand the transcript off.
+      const handoff =
+        pendingHandoff && pendingHandoff.from !== promptBackend
+          ? handoffPrompt(
+              pendingHandoff.path,
+              backendLabel(pendingHandoff.from),
+            )
+          : null;
+      if (!willQueue) pendingHandoffRef.current = null;
       if (handoff) {
-        pendingHandoffRef.current = null;
         outboundMessage = `${handoff}\n\n---\n\n${outboundMessage}`;
       }
       const promptOptions = {
         images,
         cwd: tab.cwd,
-        backend: tab.backend,
+        backend: promptBackend,
+        accessMode,
+        agentMode: apiAgentMode(agentMode),
         sessionPath: tab.sessionPath ?? state?.sessionFile ?? undefined,
-        model: state?.model ?? undefined,
+        model: promptModel,
         thinkingLevel: state?.thinkingLevel ?? undefined,
       };
       // Drop the same-tick lock before awaiting the turn so a follow-up can
@@ -2258,6 +2426,10 @@ export function Conversation({
         result = await api.prompt(tab.key, outboundMessage, promptOptions);
       }
       if (result.ok) {
+        // The transcript's producing backend is now whichever agent took this
+        // message, so a later switch-away-and-back compares against the real
+        // source rather than the picker's intermediate selections.
+        transcriptBackendRef.current = promptBackend;
         if (willQueue && !result.data?.queued) {
           // enqueue sends immediately when the agent went idle between click
           // and the POST; show the bubble the queue path skipped.
@@ -2288,7 +2460,7 @@ export function Conversation({
         }
       } else {
         setAttachments(pickedAttachments);
-        if (handoff) pendingHandoffRef.current = handoff;
+        if (pendingHandoff) pendingHandoffRef.current = pendingHandoff;
         if (!willQueue) timeline.clearPendingRun();
         timeline.appendNotice(result.error ?? "prompt failed", "error");
       }
@@ -2320,11 +2492,17 @@ export function Conversation({
         setModeMenuOpen(false);
       if (modelMenuOpen && !modelMenuRef.current?.contains(target))
         setModelMenuOpen(false);
+      if (
+        usageOpen &&
+        usagePopRef.current &&
+        !usagePopRef.current.contains(target)
+      )
+        setUsageOpen(false);
     };
     document.addEventListener("pointerdown", closeFloatingMenus);
     return () =>
       document.removeEventListener("pointerdown", closeFloatingMenus);
-  }, [commandMenuOpen, modeMenuOpen, modelMenuOpen]);
+  }, [commandMenuOpen, modeMenuOpen, modelMenuOpen, usageOpen]);
 
   // slash filtering for the command menu opened by typing "/"
   const localCommands = LOCAL_COMMANDS.filter((command) => {
@@ -2411,6 +2589,13 @@ export function Conversation({
   };
 
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (event.key === "Tab" && event.shiftKey && !mentionOpen && !slashOpen) {
+      event.preventDefault();
+      const index = DESIGN_MODES.indexOf(agentMode);
+      const next = DESIGN_MODES[(index + 1) % DESIGN_MODES.length] ?? "manual";
+      void switchAgentMode(next);
+      return;
+    }
     // Steer the running turn, whatever the mid-turn default is.
     if (
       event.key === "Enter" &&
@@ -2493,13 +2678,16 @@ export function Conversation({
     }
   };
 
-  const textareaMinHeight = 48;
+  // The inline height overrides any CSS, so the thin cap has to live here —
+  // a stylesheet rule alone can never shrink the textarea below 48px.
+  const textareaMinHeight = 26;
+  const textareaMaxHeight = thin ? 26 : 196;
   const autoGrow = useCallback(() => {
     const el = textareaRef.current;
     if (!el) return;
     el.style.height = "0px";
-    el.style.height = `${Math.min(Math.max(el.scrollHeight, textareaMinHeight), 196)}px`;
-  }, []);
+    el.style.height = `${Math.min(Math.max(el.scrollHeight, textareaMinHeight), textareaMaxHeight)}px`;
+  }, [textareaMinHeight, textareaMaxHeight]);
   useLayoutEffect(() => {
     autoGrow();
     // deps: [draft] only — this used to run on every render (no deps array),
@@ -2546,6 +2734,15 @@ export function Conversation({
         timeline.appendNotice(result.error ?? "Could not set model", "error");
         return;
       }
+      // Adopt the new model's catalog levels immediately so the effort
+      // slider matches the selected model before the (slower) live
+      // thinking-levels refresh below answers.
+      const catalog = models.find(
+        (candidate) =>
+          candidate.provider === option.provider && candidate.id === option.id,
+      );
+      if (Array.isArray(catalog?.levels) && catalog.levels.length > 0)
+        setLevels(catalog.levels);
       if (result.state) {
         timeline.setState(result.state);
         setPreferredModel(tab.backend, tab.cwd, result.state.model);
@@ -2571,30 +2768,135 @@ export function Conversation({
     });
   };
 
-  // Search-filtered model list for the menu.
+  const browseBackend = pickerBackend ?? tab.backend;
   const visibleOptions = useMemo(() => {
-    const q = modelQuery.trim().toLowerCase();
-    if (!q) return modelOptions;
-    return modelOptions.filter((option) =>
+    const source =
+      browseBackend === tab.backend
+        ? models
+        : (pickerModels[browseBackend] ?? []);
+    const options: ModelOption[] = source.map((model) => ({
+      provider: model.provider,
+      id: model.id,
+      label:
+        browseBackend === "claude" || model.provider === "anthropic"
+          ? formatClaudeModelName(model.name ?? model.id)
+          : (model.name ?? model.id),
+      context: model.contextWindow,
+      levels: model.levels,
+    }));
+    const query = modelQuery.trim().toLowerCase();
+    if (!query) return options;
+    return options.filter((option) =>
       `${option.label} ${option.provider}/${option.id}`
         .toLowerCase()
-        .includes(q),
+        .includes(query),
     );
-  }, [modelOptions, modelQuery]);
+  }, [browseBackend, modelQuery, models, pickerModels, tab.backend]);
+
+  // The effort track follows what the picker browses: the highlighted model's
+  // own ladder when the catalog knows it, else the browsed backend's (fetched
+  // cold) — so clicking backends/models no longer shows the session's ladder
+  // everywhere. effortStops keeps the session's current level visible in it.
+  const backendLevels =
+    browseBackend === tab.backend
+      ? levels
+      : (pickerLevels[browseBackend] ?? []);
+  const hoveredLevels = visibleOptions[modelIndex]?.levels;
+  const trackLevels = effortStops(
+    hoveredLevels?.length ? hoveredLevels : backendLevels,
+    effort,
+  );
+
+  const pickListedModel = (option: ModelOption) => {
+    setModelMenuOpen(false);
+    const model: ModelInfo = {
+      provider: option.provider,
+      id: option.id,
+      name: option.label,
+    };
+    if (browseBackend === tab.backend) {
+      pendingModelRef.current = null;
+      pendingBackendRef.current = null;
+      setModel(`${option.provider}/${option.id}`);
+      return;
+    }
+    pendingModelRef.current = model;
+    pendingBackendRef.current = browseBackend;
+    setPreferredModel(browseBackend, tab.cwd, model);
+    void switchBackend(browseBackend);
+  };
+
+  useEffect(() => {
+    if (!modelMenuOpen || !pickerBackend || pickerBackend === tab.backend)
+      return;
+    let cancelled = false;
+    // Already warmed (or fetched on an earlier browse): read from cache.
+    if (!pickerModels[pickerBackend]?.length)
+      void api.models(tab.key, pickerBackend).then((result) => {
+        if (cancelled || !result.ok || !Array.isArray(result.models)) return;
+        setPickerModels((prev) => ({
+          ...prev,
+          [pickerBackend]: result.models,
+        }));
+      });
+    if (!pickerLevels[pickerBackend]?.length)
+      void api.thinkingLevels(tab.key, pickerBackend).then((result) => {
+        if (
+          cancelled ||
+          !result.ok ||
+          !Array.isArray(result.levels) ||
+          result.levels.length === 0
+        )
+          return;
+        setPickerLevels((prev) => ({
+          ...prev,
+          [pickerBackend]: result.levels,
+        }));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    modelMenuOpen,
+    pickerBackend,
+    tab.backend,
+    tab.key,
+    pickerLevels,
+    pickerModels,
+  ]);
 
   // Fresh menu state on every open; keyboard focus lands in the search box.
   useEffect(() => {
     if (!modelMenuOpen) return;
     setModelQuery("");
-    setModelIndex(0);
+    // Start the keyboard highlight on the session's model (mock parity), so
+    // the effort track opens on its ladder and arrows walk from it.
+    const start = modelOptions.findIndex(
+      (option) => `${option.provider}/${option.id}` === currentModel,
+    );
+    setModelIndex(start >= 0 ? start : 0);
     setAgentNote(null);
     const input = modelSearchRef.current;
     if (input) input.focus();
-  }, [modelMenuOpen]);
+    // deps: [modelMenuOpen, tab.backend] only — re-running on catalog
+    // arrivals would reset a query the user is typing mid-menu.
+  }, [modelMenuOpen, tab.backend]);
 
-  // ↑↓ move, ↵ select, esc close; ⇥ cycles the agent buttons without
-  // committing — a stray Tab must not switch backends mid-sentence.
   const onModelMenuKey = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (
+      event.altKey &&
+      (event.key === "ArrowLeft" || event.key === "ArrowRight")
+    ) {
+      event.preventDefault();
+      if (browseBackend !== tab.backend) return;
+      const track = effortStops(levels, effort);
+      const index = Math.max(0, track.indexOf(effort));
+      const delta = event.key === "ArrowRight" ? 1 : -1;
+      const next =
+        track[Math.max(0, Math.min(track.length - 1, index + delta))];
+      if (next && next !== effort) setEffort(next);
+      return;
+    }
     if (event.key === "ArrowDown" || event.key === "ArrowUp") {
       event.preventDefault();
       const count = visibleOptions.length;
@@ -2605,27 +2907,24 @@ export function Conversation({
           : (index - 1 + count) % count,
       );
     } else if (event.key === "Enter") {
+      event.preventDefault();
       const option = visibleOptions[modelIndex];
-      if (!option) return;
-      const value = `${option.provider}/${option.id}`;
-      setModelMenuOpen(false);
-      if (value !== currentModel) setModel(value);
+      if (option) pickListedModel(option);
     } else if (event.key === "Escape") {
       setModelMenuOpen(false);
     } else if (event.key === "Tab") {
       event.preventDefault();
-      const agents = [
-        ...(modelMenuRef.current?.querySelectorAll<HTMLButtonElement>(
-          ".composer__model-backends button",
-        ) ?? []),
-      ];
-      if (agents.length === 0) return;
-      const active = agents.indexOf(
-        document.activeElement as HTMLButtonElement,
-      );
-      agents[
-        (active + (event.shiftKey ? -1 : 1) + agents.length) % agents.length
-      ].focus();
+      const index = backendIds.indexOf(browseBackend);
+      const next =
+        backendIds[
+          (index + (event.shiftKey ? -1 : 1) + backendIds.length) %
+            backendIds.length
+        ];
+      if (next) {
+        setPickerBackend(next);
+        setModelQuery("");
+        setModelIndex(0);
+      }
     }
   };
 
@@ -2738,7 +3037,7 @@ export function Conversation({
     }
   };
 
-  const tight = (split && density !== "full") || narrow;
+  const tight = thin || narrow;
 
   const setupChips = (
     <div className="composer__setup">
@@ -2755,10 +3054,10 @@ export function Conversation({
         {!split && (
           <button
             type="button"
-            className={`workspace-picker__trigger${workspaceOpen ? " is-active" : ""}`}
-            aria-pressed={workspaceOpen}
+            className={`workspace-picker__trigger${workspaceShown ? " is-active" : ""}`}
+            aria-pressed={workspaceShown}
             title={tab.cwd}
-            onClick={toggleWorkspace}
+            onClick={workspaceButton}
           >
             <IconCode size={15} />
             <span>View workspace</span>
@@ -2799,757 +3098,30 @@ export function Conversation({
   ) : null;
 
   const composer = (
-    <div
-      className={`composer${tight ? " composer--tight" : ""}${awaitingRoute ? " is-picking-route" : ""}`}
-      data-backend={tab.backend}
-    >
-      {!streaming && hasItems && tab.cwd && (
-        <div className="composer__turn-bar">
-          <ChangesPanel
-            sessionKey={tab.key}
-            cwd={tab.cwd}
-            streaming={streaming}
-            compact={tight}
-            onWorkspaceClick={() => workspacePickerRef.current?.openBrowser()}
-            onAskAgent={(prompt) =>
-              setDraft((current) =>
-                current.trim() ? `${current}\n\n${prompt}` : prompt,
-              )
-            }
-            onLeaveWorktree={(mainPath) => {
-              setConversationWorkspace(tab.key, mainPath);
-              timeline.appendNotice(
-                "Worktree deleted — this session is back on the main checkout.",
-                "info",
-              );
-            }}
-          />
-          {lastAssistantId && (
-            <TurnCompleteBar
-              backend={tab.backend}
-              stats={turnStats(visibleItems)}
-              starting={reviewStarting}
-              onReview={(backend) => void startTurnReview(backend)}
-            />
-          )}
-        </div>
-      )}
-      {/* The changes card clips its overflow, so the workspace picker's modal
-          has to be hosted outside it. Kept mounted (and hidden) so the folder
-          card in the changes footer has something to open. Split panes host
-          the picker as the header folder chip instead. */}
-      {hasItems && tab.cwd && !split && (
-        <WorkspacePicker
-          ref={workspacePickerRef}
-          cwd={tab.cwd}
-          backend={tab.backend}
-          disabled={configuring}
-          hideTrigger
-          onPick={(path) => configureSession(accessMode, agentMode, path)}
-          onIsolate={isolateSession}
-          onViewWorkspace={openWorkspace}
-        />
-      )}
-      {!hasItems && setupChips}
-      {agentMode === "routed" && (
-        <RouteSetup
-          route={route}
-          sessionKey={tab.key}
-          sessionBackend={tab.backend}
-          picking={awaitingRoute}
-          onChange={(next) => persistRoute({ ...next, enabled: true })}
-          onPick={pickRoute}
-          onChangeRoute={() => setRoutePicking(true)}
-        />
-      )}
-      {editingMessageId !== null && (
-        <div className="composer__editing" role="status">
-          <span>Editing message — press Enter to resend, Esc to cancel</span>
-          <button
-            type="button"
-            onClick={() => {
-              setEditingMessageId(null);
-              setDraft("");
-            }}
-          >
-            Cancel
-          </button>
-        </div>
-      )}
-      {mentionOpen && (
-        <div className="slash-menu mention-menu">
-          {mentionMatches.map((match, index) => (
-            <button
-              key={match.path}
-              type="button"
-              className={`slash-menu__item${index === mentionIndex ? " is-active" : ""}`}
-              onMouseDown={(event) => {
-                event.preventDefault();
-                applyMention(match);
-              }}
-            >
-              <code>{match.name}</code>
-              <span>{match.relativePath}</span>
-            </button>
-          ))}
-        </div>
-      )}
-      {slashOpen && slashMatches.length > 0 && (
-        <div className="slash-menu">
-          {slashMatches.map((command, index) => (
-            <button
-              key={command.name}
-              type="button"
-              className={`slash-menu__item${index === slashIndex ? " is-active" : ""}`}
-              onMouseDown={(e) => {
-                e.preventDefault();
-                setDraft(`/${command.name} `);
-                setCommandMenuOpen(false);
-                textareaRef.current?.focus();
-              }}
-            >
-              <code>/{command.name}</code>
-              <span>{command.description ?? ""}</span>
-              <em>{command.source ?? "pi"}</em>
-            </button>
-          ))}
-        </div>
-      )}
-      {streaming && todos.length > 0 && <TodoTracker tasks={todos} />}
-      {timeline.pendingApprovals.map((approval) => (
-        <div
-          className="approval-card"
-          key={approval.requestId}
-          role="alertdialog"
-          aria-label={`Approve ${approval.toolName}`}
-        >
-          <div className="approval-card__head">
-            <span className="approval-card__badge">Approval needed</span>
-            <strong>{approval.toolName}</strong>
-          </div>
-          {approval.detail && (
-            <pre className="approval-card__detail">{approval.detail}</pre>
-          )}
-          <div className="approval-card__options" role="group">
-            {approval.options.map((option) => (
-              <button
-                key={option.id}
-                type="button"
-                className={
-                  option.id === "deny" || option.id === "reject_once"
-                    ? "is-danger"
-                    : undefined
-                }
-                onClick={() =>
-                  void api
-                    .approve(
-                      tab.key,
-                      approval.requestId,
-                      option.id,
-                      tab.backend,
-                    )
-                    .then((result) => {
-                      if (!result.ok)
-                        timeline.appendNotice(
-                          result.error ?? "Could not send approval",
-                          "error",
-                        );
-                    })
-                }
-              >
-                {option.label}
-              </button>
-            ))}
-          </div>
-        </div>
-      ))}
-      {compacting && (
-        <div className="compacting-strip" role="status" aria-live="polite">
-          <p className="compacting-strip__hint">
-            Compacting the conversation — summarizing older history for the
-            model…
-          </p>
-          <div className="compacting-strip__bar" aria-hidden="true">
-            <span className="compacting-strip__fill" />
-          </div>
-        </div>
-      )}
-      {queued.length > 0 && (
-        <div className="queue-strip" aria-label="Queued messages">
-          <p className="queue-strip__hint">
-            <span>
-              {/* After an interrupt the queue outlives the turn it was
-                  waiting on: nothing is running, and these are held until
-                  the user sends them. Saying "waiting for this turn to
-                  finish" there reads as a hang. A usage-limit wall is the
-                  opposite: the turn did not finish, so the queue stays. */}
-              {limitVisible
-                ? "Waiting for the cut-off turn to finish."
-                : streaming
-                  ? canSteer
-                    ? "Waiting for this turn to finish."
-                    : "Waiting for this turn to finish — this agent cannot take a message mid-turn."
-                  : "Queued — nothing is running. These are not sent yet."}
-            </span>
-            {/* Mid-turn this is steering, which not every agent can do.
-                Idle it is just "send it now", which all of them can — and
-                without it an interrupted grok queue has no way out.
-                While the limit banner is up, sending now would start a new
-                prompt and Resume would follow that instead of the cut-off turn. */}
-            {!limitVisible && (canSteer || !streaming) && (
-              <button
-                type="button"
-                className="queue-strip__steer"
-                title={
-                  streaming
-                    ? "Send this into the turn that is already running"
-                    : "Send this now"
-                }
-                onClick={() => {
-                  const item = queued[0];
-                  if (!item) return;
-                  void api.steerQueued(tab.key, item.id).then((result) => {
-                    if (!result.ok)
-                      timeline.appendNotice(
-                        result.error ?? "Could not steer",
-                        "error",
-                      );
-                  });
-                }}
-              >
-                {streaming ? "Steer now" : "Send now"}
-              </button>
-            )}
-            {queued.length > 1 && (
-              <button
-                type="button"
-                className="queue-strip__clear"
-                title="Drop every queued message"
-                onClick={() => {
-                  void api.cancelQueued(tab.key).then((result) => {
-                    if (!result.ok)
-                      timeline.appendNotice(
-                        result.error ?? "Could not clear the queue",
-                        "error",
-                      );
-                  });
-                }}
-              >
-                Clear all
-              </button>
-            )}
-          </p>
-          {queued.map((item, index) => (
-            <div key={item.id} className="queue-chip">
-              <span className="queue-chip__index">{index + 1}</span>
-              <span className="queue-chip__text">{item.message}</span>
-              <button
-                type="button"
-                aria-label="Remove from queue"
-                title="Remove from queue"
-                onClick={() => {
-                  void api.cancelQueued(tab.key, item.id).then((result) => {
-                    if (!result.ok)
-                      timeline.appendNotice(
-                        result.error ?? "Could not remove that message",
-                        "error",
-                      );
-                  });
-                }}
-              >
-                ×
-              </button>
-            </div>
-          ))}
-        </div>
-      )}
-      {limitVisible && (
-        <LimitBanner
-          scope={limitScope(limitWindow?.label ?? "")}
-          label={limitWindow?.label}
-          resetsAt={limitWindow?.resetsAt}
-          busy={streaming}
-          onResume={() => void resumeFromLimit()}
-        />
-      )}
-      <form
-        className={`composer__card${awaitingRoute ? " is-awaiting-route" : ""}`}
-        onSubmit={(e: FormEvent) => {
-          e.preventDefault();
-          void send(draft);
-        }}
-      >
-        <input
-          ref={fileInputRef}
-          className="composer__file-input"
-          type="file"
-          multiple
-          onChange={(event) => {
-            void uploadFiles(event.target.files);
-            event.target.value = "";
-          }}
-        />
-        {attachments.length > 0 && (
-          <div className="composer__attachments" aria-label="Attached files">
-            {attachments.map((attachment) => {
-              const removeAttachment = () =>
-                setAttachments((current) =>
-                  current.filter((candidate) => candidate.id !== attachment.id),
-                );
-              if (attachment.imageData) {
-                const src = `data:${attachment.mimeType};base64,${attachment.imageData}`;
-                return (
-                  <span
-                    className="attachment-chip attachment-chip--image"
-                    key={attachment.id}
-                    title={attachment.path}
-                  >
-                    <button
-                      type="button"
-                      className="attachment-chip__preview"
-                      aria-label={`Preview ${attachment.name}`}
-                      onClick={() =>
-                        setViewer({ title: attachment.name, imageSrc: src })
-                      }
-                    >
-                      <img src={src} alt="" />
-                      <span>{attachment.name}</span>
-                    </button>
-                    <button
-                      type="button"
-                      aria-label={`Remove ${attachment.name}`}
-                      onClick={removeAttachment}
-                    >
-                      ×
-                    </button>
-                  </span>
-                );
-              }
-              return (
-                <span
-                  className="attachment-chip"
-                  key={attachment.id}
-                  title={attachment.path}
-                >
-                  <IconFile size={14} />
-                  <span>{attachment.name}</span>
-                  <button
-                    type="button"
-                    aria-label={`Remove ${attachment.name}`}
-                    onClick={removeAttachment}
-                  >
-                    ×
-                  </button>
-                </span>
-              );
-            })}
-          </div>
-        )}
-        <div className="composer__scroll">
-          <textarea
-            ref={textareaRef}
-            className="composer__textarea"
-            rows={2}
-            disabled={awaitingRoute}
-            placeholder={
-              awaitingRoute
-                ? "Pick a route above"
-                : editingMessageId === null
-                  ? hasItems
-                    ? streaming
-                      ? tight
-                        ? "Reply…"
-                        : "Reply, or queue the next step…"
-                      : "Describe what you want next…"
-                    : "Describe what you want to build"
-                  : "Edit your message…"
-            }
-            value={draft}
-            onChange={(e) => {
-              setDraft(e.target.value);
-              setCaret(e.target.selectionStart ?? e.target.value.length);
-              if (commandMenuOpen) setCommandMenuOpen(false);
-              autoGrow();
-            }}
-            onSelect={(e) =>
-              setCaret((e.target as HTMLTextAreaElement).selectionStart ?? 0)
-            }
-            onKeyDown={onKeyDown}
-            onPaste={onPasteImage}
-          />
-        </div>
-        <div className="composer__row">
-          <div className="composer__tools">
-            <button
-              type="button"
-              className="composer__add"
-              aria-label="Attach files"
-              title="Attach files (20 MB max)"
-              onClick={() => fileInputRef.current?.click()}
-            >
-              <IconPlus />
-            </button>
-            <div
-              className="native-model-controls"
-              ref={modelMenuRef}
-              onPointerDown={loadModelMetadata}
-              onFocus={loadModelMetadata}
-            >
-              <button
-                type="button"
-                className="native-model-controls__field native-model-controls__field--model"
-                aria-haspopup="menu"
-                aria-expanded={modelMenuOpen}
-                disabled={configuring || streaming}
-                title={
-                  streaming
-                    ? "Wait for the current response to finish before changing model"
-                    : `${backendLabel(tab.backend)} · ${currentModelLabel}`
-                }
-                onClick={() => setModelMenuOpen((open) => !open)}
-              >
-                <span className="native-model-controls__value">
-                  {backendLabel(tab.backend).toLowerCase()} ·{" "}
-                  {currentModelLabel}
-                </span>
-                <span className="native-select__chev">
-                  <IconChevronDown size={13} />
-                </span>
-              </button>
-              {modelMenuOpen && (
-                <div
-                  className="composer__mode-menu composer__model-menu"
-                  role="menu"
-                  onKeyDown={onModelMenuKey}
-                >
-                  <label className="composer__model-search">
-                    <IconSearch size={12} />
-                    <input
-                      ref={modelSearchRef}
-                      value={modelQuery}
-                      placeholder={`Search ${backendLabel(tab.backend)} models`}
-                      aria-label="Search models"
-                      onChange={(event) => {
-                        setModelQuery(event.target.value);
-                        setModelIndex(0);
-                      }}
-                    />
-                    <span className="composer__model-search-kbd">⇥ agent</span>
-                  </label>
-                  <div className="composer__model-columns">
-                    <div className="composer__model-backends">
-                      <span className="composer__mode-heading">Agent</span>
-                      {backendIds.map((backend) => {
-                        const { left } = usageLeft(backendUsage[backend]);
-                        return (
-                          <button
-                            type="button"
-                            role="menuitemradio"
-                            aria-checked={backend === tab.backend}
-                            key={backend}
-                            className={
-                              backend === tab.backend ? "is-active" : undefined
-                            }
-                            title={
-                              isUnstartedTab(tab)
-                                ? backendLabel(backend)
-                                : `Continue this conversation in ${backendLabel(backend)}`
-                            }
-                            onMouseEnter={() => setAgentNote(backend)}
-                            onClick={() => void switchBackend(backend)}
-                          >
-                            <span className="composer__model-agent-name">
-                              <span
-                                style={{ color: backendMark(backend).color }}
-                                aria-hidden
-                              >
-                                <BackendLogo backend={backend} size={13} />
-                              </span>
-                              {backendLabel(backend).toLowerCase()}
-                            </span>
-                            <span
-                              className={
-                                left !== null && left < 10
-                                  ? "composer__agent-usage is-critical"
-                                  : left !== null && left < 25
-                                    ? "composer__agent-usage is-low"
-                                    : "composer__agent-usage"
-                              }
-                              title={
-                                left === null
-                                  ? "no quota data"
-                                  : `${left}% left`
-                              }
-                            >
-                              <i>
-                                <b style={{ width: `${left ?? 0}%` }} />
-                              </i>
-                              <span>{left === null ? "—" : `${left}%`}</span>
-                            </span>
-                          </button>
-                        );
-                      })}
-                    </div>
-                    <div className="composer__model-models">
-                      <span className="composer__mode-heading">Model</span>
-                      <div className="composer__model-list">
-                        {visibleOptions.length === 0 && (
-                          <em className="composer__model-empty">
-                            {modelOptions.length === 0
-                              ? "Loading models…"
-                              : `No ${backendLabel(tab.backend)} models match`}
-                          </em>
-                        )}
-                        {visibleOptions.map((option, index) => {
-                          const value = `${option.provider}/${option.id}`;
-                          const selected = value === currentModel;
-                          return (
-                            <button
-                              type="button"
-                              role="menuitemradio"
-                              aria-checked={selected}
-                              key={value}
-                              className={
-                                selected
-                                  ? "is-active"
-                                  : index === modelIndex
-                                    ? "is-highlighted"
-                                    : undefined
-                              }
-                              onMouseEnter={() => setModelIndex(index)}
-                              onClick={() => {
-                                setModelMenuOpen(false);
-                                if (!selected) setModel(value);
-                              }}
-                            >
-                              <span>
-                                <strong>{option.label}</strong>
-                              </span>
-                              {selected ? (
-                                <span className="composer__model-check">✓</span>
-                              ) : null}
-                            </button>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  </div>
-                  <div className="composer__model-footer">
-                    {agentNote &&
-                    agentNote !== tab.backend &&
-                    !isUnstartedTab(tab)
-                      ? `Next message hands this transcript to ${backendLabel(agentNote)}.`
-                      : "↑↓ move · ↵ select · esc close"}
-                  </div>
-                </div>
-              )}
-              <span
-                className="native-model-controls__field native-model-controls__field--effort"
-                title={`Effort: ${effort}`}
-              >
-                <span className="native-model-controls__value">{effort}</span>
-                <span className="native-select__chev">
-                  <IconChevronDown size={13} />
-                </span>
-                <select
-                  aria-label="Effort"
-                  value={effort}
-                  disabled={configuring || streaming}
-                  onChange={(event) => setEffort(event.target.value)}
-                >
-                  {!levels.includes(effort) && (
-                    <option value={effort}>{effort}</option>
-                  )}
-                  {levels.map((level) => (
-                    <option key={level} value={level}>
-                      {level}
-                    </option>
-                  ))}
-                </select>
-              </span>
-            </div>
-            <div className="composer__mode" ref={modeMenuRef}>
-              <button
-                type="button"
-                className="composer__mode-trigger"
-                aria-haspopup="menu"
-                aria-expanded={modeMenuOpen}
-                disabled={configuring || streaming}
-                onClick={() => setModeMenuOpen((open) => !open)}
-              >
-                {accessMode === "read-only"
-                  ? "Read-only"
-                  : agentMode === "plan"
-                    ? "Plan"
-                    : agentMode === "routed"
-                      ? "Routed"
-                      : agentMode === "manual"
-                        ? "Manual"
-                        : "Auto"}
-                {tight ? "" : " mode"}
-                <IconChevronDown size={11} />
-              </button>
-              {modeMenuOpen && (
-                <div className="composer__mode-menu" role="menu">
-                  <span className="composer__mode-heading">Mode</span>
-                  {(
-                    [
-                      ["standard", "Auto", "This agent runs the whole turn"],
-                      [
-                        "plan",
-                        "Plan",
-                        "Map the work first; nothing is written",
-                      ],
-                      [
-                        "routed",
-                        "Routed",
-                        "Pass the turn through a chain of agents",
-                      ],
-                      ["manual", "Manual", "Ask before each tool call"],
-                    ] as const
-                  ).map(([id, label, sub]) => {
-                    const selected =
-                      accessMode !== "read-only" && agentMode === id;
-                    return (
-                      <button
-                        type="button"
-                        role="menuitem"
-                        key={id}
-                        className={selected ? "is-active" : undefined}
-                        onClick={() => {
-                          setModeMenuOpen(false);
-                          // Read-only is no longer offered here, but a session
-                          // already sitting in it must still be able to leave.
-                          if (accessMode === "read-only") {
-                            void configureSession(
-                              "workspace-write",
-                              id as AgentMode,
-                            );
-                            return;
-                          }
-                          void switchAgentMode(id as AgentMode);
-                        }}
-                      >
-                        <span>
-                          <strong>{label}</strong>
-                          <em>{sub}</em>
-                        </span>
-                        {selected ? <span>✓</span> : null}
-                      </button>
-                    );
-                  })}
-                </div>
-              )}
-            </div>
-            {agentMode === "routed" && (
-              <button
-                type="button"
-                className={`composer__route-chip${awaitingRoute ? " is-open" : ""}`}
-                aria-haspopup="menu"
-                aria-expanded={awaitingRoute}
-                disabled={configuring || streaming}
-                onClick={() =>
-                  awaitingRoute ? dismissRoutePick() : setRoutePicking(true)
-                }
-              >
-                {awaitingRoute ? "esc" : "/ route"}
-              </button>
-            )}
-          </div>
-          <div className="composer__trailing">
-            {providerUsage && showsUsageSummary(providerUsage) && (
-              <>
-                <UsageSummary usage={providerUsage} />
-                <span className="usage-summary__rule" aria-hidden="true" />
-              </>
-            )}
-            {streaming ? (
-              <button
-                type="button"
-                className="composer__primary is-stop"
-                aria-label="Stop"
-                onClick={() => void api.abort(tab.key)}
-              >
-                <IconStop />
-              </button>
-            ) : (
-              <button
-                type="submit"
-                className="composer__primary"
-                aria-label="Send"
-                disabled={
-                  awaitingRoute || (!draft.trim() && attachments.length === 0)
-                }
-              >
-                <IconArrowUp />
-              </button>
-            )}
-          </div>
-        </div>
-      </form>
-      {hasItems && (
-        <div className="composer__handoff">
-          {transcriptPath ? (
-            <span
-              className="composer__handoff-status"
-              title={`Saved automatically after every reply to ${transcriptPath}`}
-            >
-              Transcript saved
-            </span>
-          ) : (
-            <span className="composer__handoff-status">Transcript idle</span>
-          )}
-          <span className="composer__handoff-rule" aria-hidden="true" />
-          <span className="composer__handoff-continue">Continue in…</span>
-          <div className="native-select composer__handoff-select">
-            <span
-              className="composer__handoff-mark"
-              style={{ color: backendMark(handoffTarget).color }}
-              aria-hidden
-            >
-              <BackendLogo backend={handoffTarget} size={12} />
-            </span>
-            <select
-              aria-label="Continue this conversation in another agent"
-              title="Opens a new session in the same folder, seeded with this transcript"
-              value=""
-              disabled={!transcriptPath}
-              onChange={(event) => {
-                const next = event.target.value as AgentBackend;
-                event.target.value = "";
-                if (next) continueIn(next);
-              }}
-            >
-              <option value="">{backendLabel(handoffTarget)}</option>
-              {backendIds
-                .filter((backend) => backend !== tab.backend)
-                .map((backend) => (
-                  <option key={backend} value={backend}>
-                    {backendLabel(backend)}
-                  </option>
-                ))}
-            </select>
-            <span className="native-select__chev">
-              <IconChevronDown size={12} />
-            </span>
-          </div>
-          {providerUsage?.available && (
-            <span className="composer__handoff-reset">
-              <button
-                type="button"
-                className={`usage-refresh${usageRefreshing ? " is-spinning" : ""}`}
-                aria-label="Refresh usage"
-                title="Refresh usage"
-                disabled={usageRefreshing}
-                onClick={() => void refreshUsageNow()}
-              >
-                <IconRefresh size={12} />
-              </button>
-            </span>
-          )}
-        </div>
-      )}
-    </div>
+    <ConversationComposer
+      {...{
+        tight, thin, awaitingRoute, tab, streaming, hasItems,
+        workspacePickerRef, setDraft, setConversationWorkspace, timeline,
+        openWorkspace, openFileView, sessionPaths, lastAssistantId,
+        visibleItems, reviewStarting, startTurnReview, split, configuring,
+        configureSession, accessMode, agentMode, isolateSession,
+        setupChips, route, persistRoute, pickRoute, setRoutePicking,
+        editingMessageId, setEditingMessageId, mentionOpen, mentionMatches,
+        mentionIndex, applyMention, slashOpen, slashMatches, slashIndex,
+        setCommandMenuOpen, textareaRef, todos, compacting, queued,
+        limitVisible, canSteer, limitWindow, resumeFromLimit, send, draft,
+        fileInputRef, uploadFiles, attachments, setAttachments, setViewer,
+        setCaret, commandMenuOpen, autoGrow, onKeyDown, onPasteImage,
+        modelMenuRef, modelSearchRef, modelMenuOpen, browseBackend,
+        backendIds, currentModelLabel, effort, trackLevels, effortHover,
+        visibleOptions, modelIndex, modelQuery, currentModel, setUsageOpen,
+        setModeMenuOpen, setModelMenuOpen, setPickerBackend, setModelQuery,
+        setModelIndex, pickListedModel, setEffort, setEffortHover,
+        onModelMenuKey, loadModelMetadata, modeMenuRef, modeMenuOpen,
+        switchAgentMode, dismissRoutePick, usagePopRef, usageOpen,
+        providerUsage, backendUsage, currentReset, agentBusy,
+      }}
+    />
   );
 
   const addWorkspacePathToChat = useCallback(
@@ -3591,6 +3163,8 @@ export function Conversation({
       root={tab.cwd}
       visible={workspaceOpen}
       placement={workspacePlacement}
+      tab={workspaceTab}
+      onTabChange={setWorkspaceTab}
       onPlacementChange={chooseWorkspacePlacement}
       onClose={closeWorkspace}
       onAddToChat={addWorkspacePathToChat}
@@ -3612,142 +3186,254 @@ export function Conversation({
     <SelectionTools cwd={tab.cwd} sessionPath={tab.sessionPath} />
   ) : null;
 
-  const folderChip =
-    split && tab.cwd ? (
-      <WorkspacePicker
-        ref={workspacePickerRef}
-        cwd={tab.cwd}
-        backend={tab.backend}
-        disabled={configuring}
-        variant="chip"
-        onPick={(path) => configureSession(accessMode, agentMode, path)}
-        onIsolate={isolateSession}
-        // Split panes show one conversation each; the workspace is owned
-        // by the wide layout, so hide its menu entry here.
-        onViewWorkspace={undefined}
-      />
-    ) : null;
-
-  const overflowMenu = (
-    <div className="conversation-header__overflow" ref={overflowRef}>
-      <button
-        type="button"
-        className="conversation-header__more"
-        aria-haspopup="menu"
-        aria-expanded={overflowOpen}
-        aria-label="More"
-        title="More"
-        onClick={() => setOverflowOpen((open) => !open)}
-      >
-        <IconDots size={14} />
-      </button>
-      {overflowOpen && (
-        <div className="conversation-header__overflow-menu" role="menu">
-          <DeployButton cwd={tab.cwd} compact />
-          <button
-            type="button"
-            role="menuitem"
-            onClick={() => {
-              setOverflowOpen(false);
-              setSessionDetailsOpen(true);
-            }}
-          >
-            Session details
-          </button>
-          <button
-            type="button"
-            role="menuitem"
-            onClick={() => {
-              setOverflowOpen(false);
-              toggleWorkspace();
-            }}
-          >
-            View project source
-          </button>
-          {onClose && (
-            <button
-              type="button"
-              role="menuitem"
-              onClick={() => {
-                setOverflowOpen(false);
-                onClose();
-              }}
-            >
-              Close session
-            </button>
-          )}
-        </div>
-      )}
-    </div>
+  const awaiting = awaitingKeys.has(tab.key);
+  const modeLabel =
+    agentMode === "plan"
+      ? "Plan"
+      : agentMode === "routed"
+        ? "Routed"
+        : agentMode === "manual"
+          ? "Manual"
+          : agentMode === "auto-edit"
+            ? "Auto-edit"
+            : "";
+  const phaseLabel =
+    status === "error"
+      ? "Error"
+      : streaming || status === "starting"
+        ? "Running"
+        : awaiting
+          ? "Needs input"
+          : "Idle";
+  const statusLabel = modeLabel ? `${modeLabel} · ${phaseLabel}` : phaseLabel;
+  const statusTone: SessionTone =
+    status === "error"
+      ? "error"
+      : streaming || status === "starting"
+        ? "running"
+        : awaiting
+          ? "waiting"
+          : "idle";
+  // A run that finished while the user was looking elsewhere keeps a ✓ on
+  // its pane until they focus it or start the next run.
+  const running = streaming || status === "starting";
+  const [finishedUnseen, setFinishedUnseen] = useState(false);
+  const wasRunning = useRef(running);
+  useEffect(() => {
+    if (running) setFinishedUnseen(false);
+    else if (wasRunning.current && !focused) setFinishedUnseen(true);
+    wasRunning.current = running;
+  }, [running, focused]);
+  useEffect(() => {
+    if (focused) setFinishedUnseen(false);
+  }, [focused]);
+  const paneTone: PaneTone =
+    statusTone === "idle" && finishedUnseen ? "done" : statusTone;
+  const usageSince = usageCutoff(timeline.items, usageSinceRef.current);
+  const billedItems =
+    usageSince > 0
+      ? timeline.items.filter((item) => usageStamp(item) >= usageSince)
+      : timeline.items;
+  const spend = billedItems.reduce((sum, item) => {
+    if ("usage" in item && item.usage?.cost?.total)
+      return sum + item.usage.cost.total;
+    return sum;
+  }, 0);
+  // Session usage, the number Claude CLI's /usage prints: the cumulative
+  // token total across the session's assistant turns. Backends that report
+  // per-message usage (Claude, Codex, Grok, pi) are summed off the live
+  // timeline; backends that don't fall back to the session-file summary
+  // (the same sum read off disk by readResumeSession), fetched once when
+  // the details popover opens.
+  const liveTokens = billedItems.reduce((sum, item) => {
+    if ("usage" in item && item.usage) return sum + item.usage.totalTokens;
+    return sum;
+  }, 0);
+  const [sessionUsageTotal, setSessionUsageTotal] = useState<number | null>(
+    null,
   );
-
-  const viewTab = (
-    id: "chat" | "trajectory" | "backend",
-    label: string,
-    icon: ReactNode | null,
-    count?: number,
-  ) => {
-    const active = conversationView === id;
-    const showLabel = density !== "dense" || active;
-    const showIcon = density === "dense" && !showLabel;
-    return (
-      <button
-        key={id}
-        type="button"
-        role="tab"
-        aria-selected={active}
-        aria-label={label}
-        title={label}
-        className={active ? "is-active" : ""}
-        onClick={() => setConversationView(id)}
-      >
-        {showIcon && icon}
-        {showLabel && <span>{label}</span>}
-        {count != null && count > 0 && density !== "full" && (
-          <span className="conversation-header__count">{count}</span>
-        )}
-      </button>
-    );
+  const [branchLabel, setBranchLabel] = useState<string | null>(null);
+  useEffect(() => {
+    if (!sessionDetailsOpen) return;
+    let cancelled = false;
+    if (tab.cwd) {
+      api
+        .gitChanges(tab.key, tab.cwd)
+        .then((result) => {
+          if (!cancelled)
+            setBranchLabel(
+              result.ok && result.repo ? (result.branch ?? null) : null,
+            );
+        })
+        .catch(() => {
+          if (!cancelled) setBranchLabel(null);
+        });
+    } else {
+      setBranchLabel(null);
+    }
+    if (liveTokens === 0) {
+      api
+        .usage(tab.key, tab.backend, true, tab.sessionPath)
+        .then((result) => {
+          if (!cancelled)
+            setSessionUsageTotal(result.usage?.tokens?.total ?? null);
+        })
+        .catch(() => {
+          if (!cancelled) setSessionUsageTotal(null);
+        });
+    }
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    sessionDetailsOpen,
+    tab.key,
+    tab.cwd,
+    tab.backend,
+    tab.sessionPath,
+    liveTokens,
+  ]);
+  // Context window, not the cumulative total: what the model carries right
+  // now. Built-in backends report that count. The character estimate is only
+  // for a backend that never reports one, and it stays labeled as a guess.
+  const contextLabel = hasItems
+    ? reported
+      ? `${compactTokens(reported.estimatedTokens)} of ${compactTokens(reported.contextWindow)} tokens (${reported.percent ?? "?"}%)`
+      : caps.contextUsage
+        ? "—"
+        : `${compactTokens(estimated.estimatedTokens)} of ${compactTokens(estimated.contextWindow)} tokens (${estimated.percent ?? "?"}%) · estimated`
+    : "—";
+  const usageTotal = liveTokens > 0 ? liveTokens : sessionUsageTotal;
+  // Monocode's turn-metrics readout, aggregated over the session: fresh
+  // input, output, cached, cache-hit percent and tok/s. Backends that report
+  // no cache fields (or no per-message usage at all) fall back to the old
+  // cumulative-total label.
+  const spendLabel =
+    spend > 0 ? (spend < 0.01 ? "<$0.01" : `$${spend.toFixed(2)}`) : "";
+  // Grok's ledger is the session file, counted once. Summing timeline stamps
+  // repeats a turn that was already a sum of its model calls.
+  const usageSum =
+    (exactContext?.session && usageSummaryFromCounts(exactContext.session)) ||
+    usageSummaryOf(billedItems);
+  const usageLabel =
+    usageSum && (usageSum.input || usageSum.output || usageSum.cached)
+      ? [
+          usageSum.cacheHitPercent == null
+            ? null
+            : `${Math.round(usageSum.cacheHitPercent)}% cache hit`,
+          usageSum.tokensPerSec == null
+            ? null
+            : `${Math.round(usageSum.tokensPerSec)} tok/s`,
+          `${compactTokens(usageSum.input)} input`,
+          `${compactTokens(usageSum.output)} output`,
+          usageSum.cached ? `${compactTokens(usageSum.cached)} cached` : "",
+          spendLabel,
+        ]
+          .filter(Boolean)
+          .join(" · ")
+      : usageTotal
+        ? [`${compactTokens(usageTotal)} tokens`, spendLabel]
+            .filter(Boolean)
+            .join(" · ")
+        : "—";
+  const markInfo = backendMark(tab.backend);
+  const startRename = () => {
+    setSessionDetailsOpen(false);
+    const fallback = firstUserItem?.kind === "user" ? firstUserItem.text : "";
+    setRenameDraft(state?.sessionName?.trim() || fallback.slice(0, 200));
+    setRenaming(true);
   };
-
-  const trajCount = timeline.items.length;
-  const viewSwitcher = (
-    <div
-      className="conversation-header__segment"
-      role="tablist"
-      aria-label="Conversation view"
-    >
-      {viewTab("chat", "Chat", <IconChat size={12} />)}
-      {viewTab(
-        "trajectory",
-        "Trajectory",
-        <IconBranch size={12} />,
-        density === "full" ? undefined : trajCount,
+  const finishRename = () => {
+    setRenaming(false);
+    const title = renameDraft.trim();
+    if (!title || title === displayTitle) return;
+    void api.rename(tab.key, title).then((result) => {
+      if (!result.ok && result.error)
+        window.alert(`Rename failed: ${result.error}`);
+    });
+  };
+  const sessionHeader = (
+    <SessionHeader
+      multi={split && sessionCount > 1}
+      onBack={onBack}
+      title={displayTitle}
+      renaming={renaming}
+      renameDraft={renameDraft}
+      onRenameDraft={setRenameDraft}
+      onStartRename={startRename}
+      onFinishRename={finishRename}
+      onCancelRename={() => setRenaming(false)}
+      // Split panes own the dropdown; the toolbar copy must not also listen
+      // for outside clicks or it would shut the pane's popover.
+      detailsOpen={!(split && sessionCount > 1) && sessionDetailsOpen}
+      onDetailsOpen={setSessionDetailsOpen}
+      statusLabel={statusLabel}
+      statusTone={statusTone}
+      pathLabel={displayPath(tab.cwd)}
+      branchLabel={branchLabel}
+      contextLabel={contextLabel}
+      usageLabel={usageLabel}
+      sessionId={state?.sessionId}
+      onCopyId={() =>
+        navigator.clipboard.writeText(state?.sessionId || tab.key)
+      }
+      logUrl={
+        state?.sessionFile ? api.sessionLogUrl(state.sessionFile) : undefined
+      }
+      view={conversationView}
+      onView={setConversationView}
+      terminalOpen={terminalOpen}
+      onTerminalToggle={onTerminalToggle}
+      workspaceOpen={workspaceShown}
+      onWorkspaceToggle={tab.cwd ? workspaceButton : undefined}
+      boardOpen={boardOpen}
+      onBoardToggle={tab.cwd ? () => setBoardOpen((open) => !open) : undefined}
+      deployCwd={tab.cwd || undefined}
+    />
+  );
+  const sessionChrome = (
+    <>
+      {split && focused && headerHost
+        ? createPortal(sessionHeader, headerHost)
+        : null}
+      {split ? (
+        <PaneChrome
+          active={focused}
+          title={displayTitle}
+          markGlyph={markInfo.glyph}
+          markColor={status === "error" ? "var(--pw-red)" : markInfo.color}
+          tone={paneTone}
+          live={running}
+          details={{
+            title: displayTitle,
+            statusLabel,
+            statusTone,
+            pathLabel: displayPath(tab.cwd),
+            branchLabel,
+            contextLabel,
+            usageLabel,
+            sessionId: state?.sessionId,
+            onCopyId: () =>
+              navigator.clipboard.writeText(state?.sessionId || tab.key),
+            logUrl: state?.sessionFile
+              ? api.sessionLogUrl(state.sessionFile)
+              : undefined,
+          }}
+          detailsOpen={sessionDetailsOpen}
+          onDetailsOpen={setSessionDetailsOpen}
+          onMaximize={onFocus}
+          onClose={onClose}
+        />
+      ) : (
+        sessionHeader
       )}
-      {viewTab("backend", "Backend log", <IconList size={12} />)}
-    </div>
+    </>
   );
 
   if (!hasItems) {
     return (
-      <>
-        {split && (
-          <div className="conversation-header conversation-header--empty">
-            <div className="conversation-header__actions">
-              {onClose && (
-                <button
-                  type="button"
-                  className="conversation-header__close"
-                  aria-label={`Close ${displayTitle}`}
-                  title="Close session"
-                  onClick={onClose}
-                >
-                  ×
-                </button>
-              )}
-            </div>
-          </div>
-        )}
+      <Activity mode={visible ? "visible" : "hidden"}>
+        {sessionChrome}
         <div className="conversation-stage">
           <div
             className="conversation conversation--empty"
@@ -3799,145 +3485,13 @@ export function Conversation({
           {selectionTools}
         </div>
         {viewer && <FileViewer view={viewer} onClose={() => setViewer(null)} />}
-      </>
+      </Activity>
     );
   }
 
-  // The mark IS the status light: it blinks while the turn runs (streaming
-  // covers subagents too), turns red on error, and stays steady otherwise.
-  // No separate dot, no square tile behind the logo.
-  const markLive = streaming || status === "starting";
-  const mark = (
-    <span
-      className={`conversation-header__pill-mark${markLive ? " is-live" : ""}`}
-      style={{
-        color:
-          status === "error" ? "var(--pw-red)" : backendMark(tab.backend).color,
-      }}
-      aria-hidden
-    >
-      <BackendLogo backend={tab.backend} size={14} />
-    </span>
-  );
-
-  // Click-to-rename: the title itself becomes the editor in place — no
-  // separate dialog. Enter or blur saves; Escape cancels.
-  const startRename = () => {
-    const fallback = firstUserItem?.kind === "user" ? firstUserItem.text : "";
-    setRenameDraft(state?.sessionName?.trim() || fallback.slice(0, 200));
-    setRenaming(true);
-  };
-  const finishRename = () => {
-    setRenaming(false);
-    const title = renameDraft.trim();
-    if (!title || title === displayTitle) return;
-    // The session_title_set event updates the timeline, the tab label and
-    // the sidebar; the API call just persists it.
-    void api.rename(tab.key, title).then((result) => {
-      if (!result.ok && result.error)
-        window.alert(`Rename failed: ${result.error}`);
-    });
-  };
-  const renameInput = (
-    <input
-      className="conversation-header__title-input"
-      value={renameDraft}
-      onChange={(event) => setRenameDraft(event.target.value)}
-      onBlur={finishRename}
-      onKeyDown={(event) => {
-        if (event.key === "Escape") setRenaming(false);
-        // Blur is the single save path, so Enter cannot double-commit.
-        if (event.key === "Enter") {
-          event.preventDefault();
-          event.currentTarget.blur();
-        }
-      }}
-      autoFocus
-      onFocus={(event) => event.target.select()}
-      aria-label="Session title"
-    />
-  );
-
   return (
-    <>
-      <div className={`conversation-header${split ? ` is-${density}` : ""}`}>
-        <div className="conversation-header__row">
-          <span className="conversation-header__pill">{mark}</span>
-          {renaming ? (
-            renameInput
-          ) : (
-            <button
-              type="button"
-              className="conversation-header__session-title"
-              aria-label="Rename session"
-              title="Rename session"
-              onClick={startRename}
-            >
-              {displayTitle}
-            </button>
-          )}
-          {agentMode === "plan" && (
-            <div className="conversation-header__mode">
-              <IconCube size={12} /> Plan
-            </div>
-          )}
-          {agentMode === "routed" && (
-            <div className="conversation-header__mode">Routed</div>
-          )}
-          <div className="conversation-header__tabs">{viewSwitcher}</div>
-          <span className="conversation-header__divider" aria-hidden />
-          <div className="conversation-header__tabs-actions">
-            {runningSubagentSummary(subagentRuns) && density !== "dense" && (
-              <span className="conversation-header__subagents">
-                <span
-                  className="conversation-header__subagents-dot"
-                  aria-hidden
-                />
-                {runningSubagentSummary(subagentRuns)}
-              </span>
-            )}
-            {density === "dense" && folderChip}
-            {onTerminalToggle && (
-              <button
-                type="button"
-                className={`conversation-header__download conversation-header__icon-btn${terminalOpen ? " is-active" : ""}`}
-                aria-pressed={terminalOpen}
-                aria-label="Terminal"
-                title="Terminal"
-                onClick={onTerminalToggle}
-              >
-                <IconTerminal size={14} />
-              </button>
-            )}
-            {!split && (
-              <button
-                type="button"
-                className={`conversation-header__download conversation-header__icon-btn${workspaceOpen ? " is-active" : ""}`}
-                aria-pressed={workspaceOpen}
-                aria-label="Code"
-                title="Code"
-                onClick={toggleWorkspace}
-              >
-                <IconCode size={14} />
-              </button>
-            )}
-            {!split && tab.cwd && (
-              <button
-                type="button"
-                className={`conversation-header__download conversation-header__icon-btn${boardOpen ? " is-active" : ""}`}
-                aria-pressed={boardOpen}
-                aria-label="Split"
-                title="Split"
-                onClick={() => setBoardOpen((open) => !open)}
-              >
-                <IconColumns size={14} />
-              </button>
-            )}
-            {overflowMenu}
-          </div>
-        </div>
-        <ContextFill context={context} />
-      </div>
+    <Activity mode={visible ? "visible" : "hidden"}>
+      {sessionChrome}
 
       <div className="conversation-stage">
         <div className="conversation" ref={conversationRef} {...dropZoneProps}>
@@ -4013,7 +3567,7 @@ export function Conversation({
                             durationMs={block.durationMs}
                             cwd={tab.cwd}
                             expandDiff={turnIndex === chatTurns.length - 1}
-                            onOpenFile={setViewer}
+                            onOpenFile={openFileView}
                           />
                         ) : (
                           renderTimelineItem(block.item, {
@@ -4022,10 +3576,11 @@ export function Conversation({
                           })
                         ),
                       )}
-                      {!logOpen && (
+                      {!live && complete && (
                         <TurnFilesCard
                           files={changedFiles}
-                          onOpenFile={setViewer}
+                          onOpenFile={openFileView}
+                          latest={turnIndex === latestChangedTurn}
                         />
                       )}
                     </div>
@@ -4084,14 +3639,6 @@ export function Conversation({
                     tools={
                       chatTurns.at(-1)?.filter((entry) => entry.kind === "tool")
                         .length ?? 0
-                    }
-                    failed={
-                      chatTurns
-                        .at(-1)
-                        ?.filter(
-                          (entry) =>
-                            entry.kind === "tool" && entry.status === "error",
-                        ).length ?? 0
                     }
                     parallel={
                       chatTurns
@@ -4164,7 +3711,7 @@ export function Conversation({
                   current.filter((id) => id !== closing),
                 );
               }}
-              onOpenFile={setViewer}
+              onOpenFile={openFileView}
               onOpenSubagent={stableRowHandlers.onOpenSubagent}
             />
           )}
@@ -4174,53 +3721,6 @@ export function Conversation({
       </div>
 
       {viewer && <FileViewer view={viewer} onClose={() => setViewer(null)} />}
-      {sessionDetailsOpen && (
-        <div className="viewer" onClick={() => setSessionDetailsOpen(false)}>
-          <div
-            className="viewer__panel session-details"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="viewer__head">
-              <span>Session details</span>
-              <button
-                type="button"
-                className="viewer__close"
-                aria-label="Close"
-                onClick={() => setSessionDetailsOpen(false)}
-              >
-                ×
-              </button>
-            </div>
-            <div className="session-details__body">
-              <div className="details__row">
-                <span>session id</span>
-                <code>{state?.sessionId ?? "—"}</code>
-              </div>
-              <div className="details__row details__row--path">
-                <span>session file</span>
-                <code title={state?.sessionFile}>
-                  {state?.sessionFile ?? "—"}
-                </code>
-              </div>
-              <a
-                className={`conversation-header__download${state?.sessionFile ? "" : " is-disabled"}`}
-                href={
-                  state?.sessionFile
-                    ? api.sessionLogUrl(state.sessionFile)
-                    : undefined
-                }
-                aria-disabled={!state?.sessionFile}
-                download
-                onClick={(event) => {
-                  if (!state?.sessionFile) event.preventDefault();
-                }}
-              >
-                Download session log <IconDownload size={14} />
-              </a>
-            </div>
-          </div>
-        </div>
-      )}
       {remoteQr && (
         <div className="viewer" onClick={() => setRemoteQr(null)}>
           <div
@@ -4257,622 +3757,6 @@ export function Conversation({
           </div>
         </div>
       )}
-    </>
+    </Activity>
   );
-}
-
-function ThinkingRow({
-  resume = false,
-  startedAt,
-  tools,
-  failed,
-  parallel,
-}: {
-  resume?: boolean;
-  startedAt: number;
-  tools: number;
-  failed: number;
-  parallel: number;
-}) {
-  const drawRef = useRef<(() => string) | null>(null);
-  if (drawRef.current == null) drawRef.current = createThinkingQuips();
-  const [quip, setQuip] = useState(() => drawRef.current!());
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    const id = window.setInterval(() => setNow(Date.now()), 500);
-    return () => window.clearInterval(id);
-  }, []);
-  useEffect(() => {
-    if (resume) return;
-    const id = window.setInterval(() => {
-      setQuip(drawRef.current!());
-    }, THINKING_QUIP_MS);
-    return () => window.clearInterval(id);
-  }, [resume]);
-  const label = resume ? "Picking up after restart" : quip;
-  return (
-    <div className="thinking" aria-label={label}>
-      <span className="thinking__spinner" />
-      <span key={label} className="thinking__line">
-        {label}
-      </span>
-      {resume ? null : <span className="thinking__dots" aria-hidden="true" />}
-      <span className="thinking__meta">
-        {` · ${formatWorkingClock(Math.max(0, now - startedAt))} · ${tools} tool${tools === 1 ? "" : "s"}`}
-        {parallel > 1 ? ` · ${parallel} running in parallel` : ""}
-      </span>
-      {failed > 0 && (
-        <span className="thinking__fail">{` · ${failed} failed`}</span>
-      )}
-    </div>
-  );
-}
-
-function ContextFill({ context }: { context: ContextUsage }) {
-  const percent = context.percent ?? 0;
-  const nearLimit = percent >= 80;
-  const title = context.exact
-    ? [
-        `${context.estimatedTokens.toLocaleString()} of ${context.contextWindow.toLocaleString()} context tokens used (${percent}%)`,
-        context.autoCompactAt
-          ? `Auto-compacts at ${context.autoCompactAt.toLocaleString()}.`
-          : "",
-        ...(context.categories ?? [])
-          .slice(0, 6)
-          .map((entry) => `${entry.name}: ${compactTokens(entry.tokens)}`),
-      ]
-        .filter(Boolean)
-        .join("\n")
-    : `Approximately ${context.estimatedTokens.toLocaleString()} of ${context.contextWindow.toLocaleString()} context tokens used (estimated)`;
-  return (
-    <div
-      className={`context-fill${nearLimit ? " is-near-limit" : ""}${context.exact ? " is-exact" : ""}`}
-      role="progressbar"
-      aria-label={`Context used: ${percent}%${context.exact ? "" : ", estimated"}`}
-      aria-valuemin={0}
-      aria-valuemax={100}
-      aria-valuenow={percent}
-      title={title}
-    >
-      <span style={{ width: `${Math.min(100, percent)}%` }} />
-    </div>
-  );
-}
-
-/** What the transcript shows in place of the model's babysitting churn: one
- *  steady row for as long as the run is in flight. `attention` replaces it
- *  when the runner reports the child is blocked on a reply — otherwise a
- *  stalled run is indistinguishable from a slow one. */
-function SubagentWaitRow({ runs }: { runs: SubagentRun[] }) {
-  const running = runs.filter((run) => run.status === "running");
-  if (running.length === 0) return null;
-  const blocked = running.find((run) => run.attention);
-  const label = blocked?.attention
-    ? `Subagent needs attention — ${blocked.attention}`
-    : running.length > 1
-      ? `${running.length} background subagents are running — waiting for them to complete`
-      : "Background subagent is running — waiting for it to complete";
-  return (
-    <div
-      className={`thinking${blocked ? " thinking--attention" : ""}`}
-      aria-label={label}
-    >
-      <span className="thinking__spinner" />
-      <span>{label}</span>
-      {blocked ? null : <span className="thinking__dots" aria-hidden="true" />}
-    </div>
-  );
-}
-
-/**
- * Memoized: streaming deltas tick the timeline many times a second, and a
- * long session re-parsing every RichText/diff row per tick froze the main
- * thread — the first paint after sending a prompt lagged for seconds, which
- * read as "nothing happened". Rows whose item and flags are unchanged now
- * skip re-rendering entirely.
- */
-/**
- * "Undo the edits made since this message." Claude Code restores from the
- * per-file backups it takes before writing; every other backend restores from
- * the git snapshot the server takes before each turn. It asks for the preview
- * first so the click is never blind — a rewind is not itself undoable.
- */
-function RewindFilesButton({
-  timestamp,
-  disabled,
-  onRewindFiles,
-}: {
-  timestamp: number;
-  disabled?: boolean;
-  onRewindFiles?: (
-    timestamp: number,
-    dryRun: boolean,
-  ) => Promise<RewindFilesResult>;
-}) {
-  const [preview, setPreview] = useState<RewindFilesResult | null>(null);
-  const [busy, setBusy] = useState(false);
-  if (!onRewindFiles) return null;
-
-  const ask = async () => {
-    setBusy(true);
-    try {
-      setPreview(await onRewindFiles(timestamp, true));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const confirm = async () => {
-    setBusy(true);
-    try {
-      const result = await onRewindFiles(timestamp, false);
-      setPreview(result.error ? result : null);
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  if (preview) {
-    const count = preview.filesChanged?.length ?? 0;
-    return (
-      <span className="rewind">
-        {preview.error ? (
-          <span className="rewind__error">{preview.error}</span>
-        ) : (
-          <>
-            <span className="rewind__summary">
-              Restore {count} file{count === 1 ? "" : "s"}
-              {preview.insertions === undefined
-                ? ""
-                : ` (+${preview.insertions}/−${preview.deletions ?? 0})`}
-              ?
-            </span>
-            <button
-              type="button"
-              className="rewind__confirm"
-              disabled={busy || count === 0}
-              onClick={() => void confirm()}
-            >
-              Restore
-            </button>
-          </>
-        )}
-        <button
-          type="button"
-          className="rewind__cancel"
-          onClick={() => setPreview(null)}
-        >
-          Cancel
-        </button>
-      </span>
-    );
-  }
-
-  return (
-    <button
-      type="button"
-      className="user-msg__action"
-      aria-label="Restore files to this point"
-      title="Restore files to this point"
-      disabled={disabled || busy}
-      onClick={() => void ask()}
-    >
-      <IconHistory size={13} />
-    </button>
-  );
-}
-
-/** Notice with expandable content (compaction summary) — one compact line,
- *  click to reveal what was compacted away. */
-function CompactedNotice({
-  text,
-  tone,
-  detail,
-}: {
-  text: string;
-  tone: "info" | "warning" | "error";
-  detail: string;
-}) {
-  const [open, setOpen] = useState(false);
-  return (
-    <div className={`notice notice--${tone}`}>
-      <button
-        type="button"
-        className="notice__summary"
-        aria-expanded={open}
-        onClick={() => setOpen((current) => !current)}
-      >
-        {text}
-      </button>
-      {open && <pre className="notice__detail">{detail}</pre>}
-    </div>
-  );
-}
-
-function turnStartedAt(turn: TimelineItem[] | undefined): number {
-  if (!turn) return Date.now();
-  const user = turn.find((item) => item.kind === "user");
-  if (user?.kind === "user") return user.timestamp;
-  const tool = turn.find((item) => item.kind === "tool");
-  if (tool?.kind === "tool") return tool.startedAt;
-  return Date.now();
-}
-
-const TimelineRow = memo(function TimelineRow({
-  item,
-  onOpenFile,
-  onFork,
-  forking,
-  canFork = true,
-  canTruncate = false,
-  showActions,
-  showModelTag,
-  editingId,
-  streaming,
-  onEditMessage,
-  onCancelEdit,
-  onVersionChange,
-  onRewindFiles,
-  onAnswer,
-  subagentChildren,
-  onOpenSubagent,
-  onBackgroundSubagent,
-  onStopTerminal,
-  cwd = "",
-  repeat = 1,
-  expandDiff = false,
-}: {
-  item: TimelineItem;
-  onOpenFile: (view: ToolFileView) => void;
-  cwd?: string;
-  repeat?: number;
-  expandDiff?: boolean;
-  onFork: (item: Extract<TimelineItem, { kind: "assistant" }>) => void;
-  forking: boolean;
-  canFork?: boolean;
-  canTruncate?: boolean;
-  showActions: boolean;
-  showModelTag: boolean;
-  editingId?: string | null;
-  streaming?: boolean;
-  onEditMessage?: (item: Extract<TimelineItem, { kind: "user" }>) => void;
-  onCancelEdit?: () => void;
-  onVersionChange?: (
-    item: Extract<TimelineItem, { kind: "user" }>,
-    index: number,
-  ) => void;
-  onRewindFiles?: (
-    timestamp: number,
-    dryRun: boolean,
-  ) => Promise<RewindFilesResult>;
-  /** Present only on the newest settled reply — see AskCard. */
-  onAnswer?: (text: string) => void;
-  subagentChildren?: Map<string, Extract<TimelineItem, { kind: "tool" }>[]>;
-  onOpenSubagent?: (id: string) => void;
-  onBackgroundSubagent?: (id: string) => void;
-  /** Stop a running server-owned terminal tab (its card's Stop button). */
-  onStopTerminal?: (tabId: string) => void;
-}) {
-  if (item.kind === "tool" && isSubagentTool(item.name))
-    return (
-      <SubagentCard
-        item={item}
-        children={subagentChildren?.get(item.id) ?? []}
-        onOpenFile={onOpenFile}
-        onOpenSubagent={onOpenSubagent}
-        onBackground={onBackgroundSubagent}
-        cwd={cwd}
-      />
-    );
-  if (item.kind === "tool")
-    return (
-      <ToolCard
-        item={item}
-        onOpenFile={onOpenFile}
-        onOpenSubagent={onOpenSubagent}
-        children={subagentChildren?.get(item.id) ?? []}
-        cwd={cwd}
-        repeat={repeat}
-        expandDiff={expandDiff}
-      />
-    );
-  if (item.kind === "notice")
-    return item.detail ? (
-      <CompactedNotice text={item.text} tone={item.tone} detail={item.detail} />
-    ) : (
-      <div className={`notice notice--${item.tone}`}>{item.text}</div>
-    );
-  if (item.kind === "terminal")
-    return (
-      <div className="terminal-card">
-        <div className="terminal-card__header">
-          <span
-            className={`terminal-card__dot${
-              item.status === "running" ? " is-running" : ""
-            }`}
-          />
-          <span className="terminal-card__title" title={item.command}>
-            {item.title}
-          </span>
-          <span className="terminal-card__status">
-            {item.status === "exited"
-              ? `exit ${item.exitCode ?? "?"}`
-              : "running"}
-          </span>
-          {item.status === "running" && onStopTerminal && (
-            <button
-              type="button"
-              className="terminal-card__stop"
-              onClick={() => onStopTerminal(item.tabId)}
-            >
-              Stop
-            </button>
-          )}
-        </div>
-        <pre className="terminal-card__output">{item.output}</pre>
-      </div>
-    );
-  if (item.kind === "user") {
-    const versions = item.versions;
-    const versionIndex = item.versionIndex ?? 0;
-    return (
-      <article className="tl tl--user">
-        <span className="tl__node" />
-        <div className="tl--user__stack">
-          <div
-            className={`user-msg${editingId === item.id ? " is-editing" : ""}`}
-          >
-            {item.text}
-          </div>
-          <div className="user-msg__actions">
-            <CopyButton
-              text={item.text}
-              label="Copy message"
-              className="user-msg__action"
-            />
-            {canTruncate ? (
-              <button
-                type="button"
-                className="user-msg__action"
-                aria-label="Edit and resend"
-                title="Edit and resend"
-                disabled={streaming}
-                onClick={() => {
-                  if (editingId === item.id) {
-                    onCancelEdit?.();
-                    return;
-                  }
-                  onEditMessage?.(item);
-                }}
-              >
-                <IconPencil size={13} />
-              </button>
-            ) : null}
-            <RewindFilesButton
-              timestamp={item.timestamp}
-              disabled={streaming}
-              onRewindFiles={onRewindFiles}
-            />
-          </div>
-          {canTruncate && versions && versions.length > 1 && (
-            <div
-              className="user-msg__versions"
-              role="group"
-              aria-label="Message versions"
-            >
-              <button
-                type="button"
-                aria-label="Previous version"
-                disabled={versionIndex === 0}
-                onClick={() => onVersionChange?.(item, versionIndex - 1)}
-              >
-                ‹
-              </button>
-              <span>
-                {versionIndex + 1}/{versions.length}
-              </span>
-              <button
-                type="button"
-                aria-label="Next version"
-                disabled={versionIndex >= versions.length - 1}
-                onClick={() => onVersionChange?.(item, versionIndex + 1)}
-              >
-                ›
-              </button>
-            </div>
-          )}
-        </div>
-      </article>
-    );
-  }
-  return (
-    <article
-      className={`tl tl--assistant${item.kind === "rationale" ? " tl--rationale" : ""}`}
-    >
-      <span className={`tl__node${item.live ? " is-live" : ""}`} />
-      <div>
-        <RichText
-          text={item.text
-            .replace(/\s*\[DONE:\d+\]\s*/gi, " ")
-            // Models end turns with trailing newlines and pre-wrap renders
-            // them as real blank lines — the phantom gap between prose and
-            // the rows below.
-            .replace(/\s+$/, "")
-            .replace(/^\s+/, "")}
-          live={item.live}
-          onAnswer={onAnswer}
-        />
-      </div>
-      {item.kind === "assistant" &&
-        !item.live &&
-        showModelTag &&
-        (item.provider || item.modelId) && (
-          <div
-            className="response-model-tag"
-            title="Model that generated this reply, as tracked by the backend — not the model's own self-report."
-          >
-            {item.provider}
-            {item.provider && item.modelId ? "/" : ""}
-            {item.modelId}
-          </div>
-        )}
-      {item.kind === "assistant" && !item.live && showActions && (
-        <div
-          className="response-actions"
-          aria-label="Response actions"
-          onMouseDown={(event) => event.stopPropagation()}
-          onClick={(event) => event.stopPropagation()}
-        >
-          <CopyButton
-            text={item.text.replace(/\s*\[DONE:\d+\]\s*/gi, " ")}
-            label="Copy response"
-            iconOnly
-          />
-          {canFork ? (
-            <button
-              type="button"
-              className={forking ? "is-busy" : undefined}
-              aria-label="Fork response"
-              title={forking ? "Forking response" : "Fork response"}
-              disabled={forking}
-              onClick={() => onFork(item)}
-            >
-              <IconFork />
-            </button>
-          ) : null}
-        </div>
-      )}
-    </article>
-  );
-});
-
-/** Newest settled reply, preferring an ask card so a trailing report does not lock it. */
-function lastAnswerableAssistantId(items: TimelineItem[]): string | undefined {
-  const tail: Extract<TimelineItem, { kind: "assistant" }>[] = [];
-  for (let i = items.length - 1; i >= 0; i--) {
-    const item = items[i]!;
-    if (item.kind === "user" || item.kind === "tool") break;
-    if (item.kind === "assistant") tail.push(item);
-  }
-  return (tail.find((item) => isAskMessage(item.text)) ?? tail[0])?.id;
-}
-
-function getResponseActionIds(
-  items: TimelineItem[],
-  streaming: boolean,
-): Set<string> {
-  const ids = new Set<string>();
-  let segment: TimelineItem[] = [];
-  const segments: TimelineItem[][] = [];
-  for (const item of items) {
-    if (item.kind === "user" && segment.length) {
-      segments.push(segment);
-      segment = [];
-    }
-    segment.push(item);
-  }
-  if (segment.length) segments.push(segment);
-
-  segments.forEach((turn, index) => {
-    if (streaming && index === segments.length - 1) return;
-    const assistantIndex = turn.reduce(
-      (last, item, itemIndex) => (item.kind === "assistant" ? itemIndex : last),
-      -1,
-    );
-    if (assistantIndex < 0) return;
-    if (turn.slice(assistantIndex + 1).some((item) => item.kind === "tool"))
-      return;
-    const response = turn[assistantIndex];
-    if (response?.kind === "assistant") ids.add(response.id);
-  });
-  return ids;
-}
-
-/** Harness rows the journal never counts as a user turn. */
-function isCountedUserTurn(
-  item: Extract<TimelineItem, { kind: "user" }>,
-): boolean {
-  const text = item.text.trim();
-  if (!text) return false;
-  return (
-    !text.startsWith("<user_info>") &&
-    !text.startsWith("<system-reminder>") &&
-    !text.startsWith("<session_context>")
-  );
-}
-
-/** 0-based user-turn index for the assistant reply being forked. */
-function promptIndexAtAssistant(
-  items: TimelineItem[],
-  assistantId: string,
-): number {
-  let users = 0;
-  for (const item of items) {
-    if (item.kind === "user" && isCountedUserTurn(item)) users += 1;
-    if (item.id === assistantId) return Math.max(0, users - 1);
-  }
-  return Math.max(0, users - 1);
-}
-
-function userTextBeforeAssistant(
-  items: TimelineItem[],
-  assistantId: string,
-): string {
-  let last = "";
-  for (const item of items) {
-    if (item.kind === "user" && isCountedUserTurn(item))
-      last = item.text.trim();
-    if (item.id === assistantId) return last;
-  }
-  return last;
-}
-
-function capText(text: string, limit = 80_000): string {
-  if (text.length <= limit) return text;
-  return `${text.slice(0, limit)}\n… (truncated)`;
-}
-
-async function collectReviewDiff(
-  key: string,
-  cwd: string,
-  since: number,
-  turnFiles: string[],
-): Promise<
-  { ok: true; diff: string; reason?: string } | { ok: false; error: string }
-> {
-  const bulk = await api.gitReviewDiff(key, cwd, since);
-  if (bulk.ok && bulk.repo === false)
-    return { ok: false, error: "This folder is not a git repository." };
-  if (bulk.ok && typeof bulk.diff === "string" && bulk.diff.trim()) {
-    const diff =
-      bulk.scope === "turn" || turnFiles.length === 0
-        ? bulk.diff
-        : filterDiffToFiles(bulk.diff, turnFiles, cwd);
-    if (diff.trim()) return { ok: true, diff };
-  }
-  const listed = await api.gitChanges(key, cwd);
-  if (!listed.ok)
-    return { ok: false, error: listed.error ?? "Could not list git changes." };
-  if (listed.repo === false)
-    return { ok: false, error: "This folder is not a git repository." };
-  const changes = listed.changes ?? [];
-  if (changes.length === 0) return { ok: true, diff: "" };
-  const matched = turnFiles.length
-    ? changes.filter((file) =>
-        turnFiles.some((path) => reviewPathsMatch(file.path, path, cwd)),
-      )
-    : [];
-  // Isolation missed (absolute tool paths, old API without snapshot diffs).
-  // The working tree is dirty — review that rather than claiming no change.
-  const files = matched.length ? matched : changes;
-  const pieces = await Promise.all(
-    files.map((file) => api.gitFileDiff(key, cwd, file.path)),
-  );
-  return {
-    ok: true,
-    diff: pieces
-      .map((piece) => piece.diff ?? "")
-      .filter((block) => block.trim())
-      .join("\n"),
-  };
 }

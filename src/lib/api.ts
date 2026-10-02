@@ -21,6 +21,7 @@ export interface BackendInfo {
   auth: BackendAuth;
   installCommand: string | null;
   loginCommand: string | null;
+  connectCommand?: string;
   capabilities: import("./agentCapabilities").AgentCapabilities;
 }
 
@@ -51,13 +52,17 @@ export function backendMark(backend: AgentBackend): {
 } {
   // Claude's signature amber ("crail"). Fixed — no theme or state overrides it.
   if (backend === "claude")
-    return { glyph: "✳", color: "#D97757", blurb: "acp" };
+    return { glyph: "✳", color: "var(--glyph-claude, #d97757)", blurb: "acp" };
   if (backend === "grok")
-    return { glyph: "✦", color: "var(--pw-accent)", blurb: "cloud" };
+    return { glyph: "✦", color: "var(--glyph-grok, #ececf1)", blurb: "cloud" };
   if (backend === "codex")
-    return { glyph: "◇", color: "var(--pw-fg-3)", blurb: "codex" };
+    return { glyph: "⬡", color: "var(--glyph-codex, #ececf1)", blurb: "codex" };
   if (backend === "pi")
-    return { glyph: "◆", color: "var(--pw-green)", blurb: "local shell agent" };
+    return {
+      glyph: "π",
+      color: "var(--glyph-pi, #5fd49a)",
+      blurb: "local shell agent",
+    };
   return { glyph: "✦", color: "var(--pw-teal)", blurb: "acp" };
 }
 
@@ -66,6 +71,8 @@ export interface ModelInfo {
   name?: string;
   provider: string;
   contextWindow?: number;
+  /** Thinking levels this model supports, from the pi model catalog. */
+  levels?: string[];
 }
 
 /** A prompt waiting for the running turn to finish. */
@@ -73,6 +80,11 @@ export interface QueuedMessage {
   id: string;
   message: string;
   at: number;
+}
+
+export interface PendingUserInput {
+  requestId: string;
+  questions: (import("./askBlock").AskQuestion & { id: string; isSecret?: boolean; link?: string })[];
 }
 
 export interface SessionState {
@@ -85,6 +97,9 @@ export interface SessionState {
   messageCount: number;
   pendingMessageCount: number;
   queuedMessages?: QueuedMessage[];
+  pendingUserInputs?: PendingUserInput[];
+  contextWindow?: number;
+  turnDiff?: string;
   capabilities?: import("./agentCapabilities").AgentCapabilities;
 }
 
@@ -137,6 +152,43 @@ export interface GitChange {
   status: "added" | "modified" | "deleted" | "conflicted";
   additions: number;
   deletions: number;
+}
+
+export type ChangeScope = "turn" | "session";
+
+/** One file in a recorded turn/session view (server/changes.js). */
+export interface RecordedChange extends GitChange {
+  /** "tool": an edit tool named it. "command": changed by a shell command. */
+  source: "tool" | "command";
+  /** Another session in this checkout touched it too; the diff may mix. */
+  shared: boolean;
+  /** False when the diff can't be pinned on this session alone. */
+  exact: boolean;
+  /** The file changed again after this view's last turn. */
+  drift: boolean;
+  /** Too large to keep; listed without a diff. */
+  skipped: boolean;
+  turns: number;
+  diff: string;
+}
+
+export interface RecordedTurn {
+  id: number;
+  startedAt: number;
+  endedAt: number;
+  label: string;
+  concurrent: number;
+  files: number;
+}
+
+export interface ChangesResponse {
+  ok: boolean;
+  scope?: ChangeScope;
+  running?: boolean;
+  turn?: RecordedTurn | null;
+  turns?: RecordedTurn[];
+  files?: RecordedChange[];
+  error?: string;
 }
 
 export interface GitStash {
@@ -280,6 +332,18 @@ export interface ContextUsageReport {
   autoCompactThreshold: number;
   isAutoCompactEnabled: boolean;
   categories: Array<{ name: string; tokens: number }>;
+  /**
+   * Session ledger counted once (Grok's usage.json). Per-message timeline
+   * sums are a different number: they can repeat a cumulative snapshot.
+   */
+  session?: {
+    input: number;
+    output: number;
+    cacheRead: number;
+    cacheWrite: number;
+    /** Model time across completed turns, excluding tool waits. */
+    durationMs: number;
+  };
 }
 
 /** A hook the agent will run, flattened out of the settings tree. */
@@ -497,7 +561,12 @@ export function apiOrigin(): string {
     }
   }
   const { hostname } = window.location;
-  if (hostname === "localhost" || hostname === "127.0.0.1") return "";
+  if (
+    hostname === "localhost" ||
+    hostname === "127.0.0.1" ||
+    hostname === "[::1]" ||
+    hostname.endsWith(".trycloudflare.com")
+  ) return "";
   return "http://127.0.0.1:4319";
 }
 
@@ -579,6 +648,8 @@ async function put<T = unknown>(url: string, body: unknown): Promise<T> {
   });
 }
 
+const historyRequests = new Map<string, Promise<{ ok: boolean; messages?: SessionHistoryMessage[]; error?: string }>>();
+
 export const api = {
   health: () =>
     get<{
@@ -598,12 +669,14 @@ export const api = {
       { mode, cwd },
       10_000,
     ),
-  catalog: () => get<PiCatalogResponse>("/api/catalog"),
-  readSkill: (name: string) =>
+  catalog: (backend: "pi" | "codex" = "pi") => get<PiCatalogResponse>(`/api/catalog?backend=${backend}`),
+  openPiSettings: () =>
+    post<{ ok: boolean; error?: string }>("/api/catalog/open-settings", {}),
+  readSkill: (name: string, backend: "pi" | "codex" = "pi") =>
     get<{ ok: boolean; name?: string; source?: string; error?: string }>(
-      `/api/catalog/skill?name=${encodeURIComponent(name)}`,
+      `/api/catalog/skill?name=${encodeURIComponent(name)}&backend=${backend}`,
     ),
-  writeSkill: (skill: { name: string; description: string; body: string }) =>
+  writeSkill: (skill: { name: string; description: string; body: string; backend?: "pi" | "codex" }) =>
     request<{ ok: boolean; name?: string; path?: string; error?: string }>(
       "/api/catalog/skill",
       {
@@ -612,9 +685,9 @@ export const api = {
         body: JSON.stringify(skill),
       },
     ),
-  deleteSkill: (name: string) =>
+  deleteSkill: (name: string, backend: "pi" | "codex" = "pi") =>
     request<{ ok: boolean; error?: string }>(
-      `/api/catalog/skill?name=${encodeURIComponent(name)}`,
+      `/api/catalog/skill?name=${encodeURIComponent(name)}&backend=${backend}`,
       { method: "DELETE" },
     ),
   directories: (path?: string) =>
@@ -700,10 +773,16 @@ export const api = {
     ),
   sessionLogUrl: (sessionPath: string) =>
     apiUrl(`/api/session-log?path=${encodeURIComponent(sessionPath)}`),
-  sessionMessages: (sessionPath: string) =>
-    get<{ ok: boolean; messages?: SessionHistoryMessage[]; error?: string }>(
-      `/api/session-messages?path=${encodeURIComponent(sessionPath)}`,
-    ),
+  sessionMessages: (sessionPath: string) => {
+    let pending = historyRequests.get(sessionPath);
+    if (!pending) {
+      pending = get<{ ok: boolean; messages?: SessionHistoryMessage[]; error?: string }>(
+        `/api/session-messages?path=${encodeURIComponent(sessionPath)}`,
+      ).finally(() => historyRequests.delete(sessionPath));
+      historyRequests.set(sessionPath, pending);
+    }
+    return pending;
+  },
   sessions: (
     view: "recent" | "archived" = "recent",
     // "all" merges every agent's sessions into one list, newest first.
@@ -736,7 +815,7 @@ export const api = {
     warmOnly?: boolean,
     independent?: boolean,
     accessMode?: "workspace-write" | "read-only",
-    agentMode?: "standard" | "plan" | "manual" | "routed",
+    agentMode?: "standard" | "plan" | "manual" | "routed" | "auto-edit",
   ) =>
     post<{
       ok: boolean;
@@ -769,7 +848,7 @@ export const api = {
       model?: ModelInfo | null;
       thinkingLevel?: string | null;
       accessMode?: "workspace-write" | "read-only";
-      agentMode?: "standard" | "plan";
+      agentMode?: "standard" | "plan" | "manual" | "auto-edit";
       /** The ask card's submit: this message answers a pending ask, so the
        * server delivers it even though an ask still holds the queue. */
       answersAsk?: boolean;
@@ -837,7 +916,7 @@ export const api = {
       model?: ModelInfo | null;
       thinkingLevel?: string | null;
       accessMode?: "workspace-write" | "read-only";
-      agentMode?: "standard" | "plan" | "manual" | "routed";
+      agentMode?: "standard" | "plan" | "manual" | "routed" | "auto-edit";
     } = {},
   ) =>
     post<SessionSnapshotResponse>(`/api/${key}/fork`, {
@@ -951,15 +1030,30 @@ export const api = {
       error?: string;
     }>(`/api/${key}/git-changes?${params}`);
   },
+  /** Recorded changes: this session's latest turn (or `turn`), or the whole
+   *  session. Survives commits; unlike git, it knows whose change is whose. */
+  changes: (
+    key: string,
+    scope: ChangeScope,
+    sessionPath?: string,
+    turn?: number,
+  ) => {
+    const params = new URLSearchParams({ scope });
+    if (sessionPath) params.set("sessionPath", sessionPath);
+    if (turn) params.set("turn", String(turn));
+    return get<ChangesResponse>(`/api/${key}/changes?${params}`);
+  },
   revertHunk: (key: string, cwd: string, file: string, hunkIndex: number) =>
     post<{
       ok: boolean;
       data?: { file: string; hunkIndex: number; remaining: number };
       error?: string;
     }>(`/api/${key}/git-hunk`, { cwd, file, hunkIndex }),
-  gitFileDiff: (key: string, cwd: string, file: string) =>
+  /** Per-file diff vs HEAD — or, with `base`, vs the worktree's base commit
+   *  (the branch's whole change against main, commits included). */
+  gitFileDiff: (key: string, cwd: string, file: string, base = false) =>
     get<{ ok: boolean; diff?: string; error?: string }>(
-      `/api/${key}/git-changes?cwd=${encodeURIComponent(cwd)}&file=${encodeURIComponent(file)}`,
+      `/api/${key}/git-changes?cwd=${encodeURIComponent(cwd)}&file=${encodeURIComponent(file)}${base ? "&base=1" : ""}`,
     ),
   sessionState: (key: string, backend?: AgentBackend) =>
     get<{ ok: boolean; state?: SessionState | null }>(
@@ -1051,6 +1145,8 @@ export const api = {
     ),
   stop: (key: string) =>
     post<{ ok: boolean; error?: string }>(`/api/${key}/stop`, {}),
+  answer: (key: string, requestId: string, answers: Record<string, { answers: string[] }>) =>
+    post<{ ok: boolean; error?: string }>(`/api/${key}/answer`, { requestId, answers }),
   approve: (
     key: string,
     requestId: string,
@@ -1066,7 +1162,7 @@ export const api = {
     key: string,
     cwd: string,
     accessMode: "workspace-write" | "read-only",
-    agentMode: "standard" | "plan" | "manual",
+    agentMode: "standard" | "plan" | "manual" | "auto-edit",
     model?: ModelInfo | null,
     thinkingLevel?: string,
     sessionPath?: string,
@@ -1148,6 +1244,30 @@ export const api = {
     get<{ ok: boolean; backends: BackendInfo[] }>("/api/backends"),
   recheckBackends: () =>
     post<{ ok: boolean; backends: BackendInfo[] }>("/api/backends/recheck", {}),
+  harnessUpdates: () =>
+    get<{
+      ok: boolean;
+      updates: {
+        id: string;
+        pkg: string;
+        installed: string | null;
+        latest: string | null;
+      }[];
+    }>("/api/harness-updates"),
+  runHarnessUpdate: (id: string) =>
+    post<{
+      ok: boolean;
+      pkg?: string;
+      error?: string;
+      /** stderr tail, for the details panel. */
+      log?: string;
+      /** What to run by hand if the in-app update fails. */
+      cmd?: string;
+    }>(
+      "/api/harness-updates/run",
+      { id },
+      5 * 60_000,
+    ),
   onboarding: () =>
     get<{
       ok: boolean;

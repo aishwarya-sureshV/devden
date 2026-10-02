@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState, type ReactNode } from "react";
 import {
   api,
   type McpServerInfo,
+  type AgentSettings,
   type PiCatalogResponse,
 } from "../lib/api";
 import type { WorkbenchView } from "../lib/navigation";
@@ -10,7 +11,6 @@ import {
   IconExtension,
   IconRefresh,
   IconSearch,
-  IconSettings,
 } from "./icons";
 import {
   notificationPermission,
@@ -32,33 +32,34 @@ const EMPTY_CATALOG: PiCatalogResponse = {
 
 export function WorkbenchPage({
   view,
-  theme,
-  onThemeChange,
   showThinking,
   onShowThinkingChange,
   sessionKey,
+  onBack,
 }: {
   view: Exclude<WorkbenchView, "sessions" | "fleet" | "notes">;
-  theme: "light" | "dark";
-  onThemeChange: (theme: "light" | "dark") => void;
   showThinking: boolean;
   onShowThinkingChange: (show: boolean) => void;
   /** Active conversation, if any — MCP status comes from its running agent. */
   sessionKey?: string;
+  onBack?: () => void;
 }) {
+  const { tabs, skillDraft } = useStore();
+  const [skillBackend, setSkillBackend] = useState<"pi" | "codex">(() => skillDraft?.backend ?? (tabs.find((tab) => tab.key === sessionKey)?.backend === "codex" ? "codex" : "pi"));
   const [catalog, setCatalog] = useState<PiCatalogResponse>(EMPTY_CATALOG);
   const [loading, setLoading] = useState(true);
   const [query, setQuery] = useState("");
 
   const refresh = () => {
     setLoading(true);
-    void api.catalog().then((result) => {
+    void api.catalog(view === "skills" ? skillBackend : "pi").then((result) => {
       setCatalog(result);
       setLoading(false);
     });
   };
 
-  useEffect(refresh, []);
+  useEffect(refresh, [skillBackend, view]);
+  useEffect(() => { if (skillDraft?.backend) setSkillBackend(skillDraft.backend); }, [skillDraft?.backend]);
   useEffect(() => setQuery(""), [view]);
 
   const normalizedQuery = query.trim().toLowerCase();
@@ -85,18 +86,23 @@ export function WorkbenchPage({
     [catalog.extensions, normalizedQuery],
   );
 
-  const title =
-    view === "skills"
-      ? "Skills"
-      : view === "extensions"
-        ? "Extensions"
-        : "Settings";
+  const title = view === "skills" ? "Skills" : "Extensions";
   const description =
     view === "skills"
-      ? "Specialized instructions available to your local Pi agent."
-      : view === "extensions"
-        ? "Packages and local extensions loaded by Pi."
-        : "Workbench appearance, agents, MCP and notifications.";
+      ? `Specialized instructions available to your local ${skillBackend === "codex" ? "Codex" : "Pi"} agent.`
+      : "Packages and local extensions loaded by Pi.";
+
+  if (view === "settings") {
+    return (
+      <SettingsShell
+        catalog={catalog}
+        showThinking={showThinking}
+        onShowThinkingChange={onShowThinkingChange}
+        sessionKey={sessionKey}
+        onBack={onBack}
+      />
+    );
+  }
 
   return (
     <div className="resource-page">
@@ -121,18 +127,19 @@ export function WorkbenchPage({
         </div>
       )}
 
-      {view !== "settings" && (
-        <label className="resource-page__search">
-          <IconSearch />
-          <input
-            type="search"
-            aria-label={`Search ${title.toLowerCase()}`}
-            placeholder={`Search ${title.toLowerCase()}`}
-            value={query}
-            onChange={(event) => setQuery(event.target.value)}
-          />
-        </label>
+      {view === "skills" && (
+        <label>Agent <select aria-label="Skill agent" value={skillBackend} onChange={(event) => setSkillBackend(event.target.value as "pi" | "codex")}><option value="pi">Pi</option><option value="codex">Codex</option></select></label>
       )}
+      <label className="resource-page__search">
+        <IconSearch />
+        <input
+          type="search"
+          aria-label={`Search ${title.toLowerCase()}`}
+          placeholder={`Search ${title.toLowerCase()}`}
+          value={query}
+          onChange={(event) => setQuery(event.target.value)}
+        />
+      </label>
 
       <div className="resource-page__content" aria-busy={loading}>
         {loading && (
@@ -142,6 +149,8 @@ export function WorkbenchPage({
         )}
         {!loading && view === "skills" && (
           <SkillsView
+            key={skillBackend}
+            backend={skillBackend}
             skills={skills}
             query={normalizedQuery}
             onChanged={refresh}
@@ -164,16 +173,6 @@ export function WorkbenchPage({
                 ? "No extensions match this search."
                 : "No Pi extensions are installed."
             }
-          />
-        )}
-        {!loading && view === "settings" && (
-          <SettingsView
-            catalog={catalog}
-            theme={theme}
-            onThemeChange={onThemeChange}
-            showThinking={showThinking}
-            onShowThinkingChange={onShowThinkingChange}
-            sessionKey={sessionKey}
           />
         )}
       </div>
@@ -213,46 +212,55 @@ function NotificationsCard() {
   };
 
   return (
-    <section className="settings-card">
-      <div className="settings-card__heading">
-        <IconSettings />
-        <div>
-          <strong>Notifications</strong>
-          <span>
-            Ping this device when an agent needs permission or finishes a turn.
-          </span>
+    <section className="settings-block">
+      <div className="settings-block__label">Alerts</div>
+      <div className="settings-group">
+        <div className="settings-field">
+          <div className="settings-field__text">
+            <strong>Notifications</strong>
+            <span>
+              Ping this device when an agent needs permission or finishes a
+              turn.
+            </span>
+          </div>
+          {unsupported || blocked ? null : (
+            <div className="seg-control seg-control--inline" role="group" aria-label="Notifications">
+              <button
+                type="button"
+                className={enabled ? "" : "is-active"}
+                aria-pressed={!enabled}
+                onClick={() => {
+                  if (enabled) void toggle();
+                }}
+              >
+                Off
+              </button>
+              <button
+                type="button"
+                className={enabled ? "is-active" : ""}
+                aria-pressed={enabled}
+                onClick={() => {
+                  if (!enabled) void toggle();
+                }}
+              >
+                On
+              </button>
+            </div>
+          )}
         </div>
+        {unsupported ? (
+          <p className="settings-note">This browser does not support notifications.</p>
+        ) : blocked ? (
+          <p className="settings-note">
+            Notifications are blocked for this site. Allow them in your
+            browser&apos;s site settings, then reload.
+          </p>
+        ) : enabled ? (
+          <p className="settings-note">
+            Sent only while this page is open and in the background.
+          </p>
+        ) : null}
       </div>
-      {unsupported ? (
-        <p className="settings-card__note">
-          This browser does not support notifications.
-        </p>
-      ) : blocked ? (
-        <p className="settings-card__note">
-          Notifications are blocked for this site. Allow them in your
-          browser&apos;s site settings, then reload.
-        </p>
-      ) : (
-        <div
-          className="settings-card__theme"
-          role="group"
-          aria-label="Notifications"
-        >
-          <button
-            type="button"
-            className={enabled ? "is-active" : ""}
-            aria-pressed={enabled}
-            onClick={() => void toggle()}
-          >
-            {enabled ? "On" : "Off"}
-          </button>
-        </div>
-      )}
-      {enabled && (
-        <p className="settings-card__note">
-          Sent only while this page is open and in the background.
-        </p>
-      )}
     </section>
   );
 }
@@ -297,47 +305,47 @@ function McpCard({ sessionKey }: { sessionKey?: string }) {
   }, [sessionKey]);
 
   return (
-    <section className="settings-card">
-      <div className="settings-card__heading">
-        <IconExtension />
-        <div>
-          <strong>MCP servers</strong>
-          <span>
-            Model Context Protocol servers available to the current session.
-          </span>
+    <section className="settings-block">
+      <div className="settings-block__label">Servers</div>
+      <div className="settings-group">
+        <div className="settings-field">
+          <div className="settings-field__text">
+            <strong>MCP servers</strong>
+            <span>
+              Model Context Protocol servers available to the current session.
+            </span>
+          </div>
         </div>
-      </div>
-      {sessionKey ? (
-        error ? (
-          <p className="settings-card__note">{error}</p>
-        ) : servers === null ? (
-          <p className="settings-card__note">Loading…</p>
-        ) : servers.length === 0 ? (
-          <p className="settings-card__note">
-            No MCP servers configured. Add one with <code>claude mcp add</code>.
-          </p>
+        {sessionKey ? (
+          error ? (
+            <p className="settings-note">{error}</p>
+          ) : servers === null ? (
+            <p className="settings-note">Loading…</p>
+          ) : servers.length === 0 ? (
+            <p className="settings-note">
+              No MCP servers configured. Add one with <code>claude mcp add</code>.
+            </p>
+          ) : (
+            <dl className="settings-kv-list">
+              {servers.map((server) => (
+                <div className="settings-kv" key={server.name}>
+                  <dt>{server.name}</dt>
+                  <dd>
+                    {server.status}
+                    {server.scope ? ` · ${server.scope}` : ""}
+                    {server.toolCount === null
+                      ? ""
+                      : ` · ${server.toolCount} tools`}
+                    {server.error ? ` — ${server.error}` : ""}
+                  </dd>
+                </div>
+              ))}
+            </dl>
+          )
         ) : (
-          <dl className="settings-card__rows">
-            {servers.map((server) => (
-              <div key={server.name}>
-                <dt>{server.name}</dt>
-                <dd>
-                  {server.status}
-                  {server.scope ? ` · ${server.scope}` : ""}
-                  {server.toolCount === null
-                    ? ""
-                    : ` · ${server.toolCount} tools`}
-                  {server.error ? ` — ${server.error}` : ""}
-                </dd>
-              </div>
-            ))}
-          </dl>
-        )
-      ) : (
-        <p className="settings-card__note">
-          Open a session to see its MCP servers.
-        </p>
-      )}
+          <p className="settings-note">Open a session to see its MCP servers.</p>
+        )}
+      </div>
     </section>
   );
 }
@@ -351,10 +359,12 @@ const EMPTY_DRAFT: SkillDraft = { name: "", description: "", body: "" };
  * it against the skills root before any write.
  */
 function SkillsView({
+  backend,
   skills,
   query,
   onChanged,
 }: {
+  backend: "pi" | "codex";
   skills: PiCatalogResponse["skills"];
   query: string;
   onChanged: () => void;
@@ -368,10 +378,10 @@ function SkillsView({
   // edits and saves, or discards. Never auto-overwrite an open editor.
   const { skillDraft, setSkillDraft } = useStore();
   useEffect(() => {
-    if (!skillDraft || draft) return;
+    if (!skillDraft || draft || (skillDraft.backend ?? "pi") !== backend) return;
     setDraft(skillDraft);
     setSkillDraft(null);
-  }, [skillDraft, draft, setSkillDraft]);
+  }, [skillDraft, draft, setSkillDraft, backend]);
 
   const startNew = () => {
     setEditingName(null);
@@ -383,7 +393,8 @@ function SkillsView({
     setError("");
     setBusy(true);
     try {
-      const result = await api.readSkill(name);
+      const result = await api.readSkill(name, backend);
+      if (!result.ok) { setError(result.error ?? "Could not read the skill."); return; }
       // Strip the frontmatter: it is regenerated from the fields on save, so
       // editing it by hand here would silently lose the change.
       const body = (result.source ?? "").replace(/^---\n[\s\S]*?\n---\n*/, "");
@@ -399,7 +410,7 @@ function SkillsView({
     setBusy(true);
     setError("");
     try {
-      const result = await api.writeSkill(draft);
+      const result = await api.writeSkill({ ...draft, backend });
       if (!result.ok) {
         setError(result.error ?? "Could not save the skill.");
         return;
@@ -416,7 +427,7 @@ function SkillsView({
     setBusy(true);
     setError("");
     try {
-      const result = await api.deleteSkill(name);
+      const result = await api.deleteSkill(name, backend);
       if (!result.ok) {
         setError(result.error ?? "Could not delete the skill.");
         return;
@@ -587,147 +598,164 @@ function ResourceList({
   );
 }
 
-const SETTINGS_TABS = ["Appearance", "Agents", "MCP", "Notifications"] as const;
-type SettingsTab = (typeof SETTINGS_TABS)[number];
+const SETTINGS_TABS = [
+  ["◐", "Appearance", "Theme, backdrop and color"],
+  ["π", "Agents", "Defaults for new sessions"],
+  ["⬡", "MCP", "Connected tool servers"],
+  ["◔", "Notifications", "Alerts from running agents"],
+] as const;
+type SettingsTab = (typeof SETTINGS_TABS)[number][1];
 
-function SettingsView({
+function SettingsShell({
   catalog,
-  theme,
-  onThemeChange,
   showThinking,
   onShowThinkingChange,
   sessionKey,
+  onBack,
 }: {
   catalog: PiCatalogResponse;
-  theme: "light" | "dark";
-  onThemeChange: (theme: "light" | "dark") => void;
   showThinking: boolean;
   onShowThinkingChange: (show: boolean) => void;
   sessionKey?: string;
+  onBack?: () => void;
 }) {
   const [tab, setTab] = useState<SettingsTab>("Appearance");
+  const current = SETTINGS_TABS.find((item) => item[1] === tab) ?? SETTINGS_TABS[0];
+  return (
+    <div className="settings-shell">
+      <aside className="settings-nav">
+        <div className="settings-nav__lights">
+          <span className="sidebar__traffic" aria-hidden="true">
+            <i className="is-close" />
+            <i className="is-min" />
+            <i className="is-max" />
+          </span>
+        </div>
+        <button type="button" className="settings-nav__back" onClick={onBack}>
+          <span aria-hidden="true">‹</span>
+          Back to workbench
+          <kbd>esc</kbd>
+        </button>
+        <div className="settings-nav__label">Settings</div>
+        <div className="settings-nav__list" role="tablist" aria-label="Settings sections">
+          {SETTINGS_TABS.map(([icon, name]) => (
+            <button
+              key={name}
+              type="button"
+              role="tab"
+              aria-selected={tab === name}
+              className={tab === name ? "is-active" : ""}
+              onClick={() => setTab(name)}
+            >
+              <span aria-hidden="true">{icon}</span>
+              {name}
+            </button>
+          ))}
+        </div>
+        <div className="settings-nav__foot">Changes save as you go</div>
+      </aside>
+      <div className="settings-main">
+        <header className="settings-main__bar">
+          <strong>{current[1]}</strong>
+          <span>{current[2]}</span>
+        </header>
+        {!catalog.ok && (
+          <div className="resource-page__error" role="alert">
+            {catalog.error ?? "Pi resources could not be loaded."}
+          </div>
+        )}
+        <div className="settings-main__scroll">
+          <div className="settings-main__column">
+            {tab === "Appearance" && (
+              <SettingsAppearance
+                showThinking={showThinking}
+                onShowThinkingChange={onShowThinkingChange}
+              />
+            )}
+            {tab === "Agents" && (
+              <>
+                <PiDefaults catalog={catalog} />
+                <SettingsAgents />
+                {sessionKey && <AgentConfigCard sessionKey={sessionKey} />}
+              </>
+            )}
+            {tab === "MCP" && <McpCard sessionKey={sessionKey} />}
+            {tab === "Notifications" && <NotificationsCard />}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function AgentConfigCard({ sessionKey }: { sessionKey: string }) {
+  const { tabs } = useStore();
+  const backend = tabs.find((tab) => tab.key === sessionKey)?.backend;
+  const [settings, setSettings] = useState<AgentSettings | null>(null);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    setSettings(null);
+    if (backend !== "codex" && backend !== "claude") return;
+    let cancelled = false;
+    void api.settings(sessionKey).then((result) => {
+      if (cancelled) return;
+      setSettings(result.data ?? null);
+      setError(result.ok ? "" : result.error ?? "Could not read agent settings");
+    });
+    return () => { cancelled = true; };
+  }, [sessionKey, backend]);
+  if (backend !== "codex" && backend !== "claude") return null;
+  return <section className="settings-block"><div className="settings-block__head"><span className="settings-block__label">{backend} effective settings</span></div>{error && <p role="alert">{error}</p>}{settings ? <details><summary>Configuration and sources</summary><pre>{JSON.stringify(settings.effective, null, 2)}</pre>{settings.sources.map((source, index) => <details key={index}><summary>{source.source}</summary><pre>{JSON.stringify(source.settings, null, 2)}</pre></details>)}</details> : !error && <p>Loading…</p>}</section>;
+}
+
+function PiDefaults({ catalog }: { catalog: PiCatalogResponse }) {
   const settings = catalog.settings;
+  const [opening, setOpening] = useState(false);
   const rows = [
     ["Default provider", settings.defaultProvider || "Not set"],
     ["Default model", settings.defaultModel || "Not set"],
     ["Default effort", settings.defaultThinkingLevel || "off"],
-    ["Pi terminal theme", settings.theme || "Default"],
+    ["Terminal theme", settings.theme || "Default"],
     ["Installed terminal themes", String(settings.themeCount ?? 0)],
     ["Thinking blocks", settings.hideThinkingBlock ? "Hidden" : "Visible"],
     ["Startup", settings.quietStartup ? "Quiet" : "Standard"],
   ];
+  const path = settings.path ?? "";
+  const shown = path.includes(".pi/agent/settings.json")
+    ? "~/.pi/agent/settings.json"
+    : path || "~/.pi/agent/settings.json";
   return (
-    <div className="settings-stack">
-      <div
-        className="settings-tabs"
-        role="tablist"
-        aria-label="Settings sections"
-      >
-        {SETTINGS_TABS.map((name) => (
-          <button
-            key={name}
-            type="button"
-            role="tab"
-            aria-selected={tab === name}
-            className={tab === name ? "is-active" : ""}
-            onClick={() => setTab(name)}
-          >
-            {name}
-          </button>
-        ))}
+    <section className="settings-block">
+      <div className="settings-block__head">
+        <span className="settings-block__label">Pi defaults</span>
+        <span className="settings-block__aside">Read from your local Pi settings</span>
       </div>
-      {tab === "Appearance" && (
-        <>
-          <section className="settings-card">
-            <div className="settings-card__heading">
-              <IconSettings />
-              <div>
-                <strong>Workbench appearance</strong>
-                <span>Choose how Pi Workbench looks.</span>
-              </div>
+      <div className="settings-group">
+        <dl className="settings-kv-list">
+          {rows.map(([label, value]) => (
+            <div className="settings-kv" key={label}>
+              <dt>{label}</dt>
+              <dd>{value}</dd>
             </div>
-            <div
-              className="settings-card__theme"
-              role="group"
-              aria-label="Workbench appearance"
-            >
-              <button
-                type="button"
-                className={theme === "light" ? "is-active" : ""}
-                aria-pressed={theme === "light"}
-                onClick={() => onThemeChange("light")}
-              >
-                Light
-              </button>
-              <button
-                type="button"
-                className={theme === "dark" ? "is-active" : ""}
-                aria-pressed={theme === "dark"}
-                onClick={() => onThemeChange("dark")}
-              >
-                Dark
-              </button>
-            </div>
-          </section>
-          <SettingsAppearance />
-          <section className="settings-card">
-            <div className="settings-card__heading">
-              <IconSettings />
-              <div>
-                <strong>Thinking blocks</strong>
-                <span>
-                  Show the agent's reasoning text between its replies.
-                </span>
-              </div>
-            </div>
-            <div
-              className="settings-card__theme"
-              role="group"
-              aria-label="Thinking blocks"
-            >
-              <button
-                type="button"
-                className={showThinking ? "" : "is-active"}
-                aria-pressed={!showThinking}
-                onClick={() => onShowThinkingChange(false)}
-              >
-                Hidden
-              </button>
-              <button
-                type="button"
-                className={showThinking ? "is-active" : ""}
-                aria-pressed={showThinking}
-                onClick={() => onShowThinkingChange(true)}
-              >
-                Shown
-              </button>
-            </div>
-          </section>
-          <section className="settings-card">
-            <div className="settings-card__heading">
-              <IconCube />
-              <div>
-                <strong>Pi defaults</strong>
-                <span>Read from your local Pi settings.</span>
-              </div>
-            </div>
-            <dl className="settings-card__rows">
-              {rows.map(([label, value]) => (
-                <div key={label}>
-                  <dt>{label}</dt>
-                  <dd>{value}</dd>
-                </div>
-              ))}
-            </dl>
-            {settings.path && (
-              <code className="settings-card__path">{settings.path}</code>
-            )}
-          </section>
-        </>
-      )}
-      {tab === "Agents" && <SettingsAgents />}
-      {tab === "MCP" && <McpCard sessionKey={sessionKey} />}
-      {tab === "Notifications" && <NotificationsCard />}
-    </div>
+          ))}
+        </dl>
+        <div className="settings-group__bar">
+          <span className="settings-group__path" title={path || shown}>
+            {shown}
+          </span>
+          <button
+            type="button"
+            className="settings-open"
+            disabled={!path || opening}
+            onClick={() => {
+              setOpening(true);
+              void api.openPiSettings().finally(() => setOpening(false));
+            }}
+          >
+            Open in editor
+          </button>
+        </div>
+      </div>
+    </section>
   );
 }

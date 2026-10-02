@@ -6,172 +6,172 @@
 /* ---------- 1. Glass design tokens + semantic remap ---------- */
 
 body[data-glass] {
-  /* Mockup tokens — light. */
-  --g-fg: #1d1c24;
-  --g-fg0: #0d0c12;
-  --g-fg2: #33313c;
-  --g-fg3: #55525e;
-  --g-fg4: #77747f;
-  --g-ink: 24 26 40;
-  --g-sink: 70 80 110;
-  --g-tint: 250 250 252;
-  /* Overlapping surfaces (menus, modals, the full editor) must not be
+ /* Mockup tokens — light. */
+ --g-fg: #1d1c24;
+ --g-fg0: #0d0c12;
+ --g-fg2: #33313c;
+ --g-fg3: #55525e;
+ --g-fg4: #77747f;
+ --g-ink: 24 26 40;
+ --g-sink: 70 80 110;
+ --g-tint: 250 250 252;
+ /* Overlapping surfaces (menus, modals, the full editor) must not be
      see-through: pop is near-opaque pane tint, not frosted glass. */
-  --g-pop: rgb(var(--g-tint) / 0.98);
-  /* Matte: flat fills, no gradients or gloss. */
-  --g-raised: rgba(255, 255, 255, 0.72);
-  /* The accent IS the picked highlight color: every amber in the app
+ --g-pop: rgb(var(--g-tint) / 0.98);
+ /* Matte: flat fills, no gradients or gloss. */
+ --g-raised: rgba(255, 255, 255, 0.72);
+ /* The accent IS the picked highlight color: every amber in the app
      (New session / Auto mode overlays, badges, send button) follows it. */
-  --g-accent: var(--g-highlight, #e8a765);
-  color-scheme: light;
+ --g-accent: var(--g-highlight, #e8a765);
+ color-scheme: light;
 
-  /* The redesign's UI font: system sans. Code keeps the mono stack. */
-  --dsw-font-family:
-    -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
+ /* The redesign's UI font: system sans. Code keeps the mono stack. */
+ --dsw-font-family:
+  -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
 
-  /* Semantic remap — the whole component library re-skins through these. */
-  background: transparent;
+ /* Semantic remap — the whole component library re-skins through these. */
+ background: transparent;
 
-  --dsw-alias-bg-base: transparent;
-  --dsw-alias-bg-layer-1: transparent;
-  --dsw-alias-bg-layer-2: rgb(var(--g-ink) / 0.07);
-  --dsw-alias-bg-layer-3: rgb(var(--g-tint) / var(--g-tint-a, 0));
-  --dsw-alias-bg-overlay: var(--g-pop);
-  --dsw-alias-bg-skeleton: rgb(var(--g-ink) / 0.04);
-  --dsw-alias-border-l1: rgb(var(--g-ink) / 0.07);
-  --dsw-alias-border-l2: rgb(var(--g-ink) / 0.1);
-  --dsw-alias-border-l2-darkmode-thin: rgb(var(--g-ink) / 0.08);
-  --dsw-alias-border-l3: rgb(var(--g-ink) / 0.17);
-  --dsw-alias-border-l4: rgb(var(--g-ink) / 0.22);
-  --dsw-alias-brand-primary: var(--g-fg2);
-  --dsw-alias-label-primary: var(--g-fg2);
-  --dsw-alias-label-primary-dimmed: var(--g-fg2);
-  --dsw-alias-label-primary-accent: var(--g-accent);
-  --dsw-alias-label-primary-inverted: #fff;
-  --dsw-alias-label-secondary: var(--g-fg3);
-  --dsw-alias-label-tertiary: var(--g-fg4);
-  --dsw-alias-label-caption: var(--g-fg3);
-  --dsw-alias-label-dimmed: var(--g-fg4);
-  --dsw-alias-interactive-bg-hover: rgb(var(--g-ink) / 0.06);
-  --dsw-alias-interactive-bg-hover-solid: rgb(var(--g-ink) / 0.08);
-  --dsw-alias-button-elevated-fill: rgb(var(--g-ink) / 0.09);
-  --dsw-alias-button-floating-hover: rgb(var(--g-ink) / 0.07);
-  --dsw-alias-button-ghost-active-fill: rgb(var(--g-ink) / 0.1);
-  --dsw-alias-button-ghost-active-hover: rgb(var(--g-ink) / 0.13);
-  --dsw-alias-state-business-primary: var(--g-accent);
-  --dsw-alias-state-business-tertiary: color-mix(
-    in srgb,
-    var(--g-highlight, #e8a765) 18%,
-    transparent
-  );
-  --dsw-alias-state-error-primary: #ff7a8a;
-  --dsw-specific-input-major: rgb(var(--g-ink) / 0.08);
-  --dsw-specific-selector: rgb(var(--g-ink) / 0.06);
-  --dsw-specific-bubble: var(--g-raised);
-  --dsw-specific-user-accent: var(--g-accent);
-  --dsw-specific-sidebar-fill: rgb(var(--g-tint) / var(--g-tint-a, 0));
-  --dsw-specific-sidebar-nav-item-active: rgb(var(--g-ink) / 0.1);
-  --dsw-specific-sidebar-nav-item-hover: rgb(var(--g-ink) / 0.06);
-  --dsw-shadow-lv2: 0 6px 14px -4px rgb(var(--g-sink) / 0.5);
-  --ds-status-success: #3ba55d;
-  --ds-status-error: #ff7a8a;
-  --ds-status-warning: var(--g-highlight, #e8a765);
-  --ds-activity: var(--g-accent);
+ --dsw-alias-bg-base: transparent;
+ --dsw-alias-bg-layer-1: transparent;
+ --dsw-alias-bg-layer-2: rgb(var(--g-ink) / 0.07);
+ --dsw-alias-bg-layer-3: rgb(var(--g-tint) / var(--g-tint-a, 0));
+ --dsw-alias-bg-overlay: var(--g-pop);
+ --dsw-alias-bg-skeleton: rgb(var(--g-ink) / 0.04);
+ --dsw-alias-border-l1: rgb(var(--g-ink) / 0.07);
+ --dsw-alias-border-l2: rgb(var(--g-ink) / 0.1);
+ --dsw-alias-border-l2-darkmode-thin: rgb(var(--g-ink) / 0.08);
+ --dsw-alias-border-l3: rgb(var(--g-ink) / 0.17);
+ --dsw-alias-border-l4: rgb(var(--g-ink) / 0.22);
+ --dsw-alias-brand-primary: var(--g-fg2);
+ --dsw-alias-label-primary: var(--g-fg2);
+ --dsw-alias-label-primary-dimmed: var(--g-fg2);
+ --dsw-alias-label-primary-accent: var(--g-accent);
+ --dsw-alias-label-primary-inverted: #fff;
+ --dsw-alias-label-secondary: var(--g-fg3);
+ --dsw-alias-label-tertiary: var(--g-fg4);
+ --dsw-alias-label-caption: var(--g-fg3);
+ --dsw-alias-label-dimmed: var(--g-fg4);
+ --dsw-alias-interactive-bg-hover: rgb(var(--g-ink) / 0.06);
+ --dsw-alias-interactive-bg-hover-solid: rgb(var(--g-ink) / 0.08);
+ --dsw-alias-button-elevated-fill: rgb(var(--g-ink) / 0.09);
+ --dsw-alias-button-floating-hover: rgb(var(--g-ink) / 0.07);
+ --dsw-alias-button-ghost-active-fill: rgb(var(--g-ink) / 0.1);
+ --dsw-alias-button-ghost-active-hover: rgb(var(--g-ink) / 0.13);
+ --dsw-alias-state-business-primary: var(--g-accent);
+ --dsw-alias-state-business-tertiary: color-mix(
+  in srgb,
+  var(--g-highlight, #e8a765) 18%,
+  transparent
+ );
+ --dsw-alias-state-error-primary: #ff7a8a;
+ --dsw-specific-input-major: rgb(var(--g-ink) / 0.08);
+ --dsw-specific-selector: rgb(var(--g-ink) / 0.06);
+ --dsw-specific-bubble: var(--g-raised);
+ --dsw-specific-user-accent: var(--g-accent);
+ --dsw-specific-sidebar-fill: rgb(var(--g-tint) / var(--g-tint-a, 0));
+ --dsw-specific-sidebar-nav-item-active: rgb(var(--g-ink) / 0.1);
+ --dsw-specific-sidebar-nav-item-hover: rgb(var(--g-ink) / 0.06);
+ --dsw-shadow-lv2: 0 6px 14px -4px rgb(var(--g-sink) / 0.5);
+ --ds-status-success: #3ba55d;
+ --ds-status-error: #ff7a8a;
+ --ds-status-warning: var(--g-highlight, #e8a765);
+ --ds-activity: var(--g-accent);
 
-  --pw-panel: rgb(var(--g-tint) / var(--g-tint-a, 0));
-  --pw-rail: rgb(var(--g-tint) / var(--g-tint-a, 0));
-  --pw-card: transparent;
-  --pw-card-strong: rgb(var(--g-ink) / 0.09);
-  --pw-pop: var(--g-pop);
-  --pw-sunken: rgb(var(--g-sink) / 0.18);
-  --pw-chip: rgb(var(--g-ink) / 0.07);
-  --pw-user-bg: rgb(var(--g-ink) / 0.1);
-  --pw-code-bg: transparent;
-  --pw-fg-strong: var(--g-fg0);
-  --pw-fg: var(--g-fg2);
-  --pw-fg-2: var(--g-fg2);
-  --pw-fg-3: var(--g-fg3);
-  --pw-fg-4: var(--g-fg4);
-  --pw-fg-5: var(--g-fg4);
-  --pw-accent: var(--g-accent);
-  --pw-accent-dim: color-mix(
-    in srgb,
-    var(--g-highlight, #e8a765) 75%,
-    transparent
-  );
-  --pw-accent-tint: color-mix(
-    in srgb,
-    var(--g-highlight, #e8a765) 12%,
-    transparent
-  );
-  --pw-accent-tint-2: color-mix(
-    in srgb,
-    var(--g-highlight, #e8a765) 18%,
-    transparent
-  );
-  --pw-accent-line: color-mix(
-    in srgb,
-    var(--g-highlight, #e8a765) 40%,
-    transparent
-  );
-  --pw-teal: #3fbfb0;
-  --pw-teal-tint: rgba(63, 191, 176, 0.12);
-  --pw-teal-line: rgba(63, 191, 176, 0.3);
-  --pw-green: #3ba55d;
-  --pw-red: #ff7a8a;
-  --pw-yellow: var(--g-highlight, #e8a765);
-  --pw-yellow-soft: color-mix(
-    in srgb,
-    var(--g-highlight, #e8a765) 25%,
-    transparent
-  );
-  --pw-orange: var(--g-accent);
-  --pw-stripe: rgb(var(--g-ink) / 0.05);
-  --pw-add-bg: rgba(95, 212, 154, 0.14);
-  --pw-add-fg: #2fae74;
-  --pw-add-line: rgba(95, 212, 154, 0.45);
-  --pw-add-sign: #2fae74;
-  --pw-del-bg: rgba(255, 122, 138, 0.12);
-  --pw-del-fg: #ff7a8a;
-  --pw-del-line: #ff7a8a;
-  --pw-del-sign: #ff7a8a;
+ --pw-panel: rgb(var(--g-tint) / var(--g-tint-a, 0));
+ --pw-rail: rgb(var(--g-tint) / var(--g-tint-a, 0));
+ --pw-card: transparent;
+ --pw-card-strong: rgb(var(--g-ink) / 0.09);
+ --pw-pop: var(--g-pop);
+ --pw-sunken: rgb(var(--g-sink) / 0.18);
+ --pw-chip: rgb(var(--g-ink) / 0.07);
+ --pw-user-bg: rgb(var(--g-ink) / 0.1);
+ --pw-code-bg: transparent;
+ --pw-fg-strong: var(--g-fg0);
+ --pw-fg: var(--g-fg2);
+ --pw-fg-2: var(--g-fg2);
+ --pw-fg-3: var(--g-fg3);
+ --pw-fg-4: var(--g-fg4);
+ --pw-fg-5: var(--g-fg4);
+ --pw-accent: var(--g-accent);
+ --pw-accent-dim: color-mix(
+  in srgb,
+  var(--g-highlight, #e8a765) 75%,
+  transparent
+ );
+ --pw-accent-tint: color-mix(
+  in srgb,
+  var(--g-highlight, #e8a765) 12%,
+  transparent
+ );
+ --pw-accent-tint-2: color-mix(
+  in srgb,
+  var(--g-highlight, #e8a765) 18%,
+  transparent
+ );
+ --pw-accent-line: color-mix(
+  in srgb,
+  var(--g-highlight, #e8a765) 40%,
+  transparent
+ );
+ --pw-teal: #3fbfb0;
+ --pw-teal-tint: rgba(63, 191, 176, 0.12);
+ --pw-teal-line: rgba(63, 191, 176, 0.3);
+ --pw-green: #3ba55d;
+ --pw-red: #ff7a8a;
+ --pw-yellow: var(--g-highlight, #e8a765);
+ --pw-yellow-soft: color-mix(
+  in srgb,
+  var(--g-highlight, #e8a765) 25%,
+  transparent
+ );
+ --pw-orange: var(--g-accent);
+ --pw-stripe: rgb(var(--g-ink) / 0.05);
+ --pw-add-bg: rgba(95, 212, 154, 0.14);
+ --pw-add-fg: #2fae74;
+ --pw-add-line: rgba(95, 212, 154, 0.45);
+ --pw-add-sign: #2fae74;
+ --pw-del-bg: rgba(255, 122, 138, 0.12);
+ --pw-del-fg: #ff7a8a;
+ --pw-del-line: #ff7a8a;
+ --pw-del-sign: #ff7a8a;
 }
 
 body[data-glass][data-ds-dark-theme] {
-  /* Dark tokens — matte, softened a step from the mockup: no glow, no
+ /* Dark tokens — matte, softened a step from the mockup: no glow, no
      near-white body text; emphasis comes from weight, not brightness. */
-  --g-fg: #d0cedb;
-  --g-fg0: #e6e4ee;
-  --g-fg2: #bcbac8;
-  --g-fg3: #93909e;
-  --g-fg4: #726f7c;
-  --g-ink: 255 255 255;
-  --g-sink: 0 0 0;
-  /* Lifted, near-neutral pane tint — matches the static theme's panel step.
+ --g-fg: #d0cedb;
+ --g-fg0: #e6e4ee;
+ --g-fg2: #bcbac8;
+ --g-fg3: #93909e;
+ --g-fg4: #726f7c;
+ --g-ink: 255 255 255;
+ --g-sink: 0 0 0;
+ /* Lifted, near-neutral pane tint — matches the static theme's panel step.
      At 12 13 17 the panes were black and the scene was the only colour. */
-  --g-tint: 32 32 37;
-  --g-pop: rgb(50 50 58 / 0.98);
-  --g-raised: rgb(var(--g-ink) / 0.1);
-  color-scheme: dark;
+ --g-tint: 32 32 37;
+ --g-pop: rgb(50 50 58 / 0.98);
+ --g-raised: rgb(var(--g-ink) / 0.1);
+ color-scheme: dark;
 
-  /* Panes follow the Glass tint slider so the scene shows through the
+ /* Panes follow the Glass tint slider so the scene shows through the
      sidebar and workspace the same way it does through the chat. */
-  --pw-panel: rgb(var(--g-tint) / var(--g-tint-a, 0));
-  --pw-rail: rgb(var(--g-tint) / var(--g-tint-a, 0));
-  --dsw-alias-bg-layer-3: rgb(var(--g-tint) / var(--g-tint-a, 0));
-  --dsw-specific-sidebar-fill: rgb(var(--g-tint) / var(--g-tint-a, 0));
-  /* Code themes (VS Code etc.) paint the editor with a solid background;
+ --pw-panel: rgb(var(--g-tint) / var(--g-tint-a, 0));
+ --pw-rail: rgb(var(--g-tint) / var(--g-tint-a, 0));
+ --dsw-alias-bg-layer-3: rgb(var(--g-tint) / var(--g-tint-a, 0));
+ --dsw-specific-sidebar-fill: rgb(var(--g-tint) / var(--g-tint-a, 0));
+ /* Code themes (VS Code etc.) paint the editor with a solid background;
      in glass mode the scene must show through the workspace editor too. */
-  --pw-code-bg: transparent;
+ --pw-code-bg: transparent;
 
-  --ds-status-success: #5fd49a;
-  --pw-green: #5fd49a;
-  --pw-add-fg: #5fd49a;
-  --pw-add-sign: #5fd49a;
-  --dsw-alias-state-error-primary: #ff7a8a;
-  --pw-del-fg: #ffb3bc;
-  --pw-del-bg: rgba(255, 90, 110, 0.12);
-  --pw-del-line: #ff7a8a;
+ --ds-status-success: #5fd49a;
+ --pw-green: #5fd49a;
+ --pw-add-fg: #5fd49a;
+ --pw-add-sign: #5fd49a;
+ --dsw-alias-state-error-primary: #ff7a8a;
+ --pw-del-fg: #ffb3bc;
+ --pw-del-bg: rgba(255, 90, 110, 0.12);
+ --pw-del-line: #ff7a8a;
 }
 
 /* The blur lives on the scene canvas (canvasFilter), not per pane: one
@@ -181,269 +181,268 @@ body[data-glass][data-ds-dark-theme] {
    over it (bg-base is transparent in glass mode, but child rules that set
    solid colors on html/body stay guarded here too). */
 body[data-glass] .app-frame {
-  background: transparent;
-  z-index: 1;
+ background: transparent;
+ z-index: 1;
 }
 body[data-glass] .center {
-  background: rgb(var(--g-tint) / var(--g-tint-a, 0));
+ background: rgb(var(--g-tint) / var(--g-tint-a, 0));
 }
 .app-frame {
-  position: relative;
+ position: relative;
 }
 
 /* ---------- 2. Layout grid ---------- */
 
-@media (min-width: 761px) {
-  /* Explicit placement for every pane — auto flow put the center in the
+@media (min-width: 1100px) {
+ /* Explicit placement for every pane — auto flow put the center in the
      sidebar's track because the nav-toggle button also participates. */
-  .app-frame > .sidebar {
-    grid-column: 1;
-    grid-row: 1 / -1;
-  }
-  .app-frame > .center {
-    grid-column: 2;
-    grid-row: 1;
-  }
+ .app-frame > .sidebar {
+  grid-column: 1;
+  grid-row: 1 / -1;
+ }
+ .app-frame > .center {
+  grid-column: 2;
+  grid-row: 1;
+ }
 
-  /* Classic: sidebar | center. */
-  .app-frame[data-layout="classic"] {
-    grid-template-columns: var(--pw-sidebar-width, 232px) minmax(0, 1fr);
-  }
+ /* Classic: sidebar | center. */
+ .app-frame[data-layout="classic"] {
+  grid-template-columns: var(--pw-sidebar-width, 232px) minmax(0, 1fr);
+ }
 }
-
 
 /* Segmented control, from the mockup's raised pill (settings modal). */
 .seg-control {
-  display: grid;
-  grid-auto-flow: column;
-  grid-auto-columns: 1fr;
-  gap: 2px;
-  padding: 2px;
-  margin: 8px;
-  border-radius: 9px;
-  background: var(--pw-sunken);
-  box-shadow:
-    inset 0 1px 2px rgba(0, 0, 0, 0.12),
-    inset 0 0 0 1px var(--dsw-alias-border-l1);
+ display: grid;
+ grid-auto-flow: column;
+ grid-auto-columns: 1fr;
+ gap: 2px;
+ padding: 2px;
+ margin: 8px;
+ border-radius: 9px;
+ background: var(--pw-sunken);
+ box-shadow:
+  inset 0 1px 2px rgba(0, 0, 0, 0.12),
+  inset 0 0 0 1px var(--dsw-alias-border-l1);
 }
 .seg-control__option {
-  height: 24px;
-  border: 0;
-  border-radius: 7px;
-  background: transparent;
-  color: var(--pw-fg-3);
-  font: 500 12px var(--dsw-font-family);
+ height: 24px;
+ border: 0;
+ border-radius: 7px;
+ background: transparent;
+ color: var(--pw-fg-3);
+ font: 500 12px var(--dsw-font-family);
 }
 .seg-control__option.is-active {
-  background: var(--g-raised, var(--pw-card-strong));
-  color: var(--pw-fg);
-  font-weight: 500;
-  box-shadow: inset 0 0 0 1px rgb(var(--g-ink, 38 32 24) / 0.1);
+ background: var(--g-raised, var(--pw-card-strong));
+ color: var(--pw-fg);
+ font-weight: 500;
+ box-shadow: inset 0 0 0 1px rgb(var(--g-ink, 38 32 24) / 0.1);
 }
 .seg-control__option:focus-visible {
-  outline: 2px solid var(--pw-accent);
-  outline-offset: 1px;
+ outline: 2px solid var(--pw-accent);
+ outline-offset: 1px;
 }
 
 /* ---------- 4. Settings → Appearance panels ---------- */
 
 .settings-section-label {
-  padding: 0 0 8px;
-  color: var(--pw-fg-4);
-  font: 500 10.5px var(--ds-font-family-code);
-  letter-spacing: 0.1em;
+ padding: 0 0 8px;
+ color: var(--pw-fg-4);
+ font: 500 10.5px var(--ds-font-family-code);
+ letter-spacing: 0.1em;
 }
 .settings-panel {
-  padding: 10px 16px;
-  border-radius: 16px;
-  background: var(--dsw-alias-bg-skeleton);
-  box-shadow: inset 0 0 0 1px var(--dsw-alias-border-l1);
-  margin-bottom: 18px;
+ padding: 10px 16px;
+ border-radius: 16px;
+ background: var(--dsw-alias-bg-skeleton);
+ box-shadow: inset 0 0 0 1px var(--dsw-alias-border-l1);
+ margin-bottom: 18px;
 }
 .settings-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  padding: 8px 0;
-  flex-wrap: wrap;
-  color: var(--pw-fg-2);
+ display: flex;
+ align-items: center;
+ justify-content: space-between;
+ gap: 16px;
+ padding: 8px 0;
+ flex-wrap: wrap;
+ color: var(--pw-fg-2);
 }
 .settings-row__label {
-  color: var(--pw-fg-2);
+ color: var(--pw-fg-2);
 }
 .settings-toggle {
-  position: relative;
-  width: 40px;
-  height: 24px;
-  border: 0;
-  border-radius: 99px;
-  background: var(--pw-chip);
-  cursor: pointer;
-  transition: background 0.2s;
+ position: relative;
+ width: 40px;
+ height: 24px;
+ border: 0;
+ border-radius: 99px;
+ background: var(--pw-chip);
+ cursor: pointer;
+ transition: background 0.2s;
 }
 .settings-toggle.is-on {
-  background: #4fbf7a;
+ background: #4fbf7a;
 }
 .settings-toggle::after {
-  content: "";
-  position: absolute;
-  top: 3px;
-  left: 3px;
-  width: 18px;
-  height: 18px;
-  border-radius: 50%;
-  background: #fdfdfe;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35);
-  transition: left 0.2s;
+ content: "";
+ position: absolute;
+ top: 3px;
+ left: 3px;
+ width: 18px;
+ height: 18px;
+ border-radius: 50%;
+ background: #fdfdfe;
+ box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35);
+ transition: left 0.2s;
 }
 .settings-toggle.is-on::after {
-  left: 19px;
+ left: 19px;
 }
 
 /* Slider row: label | custom track | value. The native range input is an
    invisible hit-target over a styled track, exactly like the mockup. */
 .settings-slider {
-  display: grid;
-  grid-template-columns: 110px minmax(0, 1fr) 56px;
-  align-items: center;
-  gap: 14px;
-  padding: 7px 0;
+ display: grid;
+ grid-template-columns: 110px minmax(0, 1fr) 56px;
+ align-items: center;
+ gap: 14px;
+ padding: 7px 0;
 }
 .settings-slider__label {
-  color: var(--pw-fg-2);
+ color: var(--pw-fg-2);
 }
 .settings-slider__track {
-  position: relative;
-  height: 22px;
-  display: flex;
-  align-items: center;
+ position: relative;
+ height: 22px;
+ display: flex;
+ align-items: center;
 }
 .settings-slider__rail {
-  position: absolute;
-  left: 0;
-  right: 0;
-  height: 6px;
-  border-radius: 99px;
-  background: var(--slider-track, rgb(var(--g-ink, 38 32 24) / 0.12));
-  box-shadow:
-    inset 0 1px 2px rgba(0, 0, 0, 0.18),
-    inset 0 0 0 1px var(--dsw-alias-border-l1);
+ position: absolute;
+ left: 0;
+ right: 0;
+ height: 6px;
+ border-radius: 99px;
+ background: var(--slider-track, rgb(var(--g-ink, 38 32 24) / 0.12));
+ box-shadow:
+  inset 0 1px 2px rgba(0, 0, 0, 0.18),
+  inset 0 0 0 1px var(--dsw-alias-border-l1);
 }
 .settings-slider__fill {
-  position: absolute;
-  left: 0;
-  width: var(--slider-pct, 0%);
-  height: 6px;
-  border-radius: 99px;
-  background: var(--pw-accent);
+ position: absolute;
+ left: 0;
+ width: var(--slider-pct, 0%);
+ height: 6px;
+ border-radius: 99px;
+ background: var(--pw-accent);
 }
 .settings-slider__knob {
-  position: absolute;
-  left: var(--slider-pct, 0%);
-  width: 16px;
-  height: 16px;
-  margin-left: -8px;
-  border-radius: 50%;
-  background: #fdfdfe;
-  box-shadow:
-    0 1px 3px rgba(0, 0, 0, 0.35),
-    inset 0 -1px 0 rgba(0, 0, 0, 0.12);
-  pointer-events: none;
+ position: absolute;
+ left: var(--slider-pct, 0%);
+ width: 16px;
+ height: 16px;
+ margin-left: -8px;
+ border-radius: 50%;
+ background: #fdfdfe;
+ box-shadow:
+  0 1px 3px rgba(0, 0, 0, 0.35),
+  inset 0 -1px 0 rgba(0, 0, 0, 0.12);
+ pointer-events: none;
 }
 .settings-slider input[type="range"] {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  margin: 0;
-  opacity: 0;
-  cursor: pointer;
+ position: absolute;
+ inset: 0;
+ width: 100%;
+ height: 100%;
+ margin: 0;
+ opacity: 0;
+ cursor: pointer;
 }
 .settings-slider__value {
-  text-align: right;
-  color: var(--pw-fg-3);
-  font: 12px var(--ds-font-family-code);
+ text-align: right;
+ color: var(--pw-fg-3);
+ font: 12px var(--ds-font-family-code);
 }
 
 /* Scene gallery tiles. */
 .settings-gallery {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
-  gap: 10px;
-  margin-bottom: 18px;
+ display: grid;
+ grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+ gap: 10px;
+ margin-bottom: 18px;
 }
 .settings-scene {
-  padding: 6px;
-  border: 0;
-  border-radius: 18px;
-  background: var(--dsw-alias-bg-skeleton);
-  box-shadow: inset 0 0 0 1px var(--dsw-alias-border-l1);
-  text-align: left;
-  cursor: pointer;
-  transition: all 0.2s;
+ padding: 6px;
+ border: 0;
+ border-radius: 18px;
+ background: var(--dsw-alias-bg-skeleton);
+ box-shadow: inset 0 0 0 1px var(--dsw-alias-border-l1);
+ text-align: left;
+ cursor: pointer;
+ transition: all 0.2s;
 }
 .settings-scene:hover {
-  background: var(--dsw-alias-interactive-bg-hover);
+ background: var(--dsw-alias-interactive-bg-hover);
 }
 .settings-scene.is-active {
-  background: rgb(var(--g-ink, 38 32 24) / 0.12);
-  box-shadow:
-    0 0 0 1px var(--dsw-alias-border-l3),
-    0 10px 24px -10px rgba(0, 0, 0, 0.6);
+ background: rgb(var(--g-ink, 38 32 24) / 0.12);
+ box-shadow:
+  0 0 0 1px var(--dsw-alias-border-l3),
+  0 10px 24px -10px rgba(0, 0, 0, 0.6);
 }
 .settings-scene__swatch {
-  height: 58px;
-  border-radius: 13px;
-  box-shadow: inset 0 0 0 1px rgb(var(--g-ink, 38 32 24) / 0.1);
+ height: 58px;
+ border-radius: 13px;
+ box-shadow: inset 0 0 0 1px rgb(var(--g-ink, 38 32 24) / 0.1);
 }
 .settings-scene__name {
-  padding: 7px 4px 2px;
-  font-weight: 500;
-  color: var(--pw-fg);
+ padding: 7px 4px 2px;
+ font-weight: 500;
+ color: var(--pw-fg);
 }
 .settings-scene__mood {
-  padding: 0 4px 3px;
-  color: var(--pw-fg-3);
-  font-size: 11.5px;
-  line-height: 1.35;
+ padding: 0 4px 3px;
+ color: var(--pw-fg-3);
+ font-size: 11.5px;
+ line-height: 1.35;
 }
 
 /* Palette pills. */
 .settings-palettes {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  padding: 0 0 12px;
+ display: flex;
+ flex-wrap: wrap;
+ gap: 8px;
+ padding: 0 0 12px;
 }
 .settings-palette {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  height: 30px;
-  padding: 0 11px 0 6px;
-  border: 0;
-  border-radius: 999px;
-  background: var(--pw-chip);
-  color: var(--pw-fg-2);
-  font: 500 12px var(--dsw-font-family);
-  cursor: pointer;
+ display: flex;
+ align-items: center;
+ gap: 7px;
+ height: 30px;
+ padding: 0 11px 0 6px;
+ border: 0;
+ border-radius: 999px;
+ background: var(--pw-chip);
+ color: var(--pw-fg-2);
+ font: 500 12px var(--dsw-font-family);
+ cursor: pointer;
 }
 .settings-palette.is-active {
-  background: var(--g-raised, var(--pw-card-strong));
-  box-shadow: 0 0 0 1px var(--dsw-alias-border-l3);
+ background: var(--g-raised, var(--pw-card-strong));
+ box-shadow: 0 0 0 1px var(--dsw-alias-border-l3);
 }
 .settings-palette__swatch {
-  width: 18px;
-  height: 18px;
-  border-radius: 50%;
+ width: 18px;
+ height: 18px;
+ border-radius: 50%;
 }
 
 .settings-hint {
-  margin: 0;
-  color: var(--pw-fg-4);
-  font-size: 12px;
-  line-height: 1.5;
+ margin: 0;
+ color: var(--pw-fg-4);
+ font-size: 12px;
+ line-height: 1.5;
 }
 
 /* ---------- 7. Conversation UI, from the mockup ---------- */
@@ -453,70 +452,287 @@ body[data-glass] .center {
 body[data-glass] :is(.conversation-stage, .subagent-panel) .rich-text strong,
 body[data-glass] :is(.conversation-stage, .subagent-panel) .md-heading,
 body[data-glass] :is(.conversation-stage, .subagent-panel) .md-list li::before,
-body[data-glass][data-ds-dark-theme] :is(.conversation-stage, .subagent-panel) .rich-text strong,
-body[data-glass][data-ds-dark-theme] :is(.conversation-stage, .subagent-panel) .md-heading,
-body[data-glass][data-ds-dark-theme] :is(.conversation-stage, .subagent-panel) .md-list li::before {
-  color: var(--hl-text, var(--g-fg));
-  -webkit-font-smoothing: antialiased;
+body[data-glass][data-ds-dark-theme]
+ :is(.conversation-stage, .subagent-panel)
+ .rich-text
+ strong,
+body[data-glass][data-ds-dark-theme]
+ :is(.conversation-stage, .subagent-panel)
+ .md-heading,
+body[data-glass][data-ds-dark-theme]
+ :is(.conversation-stage, .subagent-panel)
+ .md-list
+ li::before {
+ color: var(--hl-text, var(--g-fg));
+ -webkit-font-smoothing: antialiased;
 }
 
 /* Inline code chips: the design's grey (or picked-color) rounded box with an
    inset ring, mono text in the message's own color. */
-body[data-glass] :is(.conversation-stage, .subagent-panel) .rich-text :not(pre) > code,
+body[data-glass]
+ :is(.conversation-stage, .subagent-panel)
+ .rich-text
+ :not(pre)
+ > code,
 body[data-glass][data-ds-dark-theme]
-  :is(.conversation-stage, .subagent-panel)
-  .rich-text
-  :not(pre)
-  > code {
-  border: 0;
-  border-radius: 6px;
-  padding: 0 6px;
-  margin: 0 1px;
-  background: var(--hl-chip-bg, rgb(var(--g-ink) / 0.08));
-  box-shadow: inset 0 0 0 1px var(--hl-ring, rgb(var(--g-ink) / 0.06));
-  color: var(--hl-chip-color, var(--g-fg));
-  font-size: 12.5px;
-  line-height: 1.7;
-  vertical-align: 1px;
+ :is(.conversation-stage, .subagent-panel)
+ .rich-text
+ :not(pre)
+ > code {
+ border: 0;
+ border-radius: 6px;
+ padding: 0 6px;
+ margin: 0 1px;
+ background: var(--hl-chip-bg, rgb(var(--g-ink) / 0.08));
+ box-shadow: inset 0 0 0 1px var(--hl-ring, rgb(var(--g-ink) / 0.06));
+ color: var(--hl-chip-color, var(--g-fg));
+ font-size: 12.5px;
+ line-height: 1.7;
+ vertical-align: 1px;
 }
 
 /* User bubble: matte raised card, right-tailed. */
 body[data-glass] :is(.conversation-stage, .subagent-panel) .user-msg,
-body[data-glass][data-ds-dark-theme] :is(.conversation-stage, .subagent-panel) .user-msg {
-  border: 0;
-  border-radius: 14px 14px 4px 14px;
-  padding: 7px 12px;
-  background: var(--g-raised);
+body[data-glass][data-ds-dark-theme]
+ :is(.conversation-stage, .subagent-panel)
+ .user-msg {
+ border: 0;
+ border-radius: 14px 14px 4px 14px;
+ padding: 7px 12px;
+ background: var(--g-raised);
 }
-body[data-glass] :is(.conversation-stage, .subagent-panel) .user-msg.is-editing {
-  box-shadow: inset 0 0 0 1px var(--g-accent);
+body[data-glass]
+ :is(.conversation-stage, .subagent-panel)
+ .user-msg.is-editing {
+ box-shadow: inset 0 0 0 1px var(--g-accent);
 }
 
 /* Composer card: matte rounded input box. */
 body[data-glass] .composer__card {
-  border: 0;
-  border-radius: 16px;
-  background: var(--g-raised);
-  box-shadow: inset 0 0 0 1px rgb(var(--g-ink) / 0.08);
+ border: 0;
+ border-radius: 16px;
+ background: var(--g-raised);
+ box-shadow: inset 0 0 0 1px rgb(var(--g-ink) / 0.08);
+}
+/* Dark glass: tinted near-black from the backdrop's dominant hue, see-through
+   and blurred so the photo glows behind it without fighting the text.
+   Shared by the composer and every dropdown so they read as one material. */
+body[data-glass][data-ds-dark-theme] {
+ --glass-fill:
+  linear-gradient(180deg, rgb(255 255 255 / 0.07), rgb(255 255 255 / 0.01) 45%),
+  linear-gradient(180deg, transparent 15%, rgb(0 0 0 / 0.16)),
+  color-mix(in srgb, var(--composer-tone, rgb(17 18 20)) 44%, transparent);
+ /* contrast(0.5) halves the photo's light/dark spread before the tint, so
+     a menu over dark treeline and the composer over bright mist land on the
+     same tone; brightness then sets how deep that shared tone sits.
+     saturate runs LAST: contrast pulls toward gray and halves chroma, so
+     saturating first left vivid backdrops (sunsets, custom photos) muddy
+     gray — only a gray-blue one like Summit Light survived it. */
+ --glass-filter: blur(24px) contrast(0.5) brightness(0.72) saturate(200%);
+ --glass-rim:
+  inset 0 0 0 1px rgb(255 255 255 / 0.1), inset 0 1px 0 rgb(255 255 255 / 0.12);
+}
+/* The card's blur lives on ::before: a backdrop-filter on the card itself
+   would clip what its child menus can blur to the card's own box, so the
+   model picker above it showed the page through sharp. */
+body[data-glass][data-ds-dark-theme] .composer__card {
+ isolation: isolate;
+ background: transparent;
+ box-shadow: var(--glass-rim);
+}
+body[data-glass][data-ds-dark-theme] .composer__card::before {
+ content: "";
+ position: absolute;
+ inset: 0;
+ z-index: -1;
+ border-radius: inherit;
+ background: var(--glass-fill);
+ -webkit-backdrop-filter: var(--glass-filter);
+ backdrop-filter: var(--glass-filter);
+ pointer-events: none;
+}
+body[data-glass][data-ds-dark-theme]
+ :is(
+  .composer__model-menu,
+  .composer__mode-menu,
+  .slash-menu,
+  .mention-menu,
+  .sidebar__session-popover,
+  .sidebar__filters,
+  .changes__menu,
+  .conversation-header__overflow-menu,
+  .session-header__menu,
+  .route-picker,
+  .route-setup__add-menu,
+  .turn-complete__menu,
+  .workspace-menu,
+  .workspace-picker__menu,
+  .usage-pop,
+  .app-footer__motion,
+  .editor-palette,
+  .update-tray
+ ) {
+ background: var(--glass-fill);
+ -webkit-backdrop-filter: var(--glass-filter);
+ backdrop-filter: var(--glass-filter);
+ box-shadow:
+  var(--glass-rim),
+  0 18px 40px -18px rgb(0 0 0 / 0.55);
 }
 body[data-glass] .composer__card:focus-within {
-  box-shadow: inset 0 0 0 1px var(--g-accent);
+ box-shadow: inset 0 0 0 1px var(--g-accent);
 }
+
+/* ---------- Picker & input pair: amber chrome from the "Picker on
+   Screenshot" design doc (2a/2b). Chrome colors only — every fill stays the
+   glass material. Amber tints ride --g-accent so the picked-highlight color
+   keeps driving them, like every other amber in the app. ---------- */
+
+/* 2a: the focused input box carries the full accent (Settings > highlight)
+   edge. */
+body[data-glass][data-ds-dark-theme] .composer__card:focus-within {
+ box-shadow: inset 0 0 0 1.5px var(--g-accent);
+}
+/* 2b: while the model picker is open it holds the amber edge + glow, and the
+   input box drops to a quiet warm border. The menu lives inside the card's
+   DOM, so :has() is a state hook, not a lookup. */
+body[data-glass][data-ds-dark-theme]
+.composer__card:has(.composer__model-menu) {
+ box-shadow: inset 0 0 0 1px rgb(255 240 220 / 0.13);
+}
+body[data-glass][data-ds-dark-theme] .composer__model-menu {
+ box-shadow:
+  inset 0 0 0 1.5px color-mix(in srgb, var(--g-accent) 60%, transparent),
+  0 0 36px -8px color-mix(in srgb, var(--g-accent) 22%, transparent),
+  0 18px 40px -18px rgb(0 0 0 / 0.55);
+}
+
+/* The model chip lights up: the amber pill that opened the picker. */
+body[data-glass][data-ds-dark-theme] .native-model-controls .composer__chip {
+ background: color-mix(in srgb, var(--g-accent) 16%, transparent);
+ box-shadow: inset 0 0 0 1px
+  color-mix(in srgb, var(--g-accent) 45%, transparent);
+ color: #f3efe9;
+}
+body[data-glass][data-ds-dark-theme]
+ .native-model-controls
+ .composer__chip:hover,
+body[data-glass][data-ds-dark-theme]
+ .native-model-controls
+ .composer__chip.is-open {
+ background: rgb(255 240 220 / 0.1);
+ box-shadow: inset 0 0 0 1px
+  color-mix(in srgb, var(--g-accent) 50%, transparent);
+ color: #f3efe9;
+}
+
+/* Picker selection: warm tint on the browsed / keyboard-highlighted model
+   row, amber agent pill in the AGENT column, amber check on the in-use model. */
+body[data-glass][data-ds-dark-theme]
+ .composer__model-menu
+ .composer__model-list
+ button:hover,
+body[data-glass][data-ds-dark-theme]
+ .composer__model-menu
+ .composer__model-list
+ button.is-highlighted,
+body[data-glass][data-ds-dark-theme]
+ .composer__model-menu
+ .composer__model-list
+ button.is-active.is-highlighted,
+body[data-glass][data-ds-dark-theme]
+ .composer__model-menu
+ .composer__model-list
+ button.is-active:hover {
+ background: rgb(255 240 220 / 0.07);
+ color: #f3efe9;
+}
+body[data-glass][data-ds-dark-theme]
+ .composer__model-menu
+ .composer__model-list
+ button
+ .composer__model-check {
+ color: var(--g-accent);
+}
+body[data-glass][data-ds-dark-theme]
+ .composer__model-menu
+ .composer__model-backends
+ button.is-active,
+body[data-glass][data-ds-dark-theme]
+ .composer__model-menu
+ .composer__model-backends
+ button.is-active:hover {
+ background: color-mix(in srgb, var(--g-accent) 14%, transparent);
+ box-shadow: inset 0 0 0 1px
+  color-mix(in srgb, var(--g-accent) 30%, transparent);
+}
+
+/* Thinking time track: warm rail and labels, amber fill + knob (no glow ring). */
+body[data-glass][data-ds-dark-theme] .composer__model-menu .think-track__base {
+ background: rgb(255 240 220 / 0.13);
+}
+body[data-glass][data-ds-dark-theme] .composer__model-menu .think-track__fill {
+ background: linear-gradient(
+  90deg,
+  color-mix(in srgb, var(--g-accent) 35%, transparent),
+  var(--g-accent)
+ );
+}
+body[data-glass][data-ds-dark-theme] .composer__model-menu .think-track__label {
+ color: #9b958c;
+}
+body[data-glass][data-ds-dark-theme] .composer__model-menu .think-track__est {
+ color: #f3efe9;
+}
+body[data-glass][data-ds-dark-theme] .composer__model-menu .think-track__name {
+ color: #8a847b;
+}
+body[data-glass][data-ds-dark-theme]
+ .composer__model-menu
+ .think-track__name:hover {
+ color: #9b958c;
+}
+body[data-glass][data-ds-dark-theme]
+ .composer__model-menu
+ .think-track__name.is-current,
+body[data-glass][data-ds-dark-theme]
+ .composer__model-menu
+ .think-track__name.is-current:hover {
+ color: #f3efe9;
+}
+body[data-glass][data-ds-dark-theme]
+ .composer__model-menu
+ .think-track__stop.is-on
+ i {
+ background: var(--g-accent);
+}
+body[data-glass][data-ds-dark-theme]
+ .composer__model-menu
+ .think-track__stop.is-current
+ i,
+body[data-glass][data-ds-dark-theme]
+ .composer__model-menu
+ .think-track__stop.is-current:hover
+ i {
+ background: var(--g-accent);
+ box-shadow: 0 0 0 4px color-mix(in srgb, var(--g-accent) 20%, transparent);
+}
+
 body[data-glass] .composer__textarea {
-  color: var(--g-fg);
+ color: var(--g-fg);
 }
 body[data-glass] .composer__textarea::placeholder {
-  color: var(--g-fg3);
+ color: var(--g-fg3);
 }
 
 /* ---------- 8. Workspace file dots ---------- */
 
 /* Per-file colored dots replace the file glyph, per the design tree. */
 .workspace-tree__dot {
-  flex: none;
-  width: 7px;
-  height: 7px;
-  border-radius: 2px;
+ flex: none;
+ width: 7px;
+ height: 7px;
+ border-radius: 2px;
 }
 
 /* ---------- 9. Opaque overlaps ---------- */
@@ -524,17 +740,17 @@ body[data-glass] .composer__textarea::placeholder {
 /* Surfaces that cover other panes paint an opaque fill: bg-base is
    transparent in glass mode, which showed the conversation through the
    full-screen editor. */
-/* Docked beside the chat, the explorer is just another glass pane (mock's
-   editor section): tinted blur, no opaque editor slab. */
-body[data-glass] .workspace-explorer.is-side,
-body[data-glass] .workspace-explorer.is-side .workspace-explorer__head,
-body[data-glass] .workspace-explorer.is-side .workspace-explorer__tree,
-body[data-glass] .workspace-explorer.is-side .workspace-explorer__editor {
-  background: transparent;
+/* Docked, the explorer paints nothing (see workbenchSkin.css: it sits on
+   .center's surface). Only where it covers pane content — narrow screens,
+   full placement — does it turn opaque. */
+@media (max-width: 820px) {
+ body[data-glass] .workspace-explorer.is-side {
+  background: rgb(var(--g-tint) / 0.98);
+ }
 }
 
 body[data-glass] .workspace-explorer.is-full {
-  background: rgb(var(--g-tint) / 0.98);
+ background: rgb(var(--g-tint) / 0.98);
 }
 
 /* Floating panels that overlap pane content (sidebar popovers, transcript
@@ -544,40 +760,44 @@ body[data-glass] .sidebar__session-popover,
 body[data-glass] .sidebar__search-panel,
 body[data-glass] .sidebar__search-modal,
 body[data-glass] .viewer__panel {
-  background: var(--pw-pop);
+ background: var(--pw-pop);
 }
 
 /* Sticky toolbars that float over scrolling rows: opaque pane fill, no
    blur-through. */
 body[data-glass] .trajectory__toolbar,
 body[data-glass] .backend-log__toolbar {
-  background: rgb(var(--g-tint) / 0.98);
-  backdrop-filter: none;
-  -webkit-backdrop-filter: none;
+ background: rgb(var(--g-tint) / 0.98);
+ backdrop-filter: none;
+ -webkit-backdrop-filter: none;
 }
 
 /* Split view sits on the backdrop like a single session: the grid used to
    paint border-l3 behind its 1px gaps, which showed through the transparent
    panes as a grey sheet. Panes now separate by a transparent gutter. */
 body[data-glass] .session-grid.is-split {
-  gap: 8px;
-  background: transparent;
+ gap: 8px;
+ background: transparent;
 }
 
 /* Subagent panel floats over the chat: same tinted blur as other glass
    popovers so it reads like the main UI, not an opaque slab. */
 body[data-glass] .subagent-panel {
-  background: rgb(var(--g-tint) / 0.62);
-  border-color: var(--dsw-alias-border-l1);
-  backdrop-filter: blur(var(--g-blur, 18px)) saturate(1.2);
-  -webkit-backdrop-filter: blur(var(--g-blur, 18px)) saturate(1.2);
-  box-shadow: 0 18px 40px -18px rgb(0 0 0 / 0.55);
+ background: rgb(var(--g-tint) / 0.62);
+ border-color: var(--dsw-alias-border-l1);
+ backdrop-filter: blur(var(--g-blur, 18px)) saturate(1.2);
+ -webkit-backdrop-filter: blur(var(--g-blur, 18px)) saturate(1.2);
+ box-shadow: 0 18px 40px -18px rgb(0 0 0 / 0.55);
 }
 body[data-glass] .subagent-panel--running {
-  box-shadow: inset 3px 0 0 var(--pw-accent-line), 0 18px 40px -18px rgb(0 0 0 / 0.55);
+ box-shadow:
+  inset 3px 0 0 var(--pw-accent-line),
+  0 18px 40px -18px rgb(0 0 0 / 0.55);
 }
 body[data-glass] .subagent-panel--error {
-  box-shadow: inset 3px 0 0 rgba(236, 19, 19, 0.4), 0 18px 40px -18px rgb(0 0 0 / 0.55);
+ box-shadow:
+  inset 3px 0 0 rgba(236, 19, 19, 0.4),
+  0 18px 40px -18px rgb(0 0 0 / 0.55);
 }
 
 /* ---------- 8. Wallpaper photo backdrop (workbench redesign) ---------- */
@@ -629,7 +849,11 @@ body[data-glass] .subagent-panel--error {
  position: fixed;
  inset: 0;
  z-index: 0;
- background: linear-gradient(180deg, rgba(6, 7, 10, 0.45), rgba(6, 7, 10, 0.62));
+ background: linear-gradient(
+  180deg,
+  rgba(6, 7, 10, 0.45),
+  rgba(6, 7, 10, 0.62)
+ );
  pointer-events: none;
 }
 
@@ -664,4 +888,14 @@ body[data-glass] .subagent-panel--error {
 .settings-scene__swatch--photo {
  background-size: cover;
  background-position: center;
+}
+
+/* ---------- File-change cards on white paper: the pink delete wash +
+   6% grey box read darker than the dropdown's paper; drop both to the
+   dropdown's own near-paper grey (a touch more grey), keeping the red
+   sign, text and hairline so rows still read as deletions. Dark keeps
+   its pink-red diff wash. ---------- */
+html body[data-glass]:not([data-ds-dark-theme]) .trow__diff {
+ background: rgb(var(--g-ink) / 0.03);
+ box-shadow: inset 0 0 0 1px rgb(var(--g-ink) / 0.05);
 }

@@ -32,14 +32,17 @@ function IconClose({ size = 14 }: { size?: number }) {
 export function AskCard({
   questions,
   onAnswer,
+  onDismiss,
 }: {
-  questions: AskQuestion[];
-  onAnswer?: (text: string) => void;
+  questions: (AskQuestion & { isSecret?: boolean; link?: string })[];
+  onAnswer?: (text: string, answers: string[][]) => void | Promise<void>;
+  onDismiss?: () => void;
 }) {
   const [step, setStep] = useState(0);
   const [picked, setPicked] = useState<Record<number, string[]>>({});
   const [typed, setTyped] = useState<Record<number, string>>({});
   const [sent, setSent] = useState(false);
+  const [error, setError] = useState("");
   const [dismissed, setDismissed] = useState(false);
   const [collapsed, setCollapsed] = useState(false);
 
@@ -86,10 +89,15 @@ export function AskCard({
     })
     .filter((line): line is string => line !== null);
 
-  const submit = () => {
+  const submit = async () => {
     if (!interactive || answers.length === 0) return;
     setSent(true);
-    onAnswer!(answers.join("\n"));
+    try {
+      await onAnswer!(answers.join("\n"), questions.map((_, questionIndex) => (picked[questionIndex] ?? []).map((label) => label === OTHER ? typed[questionIndex]?.trim() ?? "" : label).filter(Boolean)));
+    } catch (failure) {
+      setSent(false);
+      setError(String(failure instanceof Error ? failure.message : failure));
+    }
   };
 
   const goNext = () => {
@@ -105,7 +113,7 @@ export function AskCard({
     if (last) {
       if (interactive) {
         if (answers.length > 0) submit();
-        else setDismissed(true);
+        else { setDismissed(true); onDismiss?.(); }
       }
       return;
     }
@@ -139,12 +147,14 @@ export function AskCard({
             type="button"
             className="ask-card__icon-btn"
             aria-label="Dismiss"
-            onClick={() => setDismissed(true)}
+            onClick={() => { setDismissed(true); onDismiss?.(); }}
           >
             <IconClose />
           </button>
         </div>
       </div>
+      {question.link && /^https?:\/\//i.test(question.link) && <a href={question.link} target="_blank" rel="noreferrer">Open authorization page</a>}
+      {error && <p role="alert">{error}</p>}
       {!collapsed && (
         <>
           <div className="ask-card__options" role="group">
@@ -178,7 +188,7 @@ export function AskCard({
                     {isOther && (
                       <input
                         className="ask-card__typed"
-                        type="text"
+                        type={question.isSecret ? "password" : "text"}
                         disabled={!interactive}
                         placeholder="Type your own answer here"
                         value={typed[index] ?? ""}

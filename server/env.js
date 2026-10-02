@@ -2,6 +2,13 @@
 // start path (npm run dev, preview, deploy restart) has env vars before any
 // other module reads process.env. Existing env wins; no dotenv dependency.
 import { readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { delimiter, join } from "node:path";
+
+// Agents installed from Connect belong to this user, including on cloud VMs.
+const agentBin = join(homedir(), ".local", "bin");
+if (!(process.env.PATH || "").split(delimiter).includes(agentBin))
+  process.env.PATH = `${process.env.PATH || ""}${delimiter}${agentBin}`;
 
 try {
   for (const line of readFileSync(

@@ -37,7 +37,7 @@ function start() {
   const startedAt = Date.now();
   child = spawn(process.execPath, [ENTRY, ...PASS_THROUGH_ARGS], {
     stdio: "inherit",
-    cwd: ROOT,
+    cwd: process.cwd(),
     env: process.env,
   });
   child.on("exit", (code, signal) => {

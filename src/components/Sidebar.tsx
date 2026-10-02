@@ -31,6 +31,7 @@ import {
   sessionMetaLine,
 } from "../lib/sessionModels";
 import { BACKEND_DEFAULT_MODEL, type ConversationTab } from "../lib/store";
+import { MAX_SPLIT_PANES } from "../lib/sessionLayout";
 import {
   FishLogo,
   IconArchive,
@@ -64,6 +65,9 @@ function workspaceLabel(cwd: string): string {
 
 const FILTERS_KEY = "devden.session-filters";
 const LEGACY_MODEL_FILTER_KEY = "devden.session-model-filter";
+// Sidebar folders show the last 12h of sessions inline; older ones hide
+// behind a "Show N older sessions" toggle.
+const RECENT_WINDOW_MS = 12 * 60 * 60 * 1000;
 
 function loadSessionFilters(): { backends: AgentBackend[]; models: string[] } {
   try {
@@ -146,6 +150,7 @@ export function Sidebar({
   onSplitSessionsToggle,
   onSessionFocus,
   onSessionSplit,
+  onPaneLimit,
   openTabKeys,
   terminalOpen = false,
   onTerminalToggle,
@@ -163,6 +168,8 @@ export function Sidebar({
   onSplitSessionsToggle: () => void;
   onSessionFocus: (key: string) => void;
   onSessionSplit: (key: string) => void;
+  /** A split button was used with the grid already full. */
+  onPaneLimit: () => void;
   openTabKeys: string[];
   terminalOpen?: boolean;
   onTerminalToggle?: () => void;
@@ -237,6 +244,9 @@ export function Sidebar({
   const [collapsedWorkspaces, setCollapsedWorkspaces] = useState<
     ReadonlySet<string>
   >(new Set());
+  const [expandedGroups, setExpandedGroups] = useState<ReadonlySet<string>>(
+    new Set(),
+  );
   const initializedWorkspaceGroups = useRef(false);
   const {
     tabs,
@@ -317,10 +327,13 @@ export function Sidebar({
       const key = session.cwd || "Other";
       groups.set(key, [...(groups.get(key) ?? []), session]);
     }
+    const cutoff = Date.now() - RECENT_WINDOW_MS;
     return [...groups.entries()].map(([cwd, sessions]) => ({
       cwd,
       label: workspaceLabel(cwd),
       sessions,
+      recent: sessions.filter((session) => session.modifiedAt >= cutoff),
+      older: sessions.filter((session) => session.modifiedAt < cutoff),
     }));
   }, [visibleSessions]);
 
@@ -338,7 +351,9 @@ export function Sidebar({
         workspaceGroups
           .filter((group) => !openWorkspaces.has(group.cwd))
           .filter((group) =>
-            group.sessions.every((session) => session.modifiedAt < recentCutoff),
+            group.sessions.every(
+              (session) => session.modifiedAt < recentCutoff,
+            ),
           )
           .map((group) => group.cwd),
       ),
@@ -373,10 +388,23 @@ export function Sidebar({
     };
   }, [openSessionMenu, openWorkspaceMenu, backendMenuOpen]);
 
+  // A full split grid: every open-beside button reads disabled and, if
+  // clicked anyway, explains why instead of spawning a hidden session.
+  const splitFull = splitSessions && openTabKeys.length >= MAX_SPLIT_PANES;
+  const guardSplit = (run: () => void) => () =>
+    splitFull ? onPaneLimit() : run();
+
   const startFresh = async (cwd?: string) => {
+    if (collapsed && splitFull) {
+      onPaneLimit();
+      return;
+    }
     onViewChange("sessions");
     const key = cwd ? openConversation(cwd) : await openDefaultConversation();
-    onSessionFocus(key);
+    // The rail's + is the only way in while a crowded split keeps the
+    // sidebar shut, so there it adds a pane instead of leaving the split.
+    if (collapsed && splitSessions) onSessionSplit(key);
+    else onSessionFocus(key);
   };
 
   // No page reload: reloading with ?backend= threw away every open session,
@@ -463,6 +491,15 @@ export function Sidebar({
 
   const toggleWorkspace = (cwd: string) => {
     setCollapsedWorkspaces((current) => {
+      const next = new Set(current);
+      if (next.has(cwd)) next.delete(cwd);
+      else next.add(cwd);
+      return next;
+    });
+  };
+
+  const toggleGroupOlder = (cwd: string) => {
+    setExpandedGroups((current) => {
       const next = new Set(current);
       if (next.has(cwd)) next.delete(cwd);
       else next.add(cwd);
@@ -598,11 +635,6 @@ export function Sidebar({
   return (
     <aside className={`sidebar${collapsed ? " is-collapsed" : ""}`}>
       <div className="sidebar__brand-row">
-        <span className="sidebar__traffic" aria-hidden="true">
-          <i className="is-close" />
-          <i className="is-min" />
-          <i className="is-max" />
-        </span>
         {!collapsed && (
           <div className="sidebar__backend-menu sidebar__floating-menu">
             <button
@@ -618,15 +650,7 @@ export function Sidebar({
                 setBackendMenuOpen((open) => !open);
               }}
             >
-              <span
-                className="sidebar__backend-logo"
-                style={{ color: backendMark(currentBackend).color }}
-                aria-hidden
-              >
-                <BackendLogo backend={currentBackend} size={16} />
-              </span>
               <span className="sidebar__backend-copy">
-                <strong>{backendLabel(currentBackend).toLowerCase()}</strong>
                 <em>
                   {backendModelLine(
                     currentBackend,
@@ -687,9 +711,11 @@ export function Sidebar({
                         className="sidebar__backend-beside"
                         aria-label={`Open a ${backendLabel(backend)} session beside this one`}
                         title={`Open a ${backendLabel(backend)} session beside this one`}
+                        aria-disabled={splitFull || undefined}
+                        data-limit={splitFull ? "" : undefined}
                         onClick={(event) => {
                           event.stopPropagation();
-                          openBeside(backend);
+                          guardSplit(() => openBeside(backend))();
                         }}
                       >
                         <IconPlus size={12} />
@@ -738,6 +764,9 @@ export function Sidebar({
             className="sidebar__new"
             onClick={() => startFresh()}
             aria-label="New session"
+            aria-disabled={splitFull || undefined}
+            data-limit={splitFull ? "" : undefined}
+            title="New session"
           >
             <IconPlus size={18} />
           </button>
@@ -840,7 +869,9 @@ export function Sidebar({
                     className="sidebar__item-new"
                     aria-label={`Open another ${backendLabel(tab.backend)} session`}
                     title={`Open another ${backendLabel(tab.backend)} session`}
-                    onClick={() => openBesideTab(tab)}
+                    aria-disabled={splitFull || undefined}
+                    data-limit={splitFull ? "" : undefined}
+                    onClick={guardSplit(() => openBesideTab(tab))}
                   >
                     <IconPlus size={14} />
                   </button>
@@ -854,7 +885,20 @@ export function Sidebar({
                       className="sidebar__item-split"
                       aria-label={`Split with ${tab.label}`}
                       title="Open in split view"
-                      onClick={() => splitOpenSession(tab.key)}
+                      aria-disabled={
+                        (splitFull && !openTabKeys.includes(tab.key)) ||
+                        undefined
+                      }
+                      data-limit={
+                        splitFull && !openTabKeys.includes(tab.key)
+                          ? ""
+                          : undefined
+                      }
+                      onClick={
+                        openTabKeys.includes(tab.key)
+                          ? () => splitOpenSession(tab.key)
+                          : guardSplit(() => splitOpenSession(tab.key))
+                      }
                     >
                       <IconColumns size={14} />
                     </button>
@@ -1191,6 +1235,7 @@ export function Sidebar({
           {workspaceGroups.map((group) => {
             const groupCollapsed =
               !filtersActive && collapsedWorkspaces.has(group.cwd);
+            const groupOlderOpen = expandedGroups.has(group.cwd);
             return (
               <section className="sidebar__workspace" key={group.cwd}>
                 <div className="sidebar__workspace-head">
@@ -1278,164 +1323,186 @@ export function Sidebar({
                 </div>
 
                 {!groupCollapsed &&
-                  group.sessions.map((session) => {
-                    const matchingTab = tabs.find(
-                      (tab) =>
-                        tab.sessionPath === session.path ||
-                        tab.timeline.state?.sessionFile === session.path,
-                    );
-                    // `tabs` keeps every conversation opened since page
-                    // load, including ones long gone from the screen — in
-                    // focus mode `visibleTabs` is just the active one. Judging
-                    // "open" from `tabs` gave an open-dot to every session you
-                    // had ever clicked, for the life of the page, while the
-                    // Open card above listed a single row. The dot now agrees
-                    // with that card. Running/awaiting still read the live
-                    // timeline off `matchingTab` (and `runningPaths` covers
-                    // every tab), so a background session that is genuinely
-                    // working still blinks.
-                    const isOpen = openTabs.some(
-                      (tab) => tab.key === matchingTab?.key,
-                    );
-                    const isRunning = Boolean(
-                      (matchingTab && workingKeys.has(matchingTab.key)) ||
-                        runningPaths.has(session.path) ||
-                        session.isStreaming,
-                    );
-                    // An open session is judged from its live timeline; a
-                    // closed one from the tail the server sent, so a session
-                    // parked on a question is visible before you open it.
-                    const isAwaiting = matchingTab
-                      ? !isRunning && awaitingKeys.has(matchingTab.key)
-                      : textAwaitsAnswer(session.lastAssistantText);
-                    // The list's stored name only appears once the turn
-                    // settles and set_session_name persists it; the open
-                    // tab's timeline already carries the live generated
-                    // title (session_title_set lands seconds after the
-                    // first prompt). Prefer it so the panel and the
-                    // conversation header agree during that window.
-                    const liveName =
-                      matchingTab?.timeline.state?.sessionName?.trim();
-                    const title = savedSessionTitle(
-                      liveName || session.name,
-                      session.firstPrompt,
-                    );
-                    const mark = backendMark(session.backend);
-                    return (
-                      <div className="sidebar__saved-row" key={session.path}>
-                        <button
-                          type="button"
-                          className={`sidebar__item sidebar__item--saved${isOpen ? " is-active-session" : ""}${isRunning ? " is-running" : ""}${isAwaiting ? " is-awaiting" : ""}`}
-                          aria-label={
-                            isRunning
-                              ? `${title}, running`
-                              : isAwaiting
-                                ? `${title}, waiting for your answer`
-                                : undefined
-                          }
-                          title={session.path}
-                          onClick={() => focusSavedSession(session)}
-                        >
-                          <span className="sidebar__status" aria-hidden>
-                            {isRunning ? (
-                              <span
-                                className="sidebar__run-dot"
-                                title="Running"
-                              />
-                            ) : isAwaiting ? (
-                              <span
-                                className="sidebar__await-dot"
-                                title="Waiting for your answer"
-                              />
-                            ) : isOpen ? (
-                              <span
-                                className="sidebar__open-dot"
-                                title="Open"
-                              />
-                            ) : null}
-                          </span>
-                          <span className="sidebar__item-stack">
-                            <span className="sidebar__item-label">{title}</span>
-                            <span className="sidebar__item-sub">
-                              <span
-                                className="sidebar__agent-mark"
-                                style={{ color: mark.color }}
-                              >
-                                <BackendLogo
-                                  backend={session.backend}
-                                  size={12}
-                                />
-                              </span>
-                              <span className="sidebar__item-sub-text">
-                                {sessionMetaLine(session)}
-                              </span>
-                            </span>
-                          </span>
-                          <span className="sidebar__item-time">
-                            {formatRelativeTime(session.modifiedAt)}
-                          </span>
-                        </button>
-                        <button
-                          type="button"
-                          className="sidebar__saved-split"
-                          aria-label={`Open ${title} in a new tab`}
-                          onClick={() => splitSavedSession(session)}
-                        >
-                          <IconOpenTab size={12} />
-                        </button>
-                        <div className="sidebar__session-menu sidebar__floating-menu">
+                  (groupOlderOpen ? group.sessions : group.recent).map(
+                    (session) => {
+                      const matchingTab = tabs.find(
+                        (tab) =>
+                          tab.sessionPath === session.path ||
+                          tab.timeline.state?.sessionFile === session.path,
+                      );
+                      // `tabs` keeps every conversation opened since page
+                      // load, including ones long gone from the screen — in
+                      // focus mode `visibleTabs` is just the active one. Judging
+                      // "open" from `tabs` gave an open-dot to every session you
+                      // had ever clicked, for the life of the page, while the
+                      // Open card above listed a single row. The dot now agrees
+                      // with that card. Running/awaiting still read the live
+                      // timeline off `matchingTab` (and `runningPaths` covers
+                      // every tab), so a background session that is genuinely
+                      // working still blinks.
+                      const isOpen = openTabs.some(
+                        (tab) => tab.key === matchingTab?.key,
+                      );
+                      const isRunning = Boolean(
+                        (matchingTab && workingKeys.has(matchingTab.key)) ||
+                          runningPaths.has(session.path) ||
+                          session.isStreaming,
+                      );
+                      // An open session is judged from its live timeline; a
+                      // closed one from the tail the server sent, so a session
+                      // parked on a question is visible before you open it.
+                      const isAwaiting = matchingTab
+                        ? !isRunning && awaitingKeys.has(matchingTab.key)
+                        : textAwaitsAnswer(session.lastAssistantText);
+                      // The list's stored name only appears once the turn
+                      // settles and set_session_name persists it; the open
+                      // tab's timeline already carries the live generated
+                      // title (session_title_set lands seconds after the
+                      // first prompt). Prefer it so the panel and the
+                      // conversation header agree during that window.
+                      const liveName =
+                        matchingTab?.timeline.state?.sessionName?.trim();
+                      const title = savedSessionTitle(
+                        liveName || session.name,
+                        session.firstPrompt,
+                      );
+                      const mark = backendMark(session.backend);
+                      return (
+                        <div className="sidebar__saved-row" key={session.path}>
                           <button
                             type="button"
-                            className="sidebar__session-trigger"
-                            aria-label={`Actions for ${title}`}
-                            aria-expanded={openSessionMenu === session.path}
-                            onClick={(event) => {
-                              event.stopPropagation();
-                              const rect =
-                                event.currentTarget.getBoundingClientRect();
-                              setSessionMenuOpensUp(
-                                window.innerHeight - rect.bottom < 116,
-                              );
-                              setOpenWorkspaceMenu(null);
-                              setOpenSessionMenu((current) =>
-                                current === session.path ? null : session.path,
-                              );
-                            }}
+                            className={`sidebar__item sidebar__item--saved${isOpen ? " is-active-session" : ""}${isRunning ? " is-running" : ""}${isAwaiting ? " is-awaiting" : ""}`}
+                            aria-label={
+                              isRunning
+                                ? `${title}, running`
+                                : isAwaiting
+                                  ? `${title}, waiting for your answer`
+                                  : undefined
+                            }
+                            title={session.path}
+                            onClick={() => focusSavedSession(session)}
                           >
-                            <IconDots />
+                            <span className="sidebar__status" aria-hidden>
+                              {isRunning ? (
+                                <span
+                                  className="sidebar__run-dot"
+                                  title="Running"
+                                />
+                              ) : isAwaiting ? (
+                                <span
+                                  className="sidebar__await-dot"
+                                  title="Waiting for your answer"
+                                />
+                              ) : isOpen ? (
+                                <span
+                                  className="sidebar__open-dot"
+                                  title="Open"
+                                />
+                              ) : null}
+                            </span>
+                            <span className="sidebar__item-stack">
+                              <span className="sidebar__item-label">
+                                {title}
+                              </span>
+                              <span className="sidebar__item-sub">
+                                <span
+                                  className="sidebar__agent-mark"
+                                  style={{ color: mark.color }}
+                                >
+                                  <BackendLogo
+                                    backend={session.backend}
+                                    size={12}
+                                  />
+                                </span>
+                                <span className="sidebar__item-sub-text">
+                                  {sessionMetaLine(session)}
+                                </span>
+                              </span>
+                            </span>
+                            <span className="sidebar__item-time">
+                              {formatRelativeTime(session.modifiedAt)}
+                            </span>
                           </button>
-                          {openSessionMenu === session.path && (
-                            <div
-                              className={`sidebar__session-popover${sessionMenuOpensUp ? " is-upwards" : ""}`}
+                          <button
+                            type="button"
+                            className="sidebar__saved-split"
+                            aria-label={`Open ${title} in a new tab`}
+                            aria-disabled={splitFull || undefined}
+                            data-limit={splitFull ? "" : undefined}
+                            onClick={guardSplit(() =>
+                              splitSavedSession(session),
+                            )}
+                          >
+                            <IconOpenTab size={12} />
+                          </button>
+                          <div className="sidebar__session-menu sidebar__floating-menu">
+                            <button
+                              type="button"
+                              className="sidebar__session-trigger"
+                              aria-label={`Actions for ${title}`}
+                              aria-expanded={openSessionMenu === session.path}
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                const rect =
+                                  event.currentTarget.getBoundingClientRect();
+                                setSessionMenuOpensUp(
+                                  window.innerHeight - rect.bottom < 116,
+                                );
+                                setOpenWorkspaceMenu(null);
+                                setOpenSessionMenu((current) =>
+                                  current === session.path
+                                    ? null
+                                    : session.path,
+                                );
+                              }}
                             >
-                              {sessionView === "recent" ? (
-                                <button
-                                  type="button"
-                                  onClick={() => void handleArchive(session)}
-                                >
-                                  <IconArchive /> Archive
-                                </button>
-                              ) : (
-                                <button
-                                  type="button"
-                                  onClick={() => void handleRestore(session)}
-                                >
-                                  <IconRestore /> Restore
-                                </button>
-                              )}
-                              <button
-                                type="button"
-                                className="is-danger"
-                                onClick={() => void handleDelete(session)}
+                              <IconDots />
+                            </button>
+                            {openSessionMenu === session.path && (
+                              <div
+                                className={`sidebar__session-popover${sessionMenuOpensUp ? " is-upwards" : ""}`}
                               >
-                                <IconTrash /> Delete permanently
-                              </button>
-                            </div>
-                          )}
+                                {sessionView === "recent" ? (
+                                  <button
+                                    type="button"
+                                    onClick={() => void handleArchive(session)}
+                                  >
+                                    <IconArchive /> Archive
+                                  </button>
+                                ) : (
+                                  <button
+                                    type="button"
+                                    onClick={() => void handleRestore(session)}
+                                  >
+                                    <IconRestore /> Restore
+                                  </button>
+                                )}
+                                <button
+                                  type="button"
+                                  className="is-danger"
+                                  onClick={() => void handleDelete(session)}
+                                >
+                                  <IconTrash /> Delete permanently
+                                </button>
+                              </div>
+                            )}
+                          </div>
                         </div>
-                      </div>
-                    );
-                  })}
+                      );
+                    },
+                  )}
+                {!groupCollapsed && group.older.length > 0 && (
+                  <button
+                    type="button"
+                    className="sidebar__older-toggle"
+                    aria-expanded={groupOlderOpen}
+                    onClick={() => toggleGroupOlder(group.cwd)}
+                  >
+                    {groupOlderOpen
+                      ? `Hide ${group.older.length} older sessions`
+                      : `Show ${group.older.length} older sessions`}
+                  </button>
+                )}
               </section>
             );
           })}

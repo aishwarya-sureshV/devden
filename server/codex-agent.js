@@ -10,6 +10,8 @@
  * conversations, turns are turns, and `item/*` notifications are the
  * streaming blocks -- so the work here is translation, not bookkeeping.
  */
+import { readFile } from "node:fs/promises";
+import { codexUsageFrom as usageFrom, codexUserContent as userContent, readCodexLog } from "./codex-history.js";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
@@ -28,8 +30,9 @@ import { CodexAppServer, codexRequest } from "./codex-app-server.js";
 import { loadCodexUsage } from "./codex-usage.js";
 import {
   repoContext,
-  stripClarifyPrefix,
-  withClarifyPrefix,
+  CO_PARTNER_PROMPT,
+  CO_PARTNER_PROMPT_MANUAL,
+  CLARIFY_PROMPT,
 } from "./co-partner-prompt.js";
 
 export const CODEX_SESSIONS_ROOT = () =>
@@ -39,27 +42,7 @@ const DEFAULT_MODEL_ID = "gpt-5.6-terra";
 const USAGE_CACHE_TTL_MS = 5 * 60_000;
 
 function zeroUsage() {
-  return {
-    input: 0,
-    output: 0,
-    cacheRead: 0,
-    cacheWrite: 0,
-    totalTokens: 0,
-    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-  };
-}
-
-function usageFrom(tokenUsage) {
-  const last = tokenUsage?.last ?? tokenUsage?.total;
-  if (!last) return zeroUsage();
-  return {
-    input: Number(last.inputTokens ?? 0),
-    output: Number(last.outputTokens ?? 0),
-    cacheRead: Number(last.cachedInputTokens ?? 0),
-    cacheWrite: Number(last.cacheWriteInputTokens ?? 0),
-    totalTokens: Number(last.totalTokens ?? 0),
-    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-  };
+  return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0 };
 }
 
 /**
@@ -72,13 +55,6 @@ export function threadIdFromPath(sessionPath) {
   return match?.[1];
 }
 
-function textOfUserInput(content) {
-  return (content ?? [])
-    .map((part) => (part?.type === "text" ? (part.text ?? "") : ""))
-    .filter(Boolean)
-    .join("");
-}
-
 /**
  * Every thread item that is not a message or reasoning renders as a tool
  * card. Returns the display name plus the arguments the card shows, or
@@ -86,6 +62,17 @@ function textOfUserInput(content) {
  */
 function toolCallOf(item) {
   switch (item.type) {
+    case "collabAgentToolCall":
+      return {
+        name: item.tool === "spawnAgent" ? "spawn_subagent" : item.tool,
+        arguments: { prompt: item.prompt, model: item.model, agents: item.receiverThreadIds },
+        output: JSON.stringify(item.agentsStates ?? {}), failed: item.status === "failed",
+      };
+    case "imageGeneration":
+    case "sleep":
+    case "enteredReviewMode":
+    case "exitedReviewMode":
+      return { name: item.type, arguments: item, output: item.result ?? item.review ?? "", failed: item.status === "failed" };
     case "commandExecution":
       return {
         name: "shell",
@@ -177,6 +164,12 @@ class CodexAgentProcess {
     this.lastState = undefined;
     this.listeners = new Set();
     this.turn = undefined;
+    this.pendingUserInputs = new Map();
+    this.nativeApprovals = new Map();
+    this.nativeChildren = new Map();
+    this.openSubagents = new Set();
+    this.nativeToolEnds = new Map();
+    this.tokenUsage = undefined;
     // See GrokAgentProcess: replayed history is returned synchronously from
     // start(), so re-emitting it as live events would double-render it.
     this.suppressReplayEvents = false;
@@ -241,7 +234,26 @@ class CodexAgentProcess {
     });
   }
 
-  async start(cwd, options = {}) {
+  start(cwd, options = {}) {
+    if (this.starting) return this.starting;
+    this.starting = this.startSession(cwd, options).finally(() => { this.starting = undefined; });
+    return this.starting;
+  }
+
+  threadConfig(cwd = this.cwd) {
+    return {
+      cwd, sandbox: this.agentMode === "plan" ? "read-only" : this.accessMode,
+      approvalPolicy: this.approvalGate.enabled ? "untrusted" : "never",
+      developerInstructions: [
+        this.agentMode === "manual" ? CO_PARTNER_PROMPT_MANUAL : CO_PARTNER_PROMPT,
+        CLARIFY_PROMPT, repoContext(cwd),
+        this.agentMode === "plan" ? "Plan only. Inspect and explain the proposed changes; do not edit files or execute changes." : "",
+      ].filter(Boolean).join("\n"),
+      ...(this.model?.id ? { model: this.model.id } : {}),
+    };
+  }
+
+  async startSession(cwd, options = {}) {
     if (this.connection?.running)
       return { ok: true, state: await this.getState() };
     let effectiveCwd = cwd;
@@ -273,17 +285,14 @@ class CodexAgentProcess {
     this.connection = connection;
     connection.onNotification((message) => this.handleNotification(message));
     connection.onServerRequest((message) => this.handleServerRequest(message));
+    connection.onFailure((error) => this.connectionFailed(error));
     try {
       await connection.start();
-      const config = {
-        cwd: effectiveCwd,
-        sandbox: this.accessMode,
-        // Manual mode asks the human per untrusted command via
-        // execCommandApproval; otherwise devden owns the access decision
-        // through accessMode and asking would hang the turn.
-        approvalPolicy: this.agentMode === "manual" ? "untrusted" : "never",
-        ...(this.model?.id ? { model: this.model.id } : {}),
-      };
+      const config = this.threadConfig(effectiveCwd);
+      this.tokenUsage = undefined;
+      this.historyStats = undefined;
+      this.messages = [];
+      this.turnRecords = [];
       const resumeId =
         threadIdFromPath(options.sessionPath) ?? options.threadId;
       const opened = resumeId
@@ -305,6 +314,13 @@ class CodexAgentProcess {
           ? options.thinkingLevel
           : opened.reasoningEffort,
       );
+      if (resumeId && this.sessionFile) {
+        try {
+          const history = readCodexLog(await readFile(this.sessionFile, "utf8"));
+          this.tokenUsage = history.tokenUsage;
+          this.historyStats = new Map(history.turns.filter((turn) => turn.id).map((turn) => [turn.id, turn]));
+        } catch { /* remote/ephemeral threads may have no readable rollout */ }
+      }
       this.setStatus("ready");
       const replayedMessages = resumeId
         ? this.replayHistory(opened.thread.turns ?? [])
@@ -315,8 +331,8 @@ class CodexAgentProcess {
         : { ok: true, state };
     } catch (error) {
       const message = String(error?.message ?? error);
-      this.setStatus("error", message);
       this.stop();
+      this.setStatus("error", message);
       return { ok: false, error: message };
     }
   }
@@ -355,31 +371,25 @@ class CodexAgentProcess {
     let replayClock = 0;
     try {
       for (const turn of turns) {
-        const stamped = turnStamp(turn);
+        const stats = this.historyStats?.get(turn.id);
+        const stamped = turnStamp(stats ?? turn);
         replayClock = Number.isFinite(stamped)
           ? Math.max(stamped, replayClock + 1)
           : Math.max(Date.now(), replayClock + 1);
-        const userItem = (turn.items ?? []).find(
-          (item) => item.type === "userMessage",
-        );
-        const userMessage = {
-          role: "user",
-          content: [
-            {
-              type: "text",
-              text: stripClarifyPrefix(textOfUserInput(userItem?.content)),
-            },
-          ],
-          timestamp: replayClock,
-        };
+        const users = (turn.items ?? []).filter((item) => item.type === "userMessage").map((item, index) => ({
+          role: "user", content: userContent(item.content), timestamp: replayClock + index,
+        }));
         const assistantMessage = this.newAssistantMessage();
         assistantMessage.timestamp = replayClock;
+        assistantMessage.usage = stats?.usage ?? turn.usage;
+        assistantMessage.model = stats?.model ?? turn.model ?? assistantMessage.model;
+        replayClock += Math.max(0, users.length - 1);
         this.turn = {
           content: assistantMessage.content,
           message: assistantMessage,
           openKind: undefined,
           openIndex: undefined,
-          itemIndex: new Map(),
+          itemIndex: new Map(), results: [],
         };
         for (const item of turn.items ?? []) {
           if (item.type === "userMessage") continue;
@@ -396,7 +406,7 @@ class CodexAgentProcess {
             id: turn.id,
             timestamp: assistantMessage.timestamp,
           });
-        replayed.push(userMessage, assistantMessage);
+        replayed.push(...users, assistantMessage, ...this.turn.results);
       }
     } finally {
       this.turn = savedTurn;
@@ -412,7 +422,7 @@ class CodexAgentProcess {
       api: "codex",
       provider: "codex",
       model: this.model?.id ?? DEFAULT_MODEL_ID,
-      usage: zeroUsage(),
+      usage: undefined,
       stopReason: "pending",
       timestamp: Date.now(),
     };
@@ -420,72 +430,196 @@ class CodexAgentProcess {
 
   // ---- notification handling -------------------------------------------
 
+  reply(id, result, connection = this.connection) {
+    try { connection?.respond(id, result); } catch { /* transport already closed */ }
+  }
+
   handleServerRequest(message) {
-    // Manual mode answers the approval asks a human is actually watching;
-    // otherwise approvalPolicy "never" keeps these rare, and any that still
-    // arrive are declined rather than left blocking the turn forever.
-    const approvalMethods = new Set([
-      "execCommandApproval",
-      "applyPatchApproval",
-    ]);
-    if (
-      this.agentMode === "manual" &&
-      approvalMethods.has(message.method) &&
-      this.approvalGate.enabled
-    ) {
-      const params = message.params ?? {};
-      void this.approvalGate
-        .request({
-          toolName: "Bash",
-          title: message.method === "applyPatchApproval" ? "patch" : "command",
-          detail: params.command ?? params.reason,
-        })
-        .then(({ allow }) => {
-          this.connection?.respond(message.id, {
-            decision: allow ? "approved" : "denied",
-          });
-        })
-        .catch(() => {
-          this.connection?.respond(message.id, { decision: "denied" });
-        });
+    const connection = this.connection;
+    const params = message.params ?? {};
+    if (message.method === "item/tool/requestUserInput") {
+      const requestId = String(message.id);
+      const questions = (params.questions ?? []).map((question) => ({ ...question, options: question.options ?? [] }));
+      this.pendingUserInputs.set(requestId, { id: message.id, questions, connection, threadId: params.threadId ?? this.threadId });
+      this.emit({ type: "user_input_request", sessionKey: this.sessionKey, requestId, questions });
       return;
     }
-    const denial = {
-      decision: "denied",
-      "item/tool/requestUserInput": { response: null },
-    };
-    try {
-      this.connection?.respond(
-        message.id,
-        denial[message.method] ?? { decision: "denied" },
-      );
-    } catch {
-      /* connection already gone */
+    const legacy = ["execCommandApproval", "applyPatchApproval"].includes(message.method);
+    const command = message.method === "execCommandApproval" || message.method === "item/commandExecution/requestApproval";
+    const patch = message.method === "applyPatchApproval" || message.method === "item/fileChange/requestApproval";
+    const permissions = message.method === "item/permissions/requestApproval";
+    if (command || patch || permissions) {
+      const deny = permissions ? { permissions: {}, scope: "turn" } : { decision: legacy ? "denied" : "decline" };
+      if (!this.approvalGate.enabled || this.agentMode === "plan") { this.reply(message.id, deny, connection); return; }
+      const requestId = `codex-${message.id}`;
+      this.nativeApprovals.set(requestId, params.threadId ?? this.threadId);
+      void this.approvalGate.request({
+        requestId,
+        toolName: patch ? "Edit" : "Bash",
+        title: patch ? "patch" : permissions ? "additional permissions" : "command",
+        detail: params.command ?? params.reason ?? JSON.stringify(params.permissions ?? params.changes ?? {}),
+        options: [{ id: "allow", label: "Allow once" }, { id: "acceptForSession", label: "Allow for this session" }, { id: "deny", label: "Deny" }],
+      }).then(({ allow, choice }) => {
+        this.nativeApprovals.delete(requestId);
+        if (!allow) return this.reply(message.id, deny, connection);
+        this.reply(message.id, permissions
+          ? { permissions: params.permissions ?? {}, scope: choice === "acceptForSession" ? "session" : "turn" }
+          : { decision: legacy ? "approved" : choice === "acceptForSession" ? "acceptForSession" : "accept" }, connection);
+      }).catch(() => { this.nativeApprovals.delete(requestId); this.reply(message.id, deny, connection); });
+      return;
     }
+    if (message.method === "mcpServer/elicitation/request") {
+      const requestId = String(message.id);
+      const request = params.request ?? params;
+      const schema = request.requestedSchema ?? {};
+      const properties = Object.entries(schema.properties ?? {});
+      if (request.mode !== "url" && properties.some(([, property]) => !["string", "number", "integer", "boolean"].includes(property.type))) {
+        this.reply(message.id, { action: "decline", content: null, _meta: null }, connection);
+        this.emit({ type: "notice", sessionKey: this.sessionKey, message: "MCP requested a form with unsupported fields. It was declined.", tone: "warning" });
+        return;
+      }
+      const questions = request.mode === "url"
+        ? [{ id: "authorize", header: "MCP", question: request.message ?? "Complete authorization", link: request.url, options: [{ label: "Authorization completed" }] }]
+        : properties.map(([id, property]) => ({ id, header: params.serverName ?? "MCP", question: property.title ?? property.description ?? id, isSecret: property.format === "password", options: (property.enum ?? (property.type === "boolean" ? [true, false] : [])).map((value) => ({ label: String(value) })) }));
+      this.pendingUserInputs.set(requestId, { id: message.id, connection, threadId: params.threadId ?? this.threadId, elicitation: request, questions });
+      this.emit({ type: "user_input_request", sessionKey: this.sessionKey, requestId, questions });
+      return;
+    }
+    try { connection?.respondError(message.id, `Unsupported Codex request: ${message.method}`); } catch { /* closed */ }
+  }
+
+  resolveUserInput(requestId, answers) {
+    const entry = this.pendingUserInputs.get(String(requestId));
+    if (!entry) return { ok: false, error: "No pending Codex question with that id" };
+    if (!answers || typeof answers !== "object" || Array.isArray(answers)) return { ok: false, error: "answers must be an object" };
+    const clean = {};
+    for (const [id, answer] of Object.entries(answers)) {
+      if (!entry.questions.some((question) => question.id === id) || !Array.isArray(answer?.answers) || answer.answers.some((text) => typeof text !== "string"))
+        return { ok: false, error: "Invalid question answer" };
+      clean[id] = { answers: answer.answers };
+    }
+    let result = { answers: clean };
+    if (entry.elicitation) {
+      const request = entry.elicitation;
+      const content = {};
+      const properties = request.requestedSchema?.properties ?? {};
+      for (const [id, answer] of Object.entries(clean)) {
+        const value = answer.answers[0];
+        if (value === undefined) continue;
+        const property = properties[id];
+        if (!property && request.mode === "url") continue;
+        const typed = ["number", "integer"].includes(property.type) ? Number(value) : property.type === "boolean" ? value === "true" : value;
+        if ((property.type === "integer" && !Number.isInteger(typed)) || (property.type === "number" && !Number.isFinite(typed)) || (property.enum && !property.enum.includes(typed))) return { ok: false, error: `Invalid value for ${id}` };
+        content[id] = typed;
+      }
+      const accepted = Object.values(clean).some((answer) => answer.answers.length);
+      if (accepted && request.mode !== "url" && (request.requestedSchema?.required ?? []).some((id) => !(id in content))) return { ok: false, error: "Complete all required MCP fields" };
+      result = { action: accepted ? "accept" : "decline", content: accepted && request.mode !== "url" ? content : null, _meta: null };
+    }
+    this.reply(entry.id, result, entry.connection);
+    this.pendingUserInputs.delete(String(requestId));
+    this.emit({ type: "user_input_resolved", sessionKey: this.sessionKey, requestId: String(requestId) });
+    return { ok: true };
+  }
+
+  dismissQuestions(threadId) {
+    for (const [id, entry] of this.pendingUserInputs) if (!threadId || entry.threadId === threadId) this.resolveUserInput(id, {});
+  }
+
+  denyTurnApprovals(threadId) {
+    for (const [requestId, owner] of this.nativeApprovals) if (owner === threadId) this.approvalGate.resolve(requestId, "deny");
+  }
+
+  connectionFailed(error) {
+    this.approvalGate.denyAll();
+    this.dismissQuestions();
+    this.holdQueue();
+    for (const child of this.nativeChildren.values()) child.agent.connectionFailed(error);
+    this.openSubagents.clear();
+    this.finishTurn({ status: "failed", error: { message: String(error?.message ?? error) } });
+    this.setStatus("error", String(error?.message ?? error));
   }
 
   handleNotification(message) {
     const params = message.params ?? {};
-    if (params.threadId && params.threadId !== this.threadId) return;
+    if (message.method === "skills/changed") { this.skills = []; return; }
+    if (params.threadId && params.threadId !== this.threadId) {
+      const child = this.nativeChildren.get(params.threadId);
+      if (child) {
+        if (child.loading) child.notifications.push(message);
+        else child.agent.handleNotification(message);
+      }
+      return;
+    }
     const turn = this.turn;
     switch (message.method) {
+      case "serverRequest/resolved": {
+        const requestId = String(params.requestId);
+        this.pendingUserInputs.delete(requestId);
+        this.approvalGate.resolve(`codex-${requestId}`, "deny");
+        this.emit({ type: "user_input_resolved", sessionKey: this.sessionKey, requestId });
+        return;
+      }
+      case "turn/started":
+        if (turn) {
+          turn.id = params.turn?.id;
+          if (turn.abortRequested) void this.abort();
+        }
+        else this.beginObservedTurn(params.turn);
+        return;
+      case "thread/status/changed":
+        if (params.status?.type === "idle" && !turn && this.parentToolUseId) this.emit({ type: "agent_settled", sessionKey: this.sessionKey });
+        return;
       case "item/started":
+        if (params.item?.type === "contextCompaction") this.compactionStarted();
+        if (params.item?.type === "subAgentActivity") this.followNativeAgents({ id: params.item.id, tool: params.item.kind === "started" ? "spawnAgent" : "sendInput", receiverThreadIds: [params.item.agentThreadId], agentsStates: { [params.item.agentThreadId]: { status: params.item.kind === "completed" ? "completed" : params.item.kind === "interrupted" ? "interrupted" : "running" } } });
+        if (params.item?.type === "collabAgentToolCall") this.followNativeAgents(params.item);
         if (turn) this.startItem(params.item);
         return;
       case "item/completed":
+        if (params.item?.type === "contextCompaction" && !turn?.compacting) this.compactionCompleted();
+        if (params.item?.type === "subAgentActivity") this.followNativeAgents({ id: params.item.id, tool: params.item.kind === "started" ? "spawnAgent" : "sendInput", receiverThreadIds: [params.item.agentThreadId], agentsStates: { [params.item.agentThreadId]: { status: params.item.kind === "completed" ? "completed" : params.item.kind === "interrupted" ? "interrupted" : "running" } } });
+        if (params.item?.type === "collabAgentToolCall") this.followNativeAgents(params.item);
         if (turn) this.completeItem(params.item);
         return;
+      case "item/plan/delta":
       case "item/agentMessage/delta":
-        if (turn) this.appendDelta(turn, "text", params.delta);
+        if (turn) this.appendItemDelta(params, "text");
         return;
       case "item/reasoning/textDelta":
       case "item/reasoning/summaryTextDelta":
-        if (turn) this.appendDelta(turn, "thinking", params.delta);
+        if (turn) this.appendItemDelta(params, "thinking");
         return;
       case "item/commandExecution/outputDelta":
-        return; // the completed item carries the aggregated output
+      case "item/fileChange/outputDelta": {
+        const tracked = turn?.itemIndex.get(params.itemId);
+        if (tracked) {
+          tracked.output = `${tracked.output ?? ""}${params.delta ?? ""}`;
+          this.emit({ type: "tool_execution_update", sessionKey: this.sessionKey, toolCallId: params.itemId, partialResult: { content: [{ type: "text", text: tracked.output }], details: {} } });
+        }
+        return;
+      }
+      case "item/commandExecution/terminalInteraction":
+        this.emit({ type: "notice", sessionKey: this.sessionKey, message: `Terminal input: ${params.stdin ?? ""}` });
+        return;
+      case "item/mcpToolCall/progress":
+        this.emit({ type: "tool_execution_update", sessionKey: this.sessionKey, toolCallId: params.itemId, partialResult: { content: [{ type: "text", text: params.message ?? "" }], details: params } });
+        return;
+      case "turn/plan/updated": {
+        if (!turn) return;
+        const item = { type: "dynamicToolCall", id: `plan-${params.turnId ?? turn.id}`, tool: "TodoWrite", arguments: { todos: (params.plan ?? []).map((step, index) => ({ id: String(index), content: step.step, status: step.status === "inProgress" ? "in_progress" : step.status })) }, contentItems: [{ type: "text", text: params.explanation ?? "" }] };
+        if (!turn.itemIndex.has(item.id)) this.startItem(item);
+        this.completeItem(item);
+        return;
+      }
+      case "turn/diff/updated":
+        this.turnDiff = params.diff;
+        this.emit({ type: "turn_diff", sessionKey: this.sessionKey, diff: params.diff });
+        return;
       case "thread/tokenUsage/updated":
-        if (turn) turn.message.usage = usageFrom(params.tokenUsage);
+        this.tokenUsage = params.tokenUsage;
+        if (turn) turn.message.usage = usageFrom(params.tokenUsage?.total ?? params.tokenUsage?.last, turn.usageBaseline);
+        this.emitUpdate({ type: "usage" });
         return;
       case "turn/completed":
         this.finishTurn(params.turn);
@@ -494,7 +628,7 @@ class CodexAgentProcess {
         this.emit({
           type: "session_name",
           sessionKey: this.sessionKey,
-          name: params.name,
+          name: params.threadName ?? params.name,
         });
         return;
       case "error": {
@@ -524,11 +658,11 @@ class CodexAgentProcess {
 
   startItem(item) {
     const turn = this.turn;
-    if (!turn || !item) return;
+    if (!turn || !item || turn.itemIndex.has(item.id)) return;
     if (item.type === "userMessage") return;
     if (item.type === "agentMessage" || item.type === "plan") {
       this.appendDelta(turn, "text", item.text ?? "");
-      turn.itemIndex.set(item.id, { kind: "text" });
+      turn.itemIndex.set(item.id, { kind: "text", index: turn.openIndex });
       return;
     }
     if (item.type === "reasoning") {
@@ -536,7 +670,7 @@ class CodexAgentProcess {
         "\n",
       );
       this.appendDelta(turn, "thinking", text);
-      turn.itemIndex.set(item.id, { kind: "thinking" });
+      turn.itemIndex.set(item.id, { kind: "thinking", index: turn.openIndex });
       return;
     }
     const call = toolCallOf(item);
@@ -582,17 +716,19 @@ class CodexAgentProcess {
     if (item.type === "agentMessage" || item.type === "plan") {
       // The deltas already built the block; only an item we never saw start
       // (a non-streamed message) still needs its text.
-      if (!tracked) this.appendDelta(turn, "text", item.text ?? "");
+      if (tracked?.index !== undefined && turn.content[tracked.index]?.type === "text") {
+        turn.content[tracked.index].text = item.text ?? turn.content[tracked.index].text;
+        this.emitUpdate({ type: "text_end", contentIndex: tracked.index, content: turn.content[tracked.index].text });
+      } else if (!tracked || (tracked.index === undefined && item.text)) this.appendDelta(turn, "text", item.text ?? "");
       this.closeOpenBlock(turn);
       return;
     }
     if (item.type === "reasoning") {
-      if (!tracked)
-        this.appendDelta(
-          turn,
-          "thinking",
-          [...(item.summary ?? []), ...(item.content ?? [])].join("\n"),
-        );
+      const text = [...(item.summary ?? []), ...(item.content ?? [])].join("\n");
+      if (tracked?.index !== undefined && turn.content[tracked.index]?.type === "thinking" && text) {
+        turn.content[tracked.index].thinking = text;
+        this.emitUpdate({ type: "thinking_end", contentIndex: tracked.index, content: text });
+      } else if (!tracked || tracked.index === undefined) this.appendDelta(turn, "thinking", text);
       this.closeOpenBlock(turn);
       return;
     }
@@ -618,11 +754,20 @@ class CodexAgentProcess {
       sessionKey: this.sessionKey,
       toolCallId: item.id,
       result: {
-        content: [{ type: "text", text: call.output ?? "" }],
+        content: [{ type: "text", text: call.output || tracked?.output || "" }],
         details: item,
       },
       isError: Boolean(call.failed),
     };
+    const resultMessage = { role: "toolResult", toolCallId: item.id, toolName: call.name, content: endEvent.result.content, details: item, isError: endEvent.isError, timestamp: Date.now() };
+    turn.results ??= [];
+    const previous = turn.results.findIndex((result) => result.toolCallId === item.id);
+    if (previous >= 0) turn.results[previous] = resultMessage;
+    else turn.results.push(resultMessage);
+    if (!this.suppressReplayEvents && item.type === "collabAgentToolCall" && item.tool === "spawnAgent" && (item.receiverThreadIds ?? []).some((id) => this.openSubagents.has(id))) {
+      this.nativeToolEnds.set(item.id, endEvent);
+      return;
+    }
     if (noteSubagentToolEvent(this, endEvent).holdEnd) return;
     this.emit(endEvent);
   }
@@ -643,6 +788,16 @@ class CodexAgentProcess {
     }
     turn.openKind = undefined;
     turn.openIndex = undefined;
+  }
+
+  appendItemDelta(params, kind) {
+    const turn = this.turn;
+    this.appendDelta(turn, kind, params.delta);
+    if (params.itemId && turn) {
+      const tracked = turn.itemIndex.get(params.itemId) ?? { kind };
+      tracked.index ??= turn.openIndex;
+      turn.itemIndex.set(params.itemId, tracked);
+    }
   }
 
   appendDelta(turn, kind, delta) {
@@ -680,23 +835,113 @@ class CodexAgentProcess {
     });
   }
 
+  beginObservedTurn(nativeTurn = {}) {
+    const message = this.newAssistantMessage();
+    this.turn = { id: nativeTurn.id, message, content: message.content, itemIndex: new Map(), results: [], extraUsers: [], usageBaseline: this.tokenUsage?.total };
+    this.emit({ type: "message_start", sessionKey: this.sessionKey, message });
+    this.setStatus("working");
+  }
+
+  settleWhenIdle(sendQueue = true) {
+    if (!sendQueue) this.queueHeld = true;
+    if (this.isBusy()) {
+      this.setStatus("working");
+      return;
+    }
+    this.setStatus(this.connection?.running ? "ready" : "error");
+    this.emit({ type: "agent_settled", sessionKey: this.sessionKey });
+    if (sendQueue) this.sendNextQueued();
+  }
+
+  followNativeAgents(item) {
+    for (const id of item.receiverThreadIds ?? []) {
+      const state = item.agentsStates?.[id];
+      const terminal = ["completed", "errored", "interrupted", "shutdown", "notFound"].includes(state?.status);
+      let child = this.nativeChildren.get(id);
+      if (!child) {
+        if (item.tool !== "spawnAgent" && item.tool !== "resumeAgent" && item.tool !== "sendInput" && item.tool !== "followupTask") continue;
+        const agent = new CodexAgentProcess(this.sessionKey);
+        agent.connection = this.connection;
+        agent.threadId = id;
+        agent.parentToolUseId = item.id;
+        agent.cwd = this.cwd;
+        agent.model = { provider: "codex", id: item.model ?? this.model?.id };
+        agent.agentMode = this.agentMode;
+        agent.approvalGate = this.approvalGate;
+        agent.pendingUserInputs = this.pendingUserInputs;
+        agent.nativeApprovals = this.nativeApprovals;
+        child = { agent, parentToolUseId: item.id, loading: true, notifications: [] };
+        this.nativeChildren.set(id, child);
+        this.openSubagents.add(id);
+        this.emit({ type: "subagent_start", sessionKey: this.sessionKey, parentToolUseId: item.id });
+        agent.onEvent((event) => {
+          if (event.type === "agent_settled") {
+            child.settledDuringLoad = child.loading;
+            this.nativeChildFinished(id, Boolean(agent.lastTurnError));
+            return;
+          }
+          if (["__status", "state", "agent_start", "agent_end", "turn_start", "queue_updated"].includes(event.type)) return;
+          const tagged = { ...event, parentToolUseId: child.parentToolUseId, streamKey: `codex-${id}-${agent.turn?.message.timestamp ?? event.message?.timestamp ?? "child"}` };
+          if (event.message) tagged.message = { ...event.message, parentToolUseId: child.parentToolUseId };
+          this.emit(tagged);
+
+        });
+        void this.connection.request("thread/resume", { threadId: id }).then((response) => {
+          // Resume also subscribes this connection to a running native child.
+          for (const turn of response.thread?.turns ?? []) {
+            agent.beginObservedTurn(turn);
+            for (const entry of turn.items ?? []) {
+              agent.startItem(entry);
+              if (entry.status !== "inProgress") agent.completeItem(entry);
+            }
+            if (turn.status !== "inProgress") agent.finishTurn(turn);
+          }
+          child.loading = false;
+          for (const notification of child.notifications) agent.handleNotification(notification);
+          child.notifications = [];
+          if (child.abortWhenLoaded) void agent.abort();
+          if (!agent.turn && (child.terminal || child.settledDuringLoad || response.thread?.status?.type === "idle")) this.nativeChildFinished(id, Boolean(agent.lastTurnError));
+        }).catch((error) => {
+          child.loading = false;
+          this.emit({ type: "notice", sessionKey: this.sessionKey, parentToolUseId: child.parentToolUseId, message: `Could not follow Codex child: ${error.message}`, tone: "error" });
+          this.nativeChildFinished(id, true);
+        });
+      } else if (!terminal && ["resumeAgent", "sendInput", "followupTask"].includes(item.tool)) {
+        this.openSubagents.add(id);
+      }
+      if (terminal) {
+        child.terminal = true;
+        if (!child.loading && !child.agent.turn) this.nativeChildFinished(id, ["errored", "interrupted"].includes(state.status));
+      }
+    }
+  }
+
+  nativeChildFinished(id, failed = false) {
+    const child = this.nativeChildren.get(id);
+    if (!child || child.loading || !this.openSubagents.delete(id)) return;
+    this.messages.push(...child.agent.messages.slice(child.savedCount ?? 0).map((message) => ({ ...message, parentToolUseId: child.parentToolUseId })));
+    child.savedCount = child.agent.messages.length;
+    for (const [toolId, event] of this.nativeToolEnds) {
+      if ([...this.nativeChildren].some(([threadId, other]) => other.parentToolUseId === toolId && this.openSubagents.has(threadId))) continue;
+      this.nativeToolEnds.delete(toolId);
+      this.emit({ ...event, isError: event.isError || failed });
+    }
+    this.settleWhenIdle(!failed);
+    void this.getState().then((state) => this.emit({ type: "state", sessionKey: this.sessionKey, state }));
+  }
+
   // ---- turns ------------------------------------------------------------
 
   async runTurn(kind, message, images) {
     if (!this.connection?.running || !this.threadId)
       return { ok: false, error: "Codex session is not running" };
-    if (this.turn && kind !== "steer")
+    if (this.isBusy() && kind !== "steer")
       return { ok: false, error: "A Codex turn is already in progress" };
 
     const input = [
       {
         type: "text",
-        // The clarify gate applies to what the user typed. A steer or a
-        // harness follow-up must not be told to stop and ask questions.
-        text:
-          kind === "prompt"
-            ? withClarifyPrefix(message, repoContext(this.cwd))
-            : message,
+        text: message,
         text_elements: [],
       },
     ];
@@ -708,14 +953,28 @@ class CodexAgentProcess {
         });
     }
 
+    // Slash commands refer to the native skill inventory for this workspace.
+    const command = /^\/([^\s]+)(?:\s|$)/.exec(message ?? "");
+    if (command && kind === "prompt") {
+      if (!this.skills.length) await this.getCommands();
+      const skill = this.skills.find((entry) => entry.name === command[1]);
+      if (skill) {
+        input[0].text = String(message).replace(/^\//, "$");
+        input.push({ type: "skill", name: skill.name, path: skill.path });
+      }
+    }
+
     if (kind === "steer") {
       if (!this.turn) return { ok: false, error: "No Codex turn to steer" };
       try {
         await this.connection.request("turn/steer", {
           threadId: this.threadId,
-          turnId: this.turn.id,
+          expectedTurnId: this.turn.id,
           input,
         });
+        const steered = { role: "user", content: userContent(input), timestamp: Date.now() };
+        this.turn?.extraUsers?.push(steered);
+        for (const type of ["message_start", "message_end"]) this.emit({ type, sessionKey: this.sessionKey, message: steered });
         return { ok: true };
       } catch (error) {
         return { ok: false, error: String(error?.message ?? error) };
@@ -724,7 +983,7 @@ class CodexAgentProcess {
 
     const userMessage = {
       role: "user",
-      content: [{ type: "text", text: message }],
+      content: userContent(input).map((part) => part.type === "text" ? { ...part, text: message } : part),
       timestamp: Date.now(),
     };
     this.emit({ type: "agent_start", sessionKey: this.sessionKey });
@@ -755,8 +1014,9 @@ class CodexAgentProcess {
       openIndex: undefined,
       itemIndex: new Map(),
       userMessage: kind === "follow_up" ? undefined : userMessage,
-      settled,
+      settled, results: [], extraUsers: [], usageBaseline: this.tokenUsage?.total,
     };
+    const activeTurn = this.turn;
     this.setStatus("working");
 
     try {
@@ -764,26 +1024,46 @@ class CodexAgentProcess {
         threadId: this.threadId,
         input,
         cwd: this.cwd,
+        sandboxPolicy: this.agentMode === "plan" || this.accessMode === "read-only" ? { type: "readOnly" } : { type: "workspaceWrite", writableRoots: [this.cwd], networkAccess: false, excludeTmpdirEnvVar: false, excludeSlashTmp: false },
+        ...(this.agentMode === "plan" ? { collaborationMode: { mode: "plan", settings: { model: this.model?.id ?? DEFAULT_MODEL_ID, reasoning_effort: this.thinkingLevel ?? null, developer_instructions: null } } } : {}),
+        approvalPolicy: this.approvalGate.enabled ? "untrusted" : "never",
         ...(this.model?.id ? { model: this.model.id } : {}),
         ...(this.thinkingLevel ? { effort: this.thinkingLevel } : {}),
       });
-      if (this.turn) this.turn.id = started.turn.id;
+      if (this.turn === activeTurn) {
+        activeTurn.id = started.turn.id;
+        if (activeTurn.abortRequested) await this.connection.request("turn/interrupt", { threadId: this.threadId, turnId: activeTurn.id });
+      }
       return await settled.promise;
     } catch (error) {
-      this.turn = undefined;
-      this.setStatus("ready");
+      if (this.turn === activeTurn) this.finishTurn({ status: "failed", error: { message: String(error?.message ?? error) } });
       return { ok: false, error: String(error?.message ?? error) };
     }
   }
 
   finishTurn(completed) {
     const turn = this.turn;
-    if (!turn) return;
+    if (!turn || (completed?.id && turn.id && completed.id !== turn.id)) return;
+    clearTimeout(turn.compactTimer);
+    if (completed?.status === "failed" || completed?.status === "interrupted") turn.error ??= completed?.error?.message ?? `Codex turn ${completed.status}`;
+    this.denyTurnApprovals(this.threadId);
+    this.dismissQuestions(this.threadId);
+    this.lastTurnError = turn.error;
+    if (turn.compacting) {
+      this.compactionCompleted(Boolean(turn.error));
+      this.turn = undefined;
+      this.setStatus("ready");
+      this.settleWhenIdle(!turn.error);
+      void this.getState().then((state) => { this.emit({ type: "state", sessionKey: this.sessionKey, state }); turn.settled?.resolve(turn.error ? { ok: false, error: turn.error } : { ok: true, state }); });
+      return;
+    }
     this.closeOpenBlock(turn);
     turn.message.stopReason =
       completed?.status === "completed"
         ? "end_turn"
         : (completed?.status ?? "end_turn");
+    if (turn.error) turn.message.errorMessage = turn.error;
+    this.emit({ type: "message_end", sessionKey: this.sessionKey, message: turn.message });
     this.emit({
       type: "turn_end",
       sessionKey: this.sessionKey,
@@ -794,17 +1074,18 @@ class CodexAgentProcess {
       sessionKey: this.sessionKey,
       messages: [turn.userMessage, turn.message].filter(Boolean),
     });
-    if (turn.userMessage) this.messages.push(turn.userMessage, turn.message);
-    else this.messages.push(turn.message);
+    this.messages.push(...[turn.userMessage, ...(turn.extraUsers ?? []), turn.message, ...(turn.results ?? [])].filter(Boolean));
+    if (turn.error) {
+      turn.message.errorMessage = turn.error;
+      this.emit({ type: "notice", sessionKey: this.sessionKey, message: turn.error, tone: "error" });
+    }
     if (turn.id)
       this.turnRecords.push({
         id: turn.id,
         timestamp: turn.message.timestamp,
       });
     this.turn = undefined;
-    this.setStatus("ready");
-    this.emit({ type: "agent_settled", sessionKey: this.sessionKey });
-    if (!turn.error) this.sendNextQueued();
+    this.settleWhenIdle(!turn.error);
     void this.getState().then((state) => {
       this.emit({ type: "state", sessionKey: this.sessionKey, state });
       turn.settled?.resolve(
@@ -829,25 +1110,53 @@ class CodexAgentProcess {
 
   // ---- session management ----------------------------------------------
 
+  compactionStarted() {
+    if (this.compaction) return;
+    this.compaction = { tokensBefore: Number(this.tokenUsage?.last?.totalTokens ?? this.tokenUsage?.last?.total_tokens ?? 0) };
+    this.emit({ type: "compaction_start", sessionKey: this.sessionKey });
+  }
+
+  compactionCompleted(aborted = false) {
+    if (!this.compaction) return;
+    this.emit({ type: "compaction_end", sessionKey: this.sessionKey, reason: this.turn?.compacting ? "manual" : "auto", aborted, result: { ...this.compaction, estimatedTokensAfter: Number(this.tokenUsage?.last?.totalTokens ?? this.tokenUsage?.last?.total_tokens ?? 0) } });
+    this.compaction = undefined;
+  }
+
   async compact() {
-    if (!this.connection?.running || !this.threadId)
-      return { ok: false, error: "Codex session is not running" };
+    if (!this.connection?.running || !this.threadId) return { ok: false, error: "Codex session is not running" };
+    if (this.isBusy()) return { ok: false, error: "Wait for the current Codex turn before compacting" };
+    const settled = Promise.withResolvers();
+    const message = this.newAssistantMessage();
+    const turn = this.turn = { compacting: true, settled, content: message.content, message, itemIndex: new Map() };
+    this.setStatus("working");
+    this.compactionStarted();
+    turn.compactTimer = setTimeout(() => {
+      this.holdQueue();
+      void this.abort();
+      this.finishTurn({ status: "failed", error: { message: "Codex compaction timed out" } });
+    }, 5 * 60_000);
+    turn.compactTimer.unref?.();
     try {
-      await this.connection.request("thread/compact/start", {
-        threadId: this.threadId,
-      });
-      return { ok: true, state: await this.getState() };
+      await this.connection.request("thread/compact/start", { threadId: this.threadId });
+      return await settled.promise;
     } catch (error) {
+      if (this.turn === turn) this.finishTurn({ status: "failed", error: { message: String(error?.message ?? error) } });
       return { ok: false, error: String(error?.message ?? error) };
     }
   }
 
   async abort() {
     this.approvalGate.denyAll();
+    this.dismissQuestions();
     this.holdQueue();
+    const childResults = await Promise.all([...this.nativeChildren.values()].filter((child) => this.openSubagents.has(child.agent.threadId)).map((child) => { child.abortWhenLoaded = child.loading; return child.agent.abort(); }));
+    const childError = childResults.find((result) => !result.ok);
+    if (this.turn && !this.turn.id) this.turn.abortRequested = true;
     if (!this.connection?.running || !this.threadId || !this.turn?.id)
-      return { ok: true };
+      return childError ?? { ok: true };
     try {
+      if (this.turn.interruptRequested) return childError ?? { ok: true };
+      this.turn.interruptRequested = true;
       await this.connection.request("turn/interrupt", {
         threadId: this.threadId,
         turnId: this.turn.id,
@@ -881,16 +1190,14 @@ class CodexAgentProcess {
     if (!this.connection?.running)
       return { ok: false, error: "Codex is not running" };
     try {
-      const started = await this.connection.request("thread/start", {
-        cwd: this.cwd ?? homedir(),
-        sandbox: this.accessMode,
-        approvalPolicy: this.agentMode === "manual" ? "untrusted" : "never",
-        ...(this.model?.id ? { model: this.model.id } : {}),
-      });
+      if (this.isBusy()) return { ok: false, error: "Wait for the current turn before starting a new session" };
+      const started = await this.connection.request("thread/start", this.threadConfig());
       this.threadId = started.thread.id;
       this.sessionFile = started.thread.path;
       this.messages = [];
       this.turnRecords = [];
+      this.tokenUsage = undefined;
+      this.historyStats = undefined;
       return { ok: true, state: await this.getState() };
     } catch (error) {
       return { ok: false, error: String(error?.message ?? error) };
@@ -918,6 +1225,7 @@ class CodexAgentProcess {
     try {
       const forked = await this.connection.request("thread/fork", {
         threadId: this.threadId,
+        ...this.threadConfig(context.forkCwd || this.cwd),
         ...(boundary?.id ? { lastTurnId: boundary.id } : {}),
       });
       const thread = forked?.thread;
@@ -955,7 +1263,11 @@ class CodexAgentProcess {
   async getState() {
     const state = {
       status: this.status,
-      isStreaming: this.status === "working",
+      isStreaming: Boolean(this.turn) || subagentBusy(this),
+      pendingUserInputs: [...this.pendingUserInputs].map(([requestId, entry]) => ({ requestId, questions: entry.questions })),
+      messageCount: this.messages.filter((message) => message.role !== "toolResult").length,
+      ...(this.tokenUsage?.modelContextWindow ? { contextWindow: this.tokenUsage.modelContextWindow } : {}),
+      ...(this.turnDiff ? { turnDiff: this.turnDiff } : {}),
       queuedMessages: this.queueSnapshot(),
       sessionId: this.threadId,
       cwd: this.cwd,
@@ -967,23 +1279,49 @@ class CodexAgentProcess {
     return state;
   }
 
-  async getCommands() {
+  async request(method, params) {
+    return this.connection?.running ? this.connection.request(method, params) : codexRequest(method, params);
+  }
+
+  async getCommands(cwd = this.cwd ?? process.cwd()) {
     try {
-      const response = await this.connection?.request("skills/list", {});
-      const entries = Array.isArray(response?.data) ? response.data : [];
-      return {
-        ok: true,
-        commands: entries
-          .filter((entry) => entry?.name && entry.enabled !== false)
-          .map((entry) => ({
-            name: entry.name,
-            description: entry.shortDescription ?? entry.description ?? "",
-            source: "skill",
-          })),
-      };
-    } catch {
-      return { ok: true, commands: [] };
-    }
+      const response = await this.request("skills/list", { cwds: [cwd], forceReload: true });
+      this.skills = (response?.data ?? []).flatMap((group) => group.skills ?? []).filter((entry) => entry.enabled !== false && entry.name && entry.path);
+      return { ok: true, commands: [...new Map(this.skills.map((entry) => [entry.name, { name: entry.name, description: entry.interface?.shortDescription ?? entry.description ?? "", source: "skill" }])).values()] };
+    } catch (error) { return { ok: false, error: String(error?.message ?? error), commands: [] }; }
+  }
+
+  async getContextUsage() {
+    const total = Number(this.tokenUsage?.last?.totalTokens ?? this.tokenUsage?.last?.total_tokens);
+    const max = Number(this.tokenUsage?.modelContextWindow);
+    if (!Number.isFinite(total) || !Number.isFinite(max) || max <= 0) return { ok: false, error: "Codex has not reported context usage yet" };
+    return { ok: true, data: { totalTokens: total, maxTokens: max, percent: Math.round(total / max * 100), model: this.model?.id ?? "", isAutoCompactEnabled: true, categories: [] } };
+  }
+
+  async getSettings() {
+    try {
+      const response = await this.request("config/read", { cwd: this.cwd ?? process.cwd(), includeLayers: true });
+      const files = {};
+      const sources = (response.layers ?? []).map((layer, index) => {
+        const source = `${layer.name?.type ?? "config"}-${index}`;
+        if (layer.name?.file) files[source] = layer.name.file;
+        return { source, settings: layer.config, disabledReason: layer.disabledReason };
+      });
+      return { ok: true, data: { effective: response.config ?? {}, sources, files, localSettings: {}, hooks: [] } };
+    } catch (error) { return { ok: false, error: String(error?.message ?? error) }; }
+  }
+
+  async getMcpServers() {
+    try {
+      const servers = [];
+      let cursor;
+      do {
+        const response = await this.request("mcpServerStatus/list", { ...(cursor ? { cursor } : {}), limit: 100 });
+        servers.push(...(response.data ?? []).map((server) => ({ name: server.name, status: server.serverInfo ? "connected" : server.authStatus === "notLoggedIn" ? "needs authentication" : "unavailable", scope: "codex", error: server.error ?? "", version: server.serverInfo?.version ?? "", toolCount: Object.keys(server.tools ?? {}).length })));
+        cursor = response.nextCursor;
+      } while (cursor);
+      return { ok: true, data: { servers } };
+    } catch (error) { return { ok: false, error: String(error?.message ?? error) }; }
   }
 
   // ---- models and effort ------------------------------------------------
@@ -992,10 +1330,14 @@ class CodexAgentProcess {
     if (this.modelCatalog) return this.modelCatalog;
     // The catalog is also needed before a session exists (a fresh tab lists
     // models), so fall back to the shared connection.
-    const response = this.connection?.running
-      ? await this.connection.request("model/list", {})
-      : await codexRequest("model/list", {});
-    this.modelCatalog = Array.isArray(response?.data) ? response.data : [];
+    const models = [];
+    let cursor;
+    do {
+      const response = await this.request("model/list", { ...(cursor ? { cursor } : {}) });
+      models.push(...(response?.data ?? []));
+      cursor = response?.nextCursor;
+    } while (cursor);
+    this.modelCatalog = models;
     return this.modelCatalog;
   }
 
@@ -1099,6 +1441,13 @@ class CodexAgentProcess {
   }
 
   stop() {
+    this.approvalGate.denyAll();
+    this.dismissQuestions();
+    clearTimeout(this.turn?.compactTimer);
+    for (const child of this.nativeChildren.values()) { child.agent.connection = undefined; child.agent.stop(); }
+    this.nativeChildren.clear();
+    this.openSubagents.clear();
+    this.nativeToolEnds.clear();
     this.turn?.settled?.resolve({
       ok: false,
       error: "Codex session stopped",

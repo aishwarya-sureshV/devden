@@ -31,7 +31,7 @@ export function createTerminalTabs({ onEvent }) {
     /** Start `command` in a new tab. Returns the tab handle. */
     run({ sessionKey, command, cwd, title }) {
       const tabId = `t${nextId++}`;
-      const child = spawn("/bin/zsh", ["-lc", command], {
+      const child = spawn(process.env.SHELL || "/bin/sh", ["-lc", command], {
         cwd: cwd || process.cwd(),
         stdio: ["ignore", "pipe", "pipe"],
       });

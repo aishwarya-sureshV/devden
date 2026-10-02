@@ -5,8 +5,26 @@
 - Development server: `npm run dev` (runs server + vite concurrently)
 - Check ports before starting another server.
 - Prefer reusing an existing healthy development server.
-- Main conversation UI: `src/components/Conversation.tsx`
-- Conversation styling: `src/styles/conversation.css`
+- Main conversation UI: `src/components/Conversation.tsx` (state + handlers).
+  The view pieces live beside it: `ConversationComposer.tsx` (composer,
+  menus, queue, asks), `ConversationRows.tsx` (timeline rows),
+  `conversationHelpers.ts` (pure helpers, mode types).
+- Conversation styling: `src/styles/conversation/*.css`, one file per
+  feature (composer, timeline, tool-cards, explorer, ...). `conversation.css`
+  only imports them in cascade order -- append new files, never reorder.
+- Typecheck once when edits are done, not after every edit.
+
+## Reading cost
+
+Every file read stays in context for the rest of the session.
+- Big files (`Conversation.tsx`, `server/index.js`, `app.css`, the larger
+  `conversation/*.css`): `grep -n` the symbol/selector, then read ~40 lines
+  around it. Never read them whole.
+- Screenshots: verify with DOM state, computed styles or a file compare.
+  Read an image only to diagnose a visible bug, and shrink it first:
+  `sips -Z 800 shot.png`.
+- `git diff` without a path dumps the whole dirty tree: use `--stat` or a path.
+- Never `find /` or search outside the repo.
 
 ## Repo map
 

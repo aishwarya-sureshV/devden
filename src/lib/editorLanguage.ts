@@ -11,42 +11,28 @@ import type { Extension } from '@codemirror/state'
 import { EditorView } from '@codemirror/view'
 import { tags } from '@lezer/highlight'
 
+// Claude Code palette; colors live in conversation.css (--cc-*) for light/dark.
 export const editorHighlightStyle = HighlightStyle.define([
   {
-    tag: [
-      tags.keyword,
-      tags.controlKeyword,
-      tags.definitionKeyword,
-      tags.moduleKeyword,
-      tags.operatorKeyword,
-      tags.modifier,
-      tags.self,
-    ],
-    color: 'var(--pw-code-keyword)',
+    tag: [tags.keyword, tags.controlKeyword, tags.definitionKeyword, tags.moduleKeyword, tags.operatorKeyword, tags.modifier, tags.self],
+    color: 'var(--cc-kw)',
   },
-  { tag: [tags.bool, tags.null, tags.atom, tags.unit], color: 'var(--pw-code-bool)' },
+  { tag: [tags.bool, tags.null, tags.atom, tags.unit, tags.number, tags.integer, tags.float], color: 'var(--cc-num)' },
   {
     tag: [tags.function(tags.variableName), tags.function(tags.propertyName), tags.labelName, tags.macroName],
-    color: 'var(--pw-code-func)',
+    color: 'var(--cc-fn)',
   },
   {
     tag: [tags.string, tags.docString, tags.character, tags.attributeValue, tags.special(tags.string), tags.regexp, tags.escape],
-    color: 'var(--pw-code-string)',
+    color: 'var(--cc-str)',
   },
-  {
-    tag: [tags.typeName, tags.className, tags.namespace, tags.tagName, tags.standard(tags.typeName)],
-    color: 'var(--pw-code-type)',
-  },
-  { tag: [tags.number, tags.integer, tags.float], color: 'var(--pw-code-number)' },
-  {
-    tag: [tags.comment, tags.lineComment, tags.blockComment, tags.docComment],
-    color: 'var(--pw-code-comment)',
-    fontStyle: 'italic',
-  },
-  { tag: [tags.propertyName, tags.attributeName], color: 'var(--pw-code)' },
-  { tag: [tags.meta, tags.annotation, tags.processingInstruction], color: 'var(--pw-code-decorator)' },
-  { tag: [tags.heading, tags.strong], color: 'var(--pw-code-keyword)', fontWeight: '600' },
-  { tag: tags.link, color: 'var(--pw-accent)', textDecoration: 'underline' },
+  { tag: [tags.typeName, tags.className, tags.namespace, tags.standard(tags.typeName)], color: 'var(--cc-type)' },
+  { tag: tags.tagName, color: 'var(--cc-tag)' },
+  { tag: [tags.attributeName, tags.propertyName], color: 'var(--cc-attr)' },
+  { tag: [tags.comment, tags.lineComment, tags.blockComment, tags.docComment], color: 'var(--cc-com)', fontStyle: 'italic' },
+  { tag: [tags.meta, tags.annotation, tags.processingInstruction], color: 'var(--cc-fn)' },
+  { tag: [tags.heading, tags.strong], color: 'var(--cc-kw)', fontWeight: '600' },
+  { tag: tags.link, color: 'var(--cc-attr)', textDecoration: 'underline' },
   { tag: tags.invalid, color: 'var(--dsw-alias-state-error-primary)' },
 ])
 
@@ -55,12 +41,12 @@ export const editorTheme: Extension = EditorView.theme({
     height: '100%',
     color: 'var(--pw-code)',
     backgroundColor: 'var(--pw-code-bg)',
-    fontSize: '12.5px',
+    fontSize: '12px',
   },
   '&.cm-focused': { outline: 'none' },
   '.cm-scroller': {
     fontFamily: 'var(--ds-font-family-code)',
-    lineHeight: '20px',
+    lineHeight: '18px',
     overscrollBehavior: 'contain',
   },
   '.cm-content': { padding: '6px 0 32px', caretColor: 'var(--pw-accent)' },

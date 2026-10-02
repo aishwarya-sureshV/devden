@@ -91,3 +91,35 @@ export function usageLeft(u: ProviderUsage | undefined): {
     resetIn: primary.resetsAt ? formatCountdown(primary.resetsAt) : undefined,
   };
 }
+
+function percentLeft(window: { usedPercent?: number } | undefined): number | null {
+  if (window?.usedPercent === undefined) return null;
+  return 100 - Math.max(0, Math.min(100, Math.round(window.usedPercent)));
+}
+
+/** 5-hour window and weekly window, as percent left. */
+export function usagePair(u: ProviderUsage | undefined): {
+  hour: number | null;
+  week: number | null;
+  reset?: string;
+} {
+  if (!u?.available) return { hour: null, week: null };
+  const hour =
+    u.windows.find((window) => /session|hour|5h|24h/i.test(window.label)) ??
+    u.windows.find((window) => window.usedPercent !== undefined);
+  const week =
+    u.windows.find((window) => /week|7d/i.test(window.label)) ??
+    u.windows.find(
+      (window) => window !== hour && window.usedPercent !== undefined,
+    );
+  const nearest =
+    hour?.resetsAt !== undefined &&
+    (week?.resetsAt === undefined || hour.resetsAt <= week.resetsAt)
+      ? hour
+      : week;
+  return {
+    hour: percentLeft(hour),
+    week: percentLeft(week),
+    reset: nearest?.resetsAt ? formatCountdown(nearest.resetsAt) : undefined,
+  };
+}

@@ -1,0 +1,75 @@
+import { useRef, useSyncExternalStore } from "react";
+import {
+  DIFF_ROLES,
+  diffTone,
+  getAppearance,
+  resetDiffColors,
+  setDiffColor,
+  subscribeAppearance,
+} from "../lib/appearance";
+
+/** One color picker per code role; edits repaint all code on screen live. */
+export function DiffColorEditor() {
+  const settings = useSyncExternalStore(subscribeAppearance, getAppearance);
+  const tone = diffTone(settings.background);
+  const colors = settings.diffColors[tone];
+  return (
+    <div className="diff-colors">
+      <div className="diff-colors__head">
+        <span>
+          {tone === "dark" ? "Dark surfaces · Glass, Black, Aurora" : "Light surfaces · White, Cream"}
+        </span>
+        <button type="button" onClick={() => resetDiffColors(tone)}>
+          Reset
+        </button>
+      </div>
+      <div className="diff-colors__grid">
+        {DIFF_ROLES.map(([role, label]) => (
+          <label key={role} className="diff-colors__row">
+            <input
+              type="color"
+              value={colors[role]}
+              onChange={(event) => setDiffColor(tone, role, event.target.value)}
+            />
+            <span>{label}</span>
+            <code style={{ color: colors[role] }}>{colors[role]}</code>
+          </label>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/** Palette button for a diff header; the editor floats in the top layer. */
+export function DiffColorButton({ className = "review-dock__nav" }: { className?: string }) {
+  const pop = useRef<HTMLDivElement>(null);
+  const open = (event: React.MouseEvent<HTMLButtonElement>) => {
+    const el = pop.current;
+    if (!el) return;
+    const rect = event.currentTarget.getBoundingClientRect();
+    el.style.top = `${rect.bottom + 6}px`;
+    el.style.right = `${Math.max(8, window.innerWidth - rect.right)}px`;
+    el.togglePopover();
+  };
+  return (
+    <>
+      <button
+        type="button"
+        className={className}
+        aria-label="Code colors"
+        title="Code colors"
+        onClick={open}
+      >
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true">
+          <path d="M12 3a9 9 0 1 0 0 18c1.1 0 1.6-.9 1.2-1.8-.5-1-.1-2.2 1.1-2.2H17a4 4 0 0 0 4-4c0-5.5-4-10-9-10Z" />
+          <circle cx="7.5" cy="11" r="1" />
+          <circle cx="10" cy="7" r="1" />
+          <circle cx="15" cy="7.5" r="1" />
+        </svg>
+      </button>
+      <div ref={pop} popover="auto" className="diff-colors-pop">
+        <DiffColorEditor />
+      </div>
+    </>
+  );
+}

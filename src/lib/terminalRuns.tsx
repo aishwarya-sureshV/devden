@@ -19,11 +19,12 @@ export type TerminalRun = {
   output: string;
   exitCode: number | null;
   error?: string;
+  interactive?: boolean;
 };
 
 type TerminalRunsApi = {
   runs: Record<string, TerminalRun>;
-  runCommand: (command: string) => string | null;
+  runCommand: (command: string, interactive?: boolean) => string | null;
   claimRun: (id: string) => boolean;
   reportOutput: (id: string, output: string) => void;
   finishRun: (id: string, exitCode: number | null, error?: string) => void;
@@ -47,7 +48,7 @@ export function TerminalRunsProvider({
   const onNeedOpenRef = useRef(onNeedOpen);
   onNeedOpenRef.current = onNeedOpen;
 
-  const runCommand = useCallback((command: string) => {
+  const runCommand = useCallback((command: string, interactive = false) => {
     const trimmed = command.replace(/\s+$/g, "");
     if (!trimmed.trim()) return null;
     const id = crypto.randomUUID();
@@ -58,6 +59,7 @@ export function TerminalRunsProvider({
       status: "queued",
       output: "",
       exitCode: null,
+      interactive,
     };
     setRuns((current) => ({ ...current, [id]: run }));
     onNeedOpenRef.current();

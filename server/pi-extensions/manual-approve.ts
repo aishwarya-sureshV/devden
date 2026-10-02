@@ -86,6 +86,12 @@ export default function manualApprove(pi: ManualApproveApi) {
   pi.on("tool_call", async (event, ctx) => {
     if (allowed.has(event.toolName)) return;
     if (READ_ONLY.has(event.toolName)) return;
+    // Auto-edit applies edits and writes. Commands and deletes still ask.
+    if (
+      process.env.DEVDEN_AGENT_MODE === "auto-edit" &&
+      !/bash|shell|exec|command|terminal|powershell|delete/i.test(event.toolName)
+    )
+      return;
     const detail = truncate(describe(event.toolName, event.input), 800);
     const choice = await ctx.ui.select(
       `Allow ${event.toolName}\n${detail}`,

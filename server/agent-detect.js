@@ -7,7 +7,9 @@ import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import { readGrokToken } from "./grok-usage.js";
+import { fileURLToPath } from "node:url";
+import { grokAuthPath } from "./grok-usage.js";
+import { subscriptionEnvironment } from "./claude-agent.js";
 
 const execFileAsync = promisify(execFile);
 const VERSION_MS = 3_000;
@@ -16,24 +18,38 @@ export const BUILTIN_DETECT = [
   {
     id: "claude",
     installCommand: "npm i -g @anthropic-ai/claude-code",
-    loginCommand: "claude",
+    loginCommand: "claude auth login --claudeai",
   },
   {
     id: "codex",
     installCommand: "npm i -g @openai/codex",
-    loginCommand: "codex",
+    loginCommand: "codex login --device-auth",
   },
   {
     id: "pi",
-    installCommand: "npm i -g @mariozechner/pi-coding-agent",
+    installCommand: "npm i -g @earendil-works/pi-coding-agent",
     loginCommand: "pi",
   },
   {
     id: "grok",
     installCommand: "npm i -g @xai-official/grok",
-    loginCommand: "grok login",
+    loginCommand: "grok login --device-auth",
   },
 ];
+
+/** Fixed commands only; never interpolate a client-supplied package or shell command. */
+export function connectionCommand(id, installedPath) {
+  const spec = BUILTIN_DETECT.find((entry) => entry.id === id);
+  if (!spec) throw new Error("Unknown agent");
+  const quote = (text) => `'${text.replaceAll("'", "'\\''")}'`;
+  const executable = installedPath ? quote(installedPath) : `"$HOME/.local/bin/${id}"`;
+  const login = spec.loginCommand.replace(id, executable);
+  const connect = id === "pi"
+    ? `${quote(process.execPath)} ${quote(fileURLToPath(new URL("./pi-login.js", import.meta.url)))} ${executable}`
+    : login;
+  const install = spec.installCommand.replace("npm i -g", 'npm install --global --prefix "$HOME/.local"');
+  return `export PATH="$HOME/.local/bin:$PATH"; ${installedPath ? connect : `${install} && ${connect}`}`;
+}
 
 let builtinCache = null;
 const commandCache = new Map();
@@ -89,58 +105,39 @@ function tidyVersion(id, raw) {
   return match ? `${id} ${match[0]}` : clean;
 }
 
-function hasSecret(value, depth = 0) {
-  if (depth > 5) return false;
-  if (typeof value === "string") return value.trim().length >= 8;
-  if (!value || typeof value !== "object") return false;
-  return Object.values(value).some((entry) => hasSecret(entry, depth + 1));
-}
-
-async function authFromFile(file) {
-  try {
-    const parsed = JSON.parse(await readFile(file, "utf8"));
-    return hasSecret(parsed) ? "ok" : "missing";
-  } catch (error) {
-    if (error?.code === "ENOENT") return "missing";
-    return "unknown";
-  }
-}
-
-async function claudeAuth() {
-  const file = await authFromFile(
-    join(homedir(), ".claude", ".credentials.json"),
-  );
-  if (file === "ok") return "ok";
-  if (process.platform !== "darwin") return file;
-  try {
-    const { stdout } = await execFileAsync(
-      "security",
-      ["find-generic-password", "-s", "Claude Code-credentials", "-w"],
-      { timeout: 1_500 },
-    );
-    const parsed = JSON.parse(String(stdout).trim());
-    return parsed?.claudeAiOauth?.accessToken ? "ok" : "missing";
-  } catch {
-    return file === "unknown" ? "unknown" : "missing";
-  }
-}
-
-async function authFor(id) {
-  if (id === "grok") {
+async function authFor(id, executable) {
+  if (id === "codex" || id === "claude") {
     try {
-      const token = await readGrokToken();
-      return token ? "ok" : "missing";
-    } catch {
-      return "unknown";
+      const { stdout, stderr } = await execFileAsync(executable,
+        id === "codex" ? ["login", "status"] : ["auth", "status", "--json"],
+        { timeout: 10_000, ...(id === "claude" ? { env: subscriptionEnvironment() } : {}) });
+      if (id === "codex") return /ChatGPT/i.test(`${stdout}\n${stderr}`) ? "ok" : "missing";
+      const status = JSON.parse(stdout);
+      // This adapter uses Claude subscription auth, not API-key billing.
+      return status.loggedIn && ["claude.ai", "oauth_token"].includes(status.authMethod) ? "ok" : "missing";
+    } catch (error) {
+      // Older CLIs may lack a status command; a stored credential is only a hint.
+      if (error?.killed || error?.code === "ENOENT") return "unknown";
+      return "missing";
     }
   }
-  if (id === "claude") return claudeAuth();
-  if (id === "codex")
-    return authFromFile(
-      join(process.env.CODEX_HOME || join(homedir(), ".codex"), "auth.json"),
-    );
-  if (id === "pi")
-    return authFromFile(join(homedir(), ".pi", "agent", "auth.json"));
+  if (id === "grok") {
+    try {
+      const credentials = JSON.parse(await readFile(grokAuthPath(), "utf8"));
+      const token = credentials?.["https://accounts.x.ai/sign-in"]?.key;
+      return typeof token === "string" && token.length > 0 ? "ok" : "missing";
+    } catch (error) {
+      return error.code === "ENOENT" ? "missing" : "unknown";
+    }
+  }
+  if (id === "pi") {
+    try {
+      const credentials = JSON.parse(await readFile(join(process.env.PI_CODING_AGENT_DIR || join(homedir(), ".pi", "agent"), "auth.json"), "utf8"));
+      return Object.values(credentials).some((entry) => entry?.type === "oauth" && (entry.access || entry.refresh)) ? "ok" : "missing";
+    } catch (error) {
+      return error.code === "ENOENT" ? "missing" : "unknown";
+    }
+  }
   return "unknown";
 }
 
@@ -166,10 +163,8 @@ async function detectCommand(command, id) {
 
 async function detectBuiltin(spec) {
   try {
-    const [found, auth] = await Promise.all([
-      detectCommand(spec.id, spec.id),
-      authFor(spec.id),
-    ]);
+    const found = await detectCommand(spec.id, spec.id);
+    const auth = found.path ? await authFor(spec.id, found.path) : "missing";
     return {
       ...spec,
       ...found,

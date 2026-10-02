@@ -1,0 +1,284 @@
+/* Workbench redesign: flat model / effort / mode chips and a solid round send. */
+.composer__tools {
+ gap: 4px;
+}
+.composer__add {
+ width: 24px;
+ height: 24px;
+ border-radius: 6px;
+ background: transparent;
+ color: var(--dsw-alias-label-tertiary);
+}
+.composer__add:hover {
+ background: rgb(128 128 128 / 0.12);
+}
+.composer__mode-trigger,
+.composer__route-chip,
+.native-model-controls {
+ height: 24px;
+ padding: 0 8px;
+ border: 0;
+ border-radius: 6px;
+ background: transparent;
+ color: var(--dsw-alias-label-secondary);
+ font-size: 12px;
+}
+.composer__mode-trigger:hover,
+.composer__route-chip:hover,
+.native-model-controls:hover {
+ background: rgb(128 128 128 / 0.12);
+}
+.native-model-controls::before {
+ content: "";
+ flex: none;
+ width: 7px;
+ height: 7px;
+ margin-right: 4px;
+ border-radius: 50%;
+ background: var(--backend-accent, var(--pw-accent));
+}
+.native-model-controls__field--model {
+ max-width: 200px;
+}
+.native-model-controls__field--effort {
+ max-width: 70px;
+}
+.composer__primary {
+ width: 26px;
+ height: 26px;
+ color: var(--sendFg, #1b0f0a);
+ background: var(--send, #e8906a);
+ box-shadow: none;
+}
+.composer__primary:hover:not(:disabled) {
+ filter: brightness(1.06);
+ background: #e8906a;
+}
+.composer__primary.is-stop {
+ background: var(--pw-red);
+ box-shadow: none;
+}
+
+/* Mock header icons: borderless 26px squares. */
+.conversation-header__download.conversation-header__icon-btn {
+ width: 26px;
+ min-height: 26px;
+ padding: 0;
+ border: 0;
+ border-radius: 7px;
+ color: var(--dsw-alias-label-tertiary);
+}
+.conversation-header__download.conversation-header__icon-btn:hover,
+.conversation-header__download.conversation-header__icon-btn.is-active {
+ color: var(--dsw-alias-label-primary);
+}
+
+/* Workbench design file tree: 23px rows, 16px indent, tinted folder icons,
+   bright folder names over dimmer file names, git letter on the right. */
+.workspace-tree__item {
+ gap: 5px;
+ min-height: 23px;
+ padding-top: 0;
+ padding-bottom: 0;
+ color: var(--dsw-alias-label-primary);
+ font-size: 13px;
+}
+.workspace-tree__item:not([aria-expanded]) {
+ color: var(--dsw-alias-label-secondary);
+}
+.workspace-tree__item:hover {
+ background: rgb(128 128 128 / 0.08);
+}
+.workspace-tree__item.is-active {
+ background: linear-gradient(
+  90deg,
+  rgb(128 128 128 / 0.2),
+  rgb(128 128 128 / 0.08)
+ );
+ color: var(--dsw-alias-label-primary);
+}
+.workspace-tree__chevron {
+ color: var(--dsw-alias-label-dimmed);
+}
+.workspace-tree__file-gap {
+ width: 4px;
+}
+.workspace-tree__folder {
+ display: flex;
+ flex: none;
+}
+.workspace-tree__item .workspace-tree__name {
+ flex: 1;
+}
+.workspace-tree__item .workspace-tree__git {
+ flex: none;
+ font-size: 11px;
+ font-weight: 600;
+ color: var(--git-modified);
+}
+.workspace-tree__item .workspace-tree__git.is-A {
+ color: var(--git-added);
+}
+.workspace-tree__item .workspace-tree__git.is-D,
+.workspace-tree__item .workspace-tree__git.is-C {
+ color: var(--ic-pink);
+}
+
+/* ---------- Resize handles: one matte style for every divider ---------- */
+:is(
+ .sidebar-resizer,
+ .terminal-pane-resizer,
+ .session-resizer,
+ .tool-rail__resize,
+ .workspace-explorer__resize,
+ .workspace-explorer__tree-resize,
+ .subagent-panel__resize
+) {
+ --rz-line: color-mix(in srgb, var(--pw-fg) 7%, transparent);
+ --rz-hot: color-mix(in srgb, var(--pw-accent) 38%, var(--pw-fg-4));
+ background: transparent;
+ opacity: 1;
+}
+:is(
+ .sidebar-resizer,
+ .terminal-pane-resizer,
+ .session-resizer,
+ .tool-rail__resize,
+ .workspace-explorer__resize,
+ .workspace-explorer__tree-resize,
+ .subagent-panel__resize
+)::before,
+:is(
+ .sidebar-resizer,
+ .terminal-pane-resizer,
+ .session-resizer,
+ .tool-rail__resize,
+ .workspace-explorer__resize,
+ .workspace-explorer__tree-resize,
+ .subagent-panel__resize
+)::after {
+ position: absolute;
+ left: 50%;
+ translate: -50% 0;
+ content: "";
+ pointer-events: none;
+ transition:
+  background 0.35s ease,
+  opacity 0.35s ease,
+  height 0.35s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+/* hairline: invisible at rest (panes already have borders), except the
+   session split, which is the only thing separating two chats */
+:is(
+ .sidebar-resizer,
+ .terminal-pane-resizer,
+ .session-resizer,
+ .tool-rail__resize,
+ .workspace-explorer__resize,
+ .workspace-explorer__tree-resize,
+ .subagent-panel__resize
+)::before {
+ top: 0;
+ bottom: 0;
+ width: 1px;
+ background: transparent;
+}
+.session-resizer::before {
+ background: var(--rz-line);
+}
+/* grip pill in the middle: the part you actually aim for */
+:is(
+ .sidebar-resizer,
+ .terminal-pane-resizer,
+ .session-resizer,
+ .tool-rail__resize,
+ .workspace-explorer__resize,
+ .workspace-explorer__tree-resize,
+ .subagent-panel__resize
+)::after {
+ top: 50%;
+ width: 4px;
+ height: 18px;
+ margin-top: -9px;
+ border-radius: 4px;
+ background: var(--rz-hot);
+ box-shadow: 0 0 0 1px color-mix(in srgb, var(--pw-bg, #000) 40%, transparent);
+ opacity: 0;
+}
+:is(
+ .sidebar-resizer,
+ .terminal-pane-resizer,
+ .session-resizer,
+ .tool-rail__resize,
+ .workspace-explorer__resize,
+ .workspace-explorer__tree-resize,
+ .subagent-panel__resize
+):is(:hover, :focus-visible, :active)::before,
+:is(
+ .is-resizing-sidebar .sidebar-resizer,
+ .is-resizing-sessions :is(.terminal-pane-resizer, .session-resizer),
+ .is-resizing-workspace .workspace-explorer__resize,
+ .is-resizing-subagent .subagent-panel__resize
+)::before {
+ background: color-mix(in srgb, var(--rz-hot) 55%, transparent);
+}
+:is(
+ .sidebar-resizer,
+ .terminal-pane-resizer,
+ .session-resizer,
+ .tool-rail__resize,
+ .workspace-explorer__resize,
+ .workspace-explorer__tree-resize,
+ .subagent-panel__resize
+):is(:hover, :focus-visible, :active)::after,
+:is(
+ .is-resizing-sidebar .sidebar-resizer,
+ .is-resizing-sessions :is(.terminal-pane-resizer, .session-resizer),
+ .is-resizing-workspace .workspace-explorer__resize,
+ .is-resizing-subagent .subagent-panel__resize
+)::after {
+ height: 36px;
+ margin-top: -18px;
+ opacity: 1;
+}
+
+/* ---------- Scroll edge fades (data-fade is set by lib/scrollFeel.ts) ---------- */
+@property --fade-top {
+ syntax: "<length>";
+ inherits: false;
+ initial-value: 0px;
+}
+@property --fade-bottom {
+ syntax: "<length>";
+ inherits: false;
+ initial-value: 0px;
+}
+[data-fade] {
+ mask-image: linear-gradient(
+  to bottom,
+  transparent,
+  #000 var(--fade-top),
+  #000 calc(100% - var(--fade-bottom)),
+  transparent
+ );
+ transition:
+  --fade-top 0.45s ease,
+  --fade-bottom 0.45s ease;
+}
+[data-fade~="top"] {
+ --fade-top: 36px;
+}
+[data-fade~="bottom"] {
+ --fade-bottom: 36px;
+}
+
+textarea,
+input,
+[contenteditable="true"] {
+ caret-color: var(--pw-accent);
+}
+@media (prefers-reduced-motion: reduce) {
+ [data-fade] {
+  transition: none;
+ }
+}

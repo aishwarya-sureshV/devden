@@ -32,6 +32,8 @@
  *   PUT  /api/:sessionKey/route            { route, sessionFile? }
  *   GET  /api/:sessionKey/git-changes?cwd=  -> branch, remote, per-file working-tree changes
  *   GET  /api/:sessionKey/git-changes?cwd=&file= -> one file's diff vs HEAD
+ *   GET  /api/:sessionKey/changes?scope=turn|session&sessionPath=&turn=
+ *                                          -> recorded per-turn / per-session diffs
  *   POST /api/:sessionKey/git              { cwd, op } where op is one of
  *                                          push|pull|pull-rebase|fetch|commit|
  *                                          commit-push|stash|stash-apply|
@@ -80,6 +82,11 @@ import { spawn, execFile, execSync } from "node:child_process";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import { logFault } from "./log-fault.js";
+import {
+  isAllowedOrigin as allowedOrigin,
+  isLoopbackRequest,
+  requestHasAccess as hasAccess,
+} from "./request-access.js";
 import { hasAskBlock } from "./ask-block.js";
 import { countPendingApprovals } from "./approval-gate.js";
 import { createTerminalTabs } from "./terminal-tabs.js";
@@ -105,6 +112,7 @@ import {
   sessionScope,
 } from "./agent-registry.js";
 import { clearDetectionCache } from "./agent-detect.js";
+import { readHarnessUpdates, runHarnessUpdate } from "./harness-update.js";
 import { devdenHome, readSetup, writeSetup } from "./setup-state.js";
 import {
   agentIsAlive,
@@ -133,6 +141,16 @@ import {
   takeSnapshot,
 } from "./snapshots.js";
 import {
+  beginTurn,
+  endTurn,
+  forgetSessionChanges,
+  noteSessionContext,
+  noteToolCall,
+  pruneChanges,
+  readChanges,
+  rekeyChanges,
+} from "./changes.js";
+import {
   baseOf,
   createWorktree,
   listWorktrees,
@@ -149,7 +167,13 @@ import {
   readSessionXray,
   restoreSession,
 } from "./sessions.js";
-import { deleteSkill, loadCatalog, readSkill, writeSkill } from "./catalog.js";
+import {
+  SETTINGS_PATH,
+  deleteSkill,
+  loadCatalog,
+  readSkill,
+  writeSkill,
+} from "./catalog.js";
 import { listOllamaModels, syncOllamaModelsJson } from "./ollama-models.js";
 import {
   confinePath,
@@ -383,6 +407,16 @@ function sweepExpiredLeases() {
 
 setInterval(sweepExpiredLeases, LEASE_SWEEP_MS).unref();
 setInterval(pruneAuthTickets, 60_000).unref();
+// Recorded turn diffs older than 30 days, and content nothing points at.
+const pruneChangeHistory = () => {
+  try {
+    pruneChanges();
+  } catch (error) {
+    logFault("prune-changes", error);
+  }
+};
+pruneChangeHistory();
+setInterval(pruneChangeHistory, 6 * 60 * 60_000).unref();
 
 /**
  * Standing goals (/goal): the agent gets a deterministic follow-up check-in
@@ -880,6 +914,7 @@ let shuttingDown = false;
  * adapter produced it.
  */
 function trackTurnLifecycle(sessionKey, event) {
+  trackTurnChanges(sessionKey, event);
   switch (event.type) {
     case "state":
       noteTurnContext(sessionKey, {
@@ -910,6 +945,43 @@ function trackTurnLifecycle(sessionKey, event) {
         noteTurnSettled(sessionKey);
       return;
     default:
+  }
+}
+
+/**
+ * Same funnel, for changes.js: which files each turn changed. A queued
+ * prompt starts its turn without /prompt, so agent_start opens one too
+ * (beginTurn ignores a turn that is already open).
+ */
+function trackTurnChanges(sessionKey, event) {
+  try {
+    switch (event.type) {
+      case "state":
+        noteSessionContext(sessionKey, {
+          cwd: event.state?.cwd,
+          sessionPath: event.state?.sessionFile,
+        });
+        return;
+      case "agent_start":
+        beginTurn({ sessionKey, takeSnapshot });
+        return;
+      case "tool_execution_start":
+        beginTurn({ sessionKey, takeSnapshot });
+        noteToolCall(sessionKey, event.toolName, event.args);
+        return;
+      case "agent_settled":
+      case "agent_end":
+        void endTurn(sessionKey);
+        return;
+      case "__status":
+        if (event.status === "error" || event.status === "stopped")
+          void endTurn(sessionKey);
+        return;
+      default:
+    }
+  } catch (error) {
+    // Change history is a convenience; it never gets to break a turn.
+    logFault("track-changes", error);
   }
 }
 
@@ -1151,6 +1223,7 @@ function adoptLiveAgent(sessionKey, backend, sessionPath) {
     // that had already finished -- and that resume held the turn slot, so
     // the next thing the user typed was rejected as "already in progress".
     rekeySession(key, sessionKey);
+    rekeyChanges(key, sessionKey);
     // The runtime event log belongs to the conversation too — carry it over
     // so /api/<newKey>/log includes the in-flight turn's pre-reload events
     // (needed to replay the live run after a page refresh). Entry counts
@@ -1265,24 +1338,9 @@ function trackAskPending(agent, event) {
 }
 
 function isAllowedOrigin(origin) {
-  if (!origin) return false;
-  try {
-    const url = new URL(origin);
-    if (url.protocol !== "http:" && url.protocol !== "https:") return false;
-    const host = url.hostname;
-    // Exact hosts only. Public signup namespaces like *.pages.dev / *.workers.dev
-    // are attacker-ownable and must never be trusted by suffix match.
-    if (
-      host === "localhost" ||
-      host === "127.0.0.1" ||
-      host === "::1" ||
-      host === "[::1]"
-    )
-      return true;
-    return origin === process.env.DEVDEN_UI_ORIGIN;
-  } catch {
-    return false;
-  }
+  return allowedOrigin(
+    origin, process.env.DEVDEN_UI_ORIGIN, getRemoteTunnel()?.url,
+  );
 }
 
 function corsHeaders(req) {
@@ -1290,7 +1348,7 @@ function corsHeaders(req) {
   if (!isAllowedOrigin(origin)) return {};
   return {
     "Access-Control-Allow-Origin": origin,
-    "Access-Control-Allow-Methods": "GET,POST,PUT,OPTIONS",
+    "Access-Control-Allow-Methods": "GET,POST,PUT,DELETE,OPTIONS",
     "Access-Control-Allow-Headers": "Content-Type, Authorization",
     // Only granted to allowlisted origins (the legit hosted UI). This is what
     // lets Chrome's Private Network Access gate public->localhost requests:
@@ -1752,63 +1810,10 @@ function accessTokens() {
   return [ACCESS_TOKEN, tunnel?.token].filter(Boolean);
 }
 
-/**
- * Loopback requests (including same-machine proxies like `tailscale serve`)
- * stay open even while a public tunnel is active: the tunnel token gates the
- * public URL, not the desktop that started it.
- *
- * cloudflared also runs on this machine, so tunnel traffic arrives from
- * 127.0.0.1 too — Cloudflare's edge headers (cf-connecting-ip /
- * x-forwarded-for, present on every proxied request) distinguish it from a
- * genuinely local request. Spoofing them only costs an attacker access, so
- * the check is safe to take at face value.
- */
-function isLoopbackRequest(req) {
-  if (req.headers["cf-connecting-ip"] || req.headers["x-forwarded-for"])
-    return false;
-  const address = String(req.socket?.remoteAddress || "");
-  return (
-    address === "127.0.0.1" ||
-    address === "::1" ||
-    address === "::ffff:127.0.0.1"
-  );
-}
-
 function requestHasAccess(req, url) {
-  const tokens = accessTokens();
-  if (tokens.length === 0) return true;
-  const header = String(req.headers.authorization || "");
-  const cookie = String(req.headers.cookie || "");
-  for (const token of tokens) {
-    if (header === `Bearer ${token}`) return true;
-    if (header.startsWith("Basic ")) {
-      try {
-        const decoded = Buffer.from(header.slice(6), "base64").toString("utf8");
-        const password = decoded.includes(":")
-          ? decoded.slice(decoded.indexOf(":") + 1)
-          : decoded;
-        if (password === token) return true;
-      } catch {
-        /* invalid basic auth */
-      }
-    }
-    if (
-      cookie.split(";").some((part) => part.trim() === `devden-token=${token}`)
-    )
-      return true;
-  }
-  // One-time ticket for transports that cannot send headers or cookies
-  // (cross-origin EventSource / WebSocket). The raw token is deliberately not
-  // accepted in the query string: it would leak into server logs and history.
-  // (Exception: the /remote QR — see the tunnel check below.)
-  if (consumeAuthTicket(url.searchParams.get("ticket"))) return true;
-  // The /remote QR code URL carries the tunnel token in the query exactly
-  // once; route() swaps it for a cookie and redirects to a clean URL, so it
-  // never lingers in the phone's address bar or history. Tunnel URLs rotate
-  // every run and the token dies with the tunnel.
-  const tunnel = getRemoteTunnel();
-  if (tunnel && url.searchParams.get("token") === tunnel.token) return true;
-  return false;
+  return hasAccess(
+    req, url, ACCESS_TOKEN, getRemoteTunnel()?.token, consumeAuthTicket,
+  );
 }
 
 function denyAccess(res) {
@@ -1896,6 +1901,41 @@ async function route(req, res) {
     });
   }
 
+  if (pathname === "/api/auth" && req.method === "POST") {
+    if (!accessTokens().length)
+      return sendJson(res, 200, { ok: true, enabled: false });
+    const body = await readBody(req);
+    const header = String(req.headers.authorization || "");
+    const headerToken = header.startsWith("Bearer ") ? header.slice(7) : "";
+    const candidate = typeof body.token === "string" ? body.token : headerToken;
+    const matched = accessTokens().find((token) => token === candidate);
+    if (!candidate || !matched) return denyAccess(res);
+    const ticket = mintAuthTicket();
+    const headers = {
+      "Content-Type": "application/json; charset=utf-8",
+      "Cache-Control": "no-store, max-age=0",
+      Pragma: "no-cache",
+      ...corsHeaders(req),
+    };
+    // HttpOnly cookie so same-origin EventSource/WebSocket authenticate without
+    // exposing the token to script. Only set when the token is a safe cookie
+    // value; otherwise the client relies on the ticket + Authorization header.
+    if (/^[A-Za-z0-9._-]+$/.test(matched)) {
+      headers["Set-Cookie"] =
+        `devden-token=${matched}; HttpOnly; SameSite=Strict; Path=/; Max-Age=604800`;
+    }
+    res.writeHead(200, headers);
+    res.end(JSON.stringify({ ok: true, ticket }));
+    return;
+  }
+
+  // Serve the local login page, but protect every API action when a token is set.
+  if (
+    (pathname.startsWith("/api/") || !isLoopbackRequest(req)) &&
+    !requestHasAccess(req, url)
+  )
+    return denyAccess(res);
+
   if (pathname === "/api/backends" && req.method === "GET") {
     return sendJson(res, 200, { ok: true, backends: await listBackends() });
   }
@@ -1903,6 +1943,27 @@ async function route(req, res) {
   if (pathname === "/api/backends/recheck" && req.method === "POST") {
     clearDetectionCache();
     return sendJson(res, 200, { ok: true, backends: await listBackends() });
+  }
+
+  if (pathname === "/api/harness-updates" && req.method === "GET") {
+    return sendJson(res, 200, { ok: true, updates: await readHarnessUpdates() });
+  }
+
+  if (pathname === "/api/harness-updates/run" && req.method === "POST") {
+    const body = await readBody(req);
+    try {
+      return sendJson(res, 200, {
+        ok: true,
+        ...(await runHarnessUpdate(String(body.id))),
+      });
+    } catch (error) {
+      return sendJson(res, 500, {
+        ok: false,
+        error: String(error?.message || error),
+        log: error?.log,
+        cmd: error?.cmd,
+      });
+    }
   }
 
   if (pathname === "/api/onboarding" && req.method === "GET") {
@@ -1946,37 +2007,6 @@ async function route(req, res) {
       return sendJson(res, 200, { ok: false, error: message });
     }
   }
-
-  if (pathname === "/api/auth" && req.method === "POST") {
-    if (!ACCESS_TOKEN) return sendJson(res, 200, { ok: true, enabled: false });
-    const body = await readBody(req);
-    const header = String(req.headers.authorization || "");
-    const headerToken = header.startsWith("Bearer ") ? header.slice(7) : "";
-    const candidate = typeof body.token === "string" ? body.token : headerToken;
-    const matched = accessTokens().find((token) => token === candidate);
-    if (!candidate || !matched) return denyAccess(res);
-    const ticket = mintAuthTicket();
-    const headers = {
-      "Content-Type": "application/json; charset=utf-8",
-      "Cache-Control": "no-store, max-age=0",
-      Pragma: "no-cache",
-      ...corsHeaders(req),
-    };
-    // HttpOnly cookie so same-origin EventSource/WebSocket authenticate without
-    // exposing the token to script. Only set when the token is a safe cookie
-    // value; otherwise the client relies on the ticket + Authorization header.
-    if (/^[A-Za-z0-9._-]+$/.test(matched)) {
-      headers["Set-Cookie"] =
-        `devden-token=${matched}; HttpOnly; SameSite=Strict; Path=/; Max-Age=604800`;
-    }
-    res.writeHead(200, headers);
-    res.end(JSON.stringify({ ok: true, ticket }));
-    return;
-  }
-
-  const requiresAccess = accessTokens().length > 0;
-  if (requiresAccess && !isLoopbackRequest(req) && !requestHasAccess(req, url))
-    return denyAccess(res);
 
   if (pathname === "/api/attention" && req.method === "GET") {
     return sendJson(res, 200, {
@@ -2436,20 +2466,34 @@ async function route(req, res) {
     }
   }
 
+  if (pathname === "/api/catalog/open-settings" && req.method === "POST") {
+    await readBody(req);
+    try {
+      await openWorkspacePath(SETTINGS_PATH);
+      return sendJson(res, 200, { ok: true });
+    } catch (error) {
+      return sendJson(res, 400, {
+        ok: false,
+        error: String(error?.message ?? error),
+      });
+    }
+  }
+
   if (pathname === "/api/catalog" && req.method === "GET") {
-    return sendJson(res, 200, await loadCatalog());
+    return sendJson(res, 200, await loadCatalog(url.searchParams.get("backend") ?? "pi"));
   }
 
   // Skill authoring. Confinement to the skills root lives in catalog.js, next
   // to the writes it protects.
   if (pathname === "/api/catalog/skill" && req.method === "GET") {
     const name = url.searchParams.get("name") ?? "";
-    const result = await readSkill(name);
+    const result = await readSkill(name, url.searchParams.get("backend") ?? "pi");
     return sendJson(res, result.ok ? 200 : 400, result);
   }
   if (pathname === "/api/catalog/skill" && req.method === "PUT") {
     const body = await readBody(req);
     const result = await writeSkill({
+      backend: body.backend ?? "pi",
       name: String(body.name ?? ""),
       description: String(body.description ?? ""),
       body: String(body.body ?? ""),
@@ -2458,7 +2502,7 @@ async function route(req, res) {
   }
   if (pathname === "/api/catalog/skill" && req.method === "DELETE") {
     const name = url.searchParams.get("name") ?? "";
-    const result = await deleteSkill(name);
+    const result = await deleteSkill(name, url.searchParams.get("backend") ?? "pi");
     return sendJson(res, result.ok ? 200 : 400, result);
   }
 
@@ -2537,6 +2581,13 @@ async function route(req, res) {
           : action === "delete"
             ? await deleteSession(sessionPath)
             : { ok: false, error: "unknown session action" };
+    if (action === "delete" && result.ok) {
+      try {
+        forgetSessionChanges(sessionPath);
+      } catch (error) {
+        logFault("forget-changes", error);
+      }
+    }
     return sendJson(res, result.ok ? 200 : 400, result);
   }
 
@@ -2668,10 +2719,12 @@ async function route(req, res) {
     // this point" works on every backend and not just the one CLI that
     // checkpoints for itself. Never let it block or fail a turn — awaiting
     // `git add -A` sat on the first-token path.
-    void takeSnapshot(
-      String(body.cwd || promptAgent.cwd || process.cwd()),
-      message,
-    ).catch(() => {});
+    const turnCwd = String(body.cwd || promptAgent.cwd || process.cwd());
+    const snapshot = takeSnapshot(turnCwd, message).catch(() => ({
+      ok: false,
+    }));
+    // The same snapshot is this turn's "before" for the Changes views.
+    beginTurn({ sessionKey, cwd: turnCwd, label: message, snapshot });
     // A tab whose `streaming` flag lost sync (laptop wake, SSE reconnect, an
     // auto-resume that started under another key) used to POST /prompt into a
     // busy agent and have the message rejected outright. enqueue sends
@@ -2850,6 +2903,13 @@ async function route(req, res) {
       ),
     );
   }
+  if (req.method === "POST" && action === "answer") {
+    const body = await readBody(req);
+    const agent = watch(sessionKey);
+    if (typeof agent.resolveUserInput !== "function") return sendJson(res, 400, { ok: false, error: "This backend has no native questions" });
+    const result = agent.resolveUserInput(body.requestId, body.answers);
+    return sendJson(res, result.ok ? 200 : 400, result);
+  }
   if (req.method === "POST" && action === "approve") {
     // Manual-mode tool approval answer from the UI.
     const body = await readBody(req);
@@ -2933,7 +2993,9 @@ async function route(req, res) {
         accessMode:
           body.accessMode === "read-only" ? "read-only" : "workspace-write",
         agentMode:
-          body.agentMode === "plan" || body.agentMode === "manual"
+          body.agentMode === "plan" ||
+          body.agentMode === "manual" ||
+          body.agentMode === "auto-edit"
             ? body.agentMode
             : "standard",
         sessionPath:
@@ -3285,6 +3347,28 @@ async function route(req, res) {
     const text = typeof body.text === "string" ? body.text.trim() : "";
     return sendJson(res, 200, setSessionGoal(sessionKey, text));
   }
+  // Recorded changes (changes.js): this session's latest turn, a given
+  // `turn`, or the whole session. Reads only DevDen's own database.
+  if (req.method === "GET" && action === "changes") {
+    const scope = url.searchParams.get("scope") === "turn" ? "turn" : "session";
+    try {
+      return sendJson(
+        res,
+        200,
+        await readChanges({
+          sessionKey,
+          sessionPath: url.searchParams.get("sessionPath") || "",
+          scope,
+          turnId: url.searchParams.get("turn"),
+        }),
+      );
+    } catch (error) {
+      return sendJson(res, 500, {
+        ok: false,
+        error: String(error?.message ?? error),
+      });
+    }
+  }
   // Working-tree changes for the post-turn "Changes" card: branch, GitHub
   // connectivity (an `origin` remote must exist — push errors surface on push),
   // and per-file status plus line counts. `?file=` returns that file's diff.
@@ -3403,7 +3487,11 @@ async function route(req, res) {
         file.startsWith(":")
       )
         return sendJson(res, 400, { ok: false, error: "Invalid file path." });
-      // Untracked files never appear in `git diff HEAD`; probe first.
+      // Untracked files never appear in `git diff HEAD`; probe first. Base
+      // mode (the explorer's Changes tab) asks for the branch's whole change
+      // against its base commit, so the diff target widens with it.
+      const base =
+        url.searchParams.get("base") === "1" ? await baseOf(dir) : null;
       const probed = await git([
         "status",
         "--porcelain=v1",
@@ -3414,7 +3502,7 @@ async function route(req, res) {
       const line = probed.stdout.split("\n").find((row) => row.length > 3);
       const diff = line?.startsWith("??")
         ? await git(["diff", "--no-index", "--", "/dev/null", file])
-        : await git(["diff", "HEAD", "--", file]);
+        : await git(["diff", base ?? "HEAD", "--", file]);
       const text = `${diff.stdout}${diff.stderr}`.trim();
       return sendJson(res, 200, {
         ok: true,
@@ -3473,17 +3561,15 @@ async function route(req, res) {
           deletions: Number(match[2]) || 0,
         });
     }
-    const changes = [];
-    for (const row of statusProbe.stdout.split("\n")) {
-      if (row.length < 4) continue;
-      const code = row.slice(0, 2);
-      const path = row.slice(3).replace(/^"|"$/g, "");
-      const untracked = code.startsWith("??");
-      // Unmerged index states: both/either side added, deleted or modified.
-      // They are NOT "modified" — committing one writes conflict markers.
-      const conflicted = code === "AA" || code === "DD" || code.includes("U");
-      const letter = untracked ? "A" : code[1] === "." ? code[0] : code[1];
-      if (untracked) {
+    // Untracked files have no numstat row; count them all at once. Probing
+    // them one by one serialized a git spawn per file (dozens of them),
+    // which is what kept the Changes pill blank for seconds.
+    const untrackedPaths = statusProbe.stdout
+      .split("\n")
+      .filter((row) => row.startsWith("??"))
+      .map((row) => row.slice(3).replace(/^"|"$/g, ""));
+    await Promise.all(
+      untrackedPaths.map(async (path) => {
         const probe = await git([
           "diff",
           "--no-index",
@@ -3497,7 +3583,18 @@ async function route(req, res) {
           additions: match ? Number(match[1]) || 0 : 0,
           deletions: match ? Number(match[2]) || 0 : 0,
         });
-      }
+      }),
+    );
+    const changes = [];
+    for (const row of statusProbe.stdout.split("\n")) {
+      if (row.length < 4) continue;
+      const code = row.slice(0, 2);
+      const path = row.slice(3).replace(/^"|"$/g, "");
+      const untracked = code.startsWith("??");
+      // Unmerged index states: both/either side added, deleted or modified.
+      // They are NOT "modified" — committing one writes conflict markers.
+      const conflicted = code === "AA" || code === "DD" || code.includes("U");
+      const letter = untracked ? "A" : code[1] === "." ? code[0] : code[1];
       const stat = counts.get(path) ?? { additions: 0, deletions: 0 };
       changes.push({
         path,
@@ -4257,6 +4354,9 @@ for (const signal of ["uncaughtException", "unhandledRejection"]) {
 }
 
 const server = createServer((req, res) => {
+  const origin = String(req.headers.origin || "");
+  if (origin && !isAllowedOrigin(origin))
+    return sendJson(res, 403, { ok: false, error: "Origin not allowed." });
   if (req.method === "OPTIONS") {
     res.writeHead(204, corsHeaders(req));
     res.end();
@@ -4289,9 +4389,7 @@ server.on("upgrade", (req, socket, head) => {
   }
   if (
     (url.pathname !== "/api/terminal" && url.pathname !== "/api/events-ws") ||
-    (accessTokens().length > 0 &&
-      !isLoopbackRequest(req) &&
-      !requestHasAccess(req, url))
+    !requestHasAccess(req, url)
   ) {
     socket.destroy();
     return;
@@ -4323,7 +4421,7 @@ terminalSockets.on("connection", (socket, _request, url) => {
     existsSync(requestedCwd) && statSync(requestedCwd).isDirectory()
       ? requestedCwd
       : homedir();
-  const shell = process.env.SHELL || "/bin/zsh";
+  const shell = process.env.SHELL || "/bin/sh";
   let terminal;
   try {
     terminal = pty.spawn(shell, ["-l"], {

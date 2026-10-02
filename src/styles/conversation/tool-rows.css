@@ -1,0 +1,532 @@
+/* Tool call rows. One line per call, status on the thread, truncated to the pane. */
+.chat-turn,
+.tl--tool,
+.trow-explored,
+.trow-stack,
+.trow,
+.trow__grid,
+.trow__main,
+.trow__arg,
+.trow__result {
+ min-width: 0;
+ max-width: 100%;
+}
+.tl--tool::before {
+ display: none;
+}
+.chat-turn > .tl--tool + .tl--tool,
+.chat-turn > .trow-explored + .tl--tool,
+.chat-turn > .tl--tool + .trow-explored,
+.chat-turn > .trow-explored + .trow-explored {
+ margin-top: -8px;
+}
+.trow-stack {
+ position: relative;
+ animation: trow-in 320ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+.trow-stack.is-failed {
+ border-radius: 6px;
+ animation:
+  trow-in 320ms cubic-bezier(0.16, 1, 0.3, 1),
+  trow-glow 800ms ease 200ms forwards;
+}
+@keyframes trow-in {
+ from {
+  opacity: 0;
+  transform: translateY(6px);
+  clip-path: inset(100% -8px 0 -8px);
+ }
+ to {
+  opacity: 1;
+  transform: none;
+  clip-path: inset(0 -8px 0 -8px);
+ }
+}
+@keyframes trow-glow {
+ 0% {
+  background: transparent;
+ }
+ 40% {
+  background: rgb(255 122 138 / 0.16);
+ }
+ 100% {
+  background: rgb(255 122 138 / 0.05);
+ }
+}
+@keyframes trow-sweep {
+ from {
+  background-position: 100% 0;
+ }
+ to {
+  background-position: 0 0;
+ }
+}
+@keyframes trow-wipe {
+ from {
+  clip-path: inset(0 100% 0 0);
+ }
+ to {
+  clip-path: inset(0 0 0 0);
+ }
+}
+@keyframes trow-breathe {
+ 0%,
+ 100% {
+  opacity: 0.35;
+ }
+ 50% {
+  opacity: 1;
+ }
+}
+.trow {
+ display: block;
+ width: 100%;
+ margin: 0;
+ padding: 0;
+ border: 0;
+ border-radius: 6px;
+ appearance: none;
+ background: transparent;
+ color: inherit;
+ text-align: left;
+ cursor: pointer;
+ box-shadow: none;
+}
+.trow:hover,
+.trow:focus,
+.trow:focus-visible {
+ background: transparent;
+ box-shadow: none;
+}
+.trow__grid {
+ display: grid;
+ grid-template-columns: max-content minmax(0, 1fr);
+ column-gap: 10px;
+ align-items: center;
+ height: 28px;
+ padding: 0 8px;
+ font: 12px / 28px var(--ds-font-family-code);
+}
+.trow__verb {
+ width: 56px;
+ overflow: hidden;
+ color: var(--pw-fg-strong);
+ font-weight: 500;
+ white-space: nowrap;
+ text-overflow: ellipsis;
+}
+.trow__verb.is-wide {
+ width: auto;
+ min-width: 56px;
+}
+.trow__verb.is-accent {
+ color: var(--pw-accent);
+}
+.trow-stack.is-running .trow__verb {
+ background-image: linear-gradient(
+  90deg,
+  var(--pw-fg-4) 35%,
+  var(--pw-fg-strong) 50%,
+  var(--pw-fg-4) 65%
+ );
+ background-size: 300% 100%;
+ -webkit-background-clip: text;
+ background-clip: text;
+ color: transparent;
+ animation: trow-sweep 1.3s linear infinite;
+}
+.trow-stack.is-denied .trow__verb {
+ color: var(--pw-fg-4);
+}
+.trow-stack.is-denied .trow__arg {
+ opacity: 0.55;
+}
+.trow__main {
+ position: relative;
+ display: grid;
+ grid-template-columns: minmax(0, 1fr) auto 44px auto;
+ column-gap: 10px;
+ align-items: center;
+ height: 28px;
+}
+.trow__arg {
+ position: relative;
+ display: flex;
+ align-items: baseline;
+ overflow: hidden;
+ color: var(--pw-fg);
+ white-space: nowrap;
+}
+.trow__prefix,
+.trow__suffix {
+ flex: 0 3 auto;
+ min-width: 0;
+ overflow: hidden;
+ text-overflow: ellipsis;
+}
+.trow__bright {
+ flex: 0 1 auto;
+ min-width: 0;
+ overflow: hidden;
+ text-overflow: ellipsis;
+}
+.trow__tag {
+ flex: none;
+}
+.trow__arg.is-sans {
+ font-family:
+  -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
+ font-size: 13px;
+}
+.trow__dim {
+ color: var(--pw-fg-4);
+}
+.trow__bright {
+ color: var(--pw-fg);
+}
+.trow__tag {
+ margin-right: 6px;
+ padding: 0 4px;
+ border-radius: 4px;
+ background: color-mix(in srgb, var(--pw-fg) 8%, transparent);
+ color: var(--pw-fg-4);
+ font-size: 10px;
+}
+.trow__strike {
+ position: absolute;
+ left: 0;
+ top: 50%;
+ width: 0;
+ height: 1px;
+ background: var(--pw-fg-3);
+}
+.trow__strike.is-on {
+ width: 100%;
+ transition: width 450ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+.trow__result {
+ display: flex;
+ align-items: center;
+ justify-content: flex-end;
+ overflow: hidden;
+ flex: none;
+ color: var(--pw-fg-3);
+ font-size: 11.5px;
+ white-space: nowrap;
+ text-overflow: ellipsis;
+ font-variant-numeric: tabular-nums;
+}
+.trow__part.is-num,
+.trow__roll {
+ color: var(--pw-fg);
+}
+.trow__part.is-add .trow__roll {
+ color: #5fd49a;
+}
+.trow__part.is-del .trow__roll,
+.trow__part.is-fail .trow__roll {
+ color: #ff7a8a;
+}
+.trow__part.is-wait .trow__roll {
+ color: #f0c84a;
+}
+.trow__part.is-dim,
+.trow__part.is-quiet {
+ color: var(--pw-fg-4);
+}
+.trow__part.is-add {
+ color: #5fd49a;
+}
+.trow__part.is-del,
+.trow__part.is-fail,
+.trow__note.is-fail,
+.trow-status__fail,
+.turn-fold__failed {
+ color: #ff7a8a;
+}
+.trow__part.is-wait {
+ color: #f0c84a;
+}
+.trow__roll {
+ display: inline-flex;
+ height: 20px;
+ overflow: hidden;
+}
+.trow__digit {
+ display: block;
+ height: 20px;
+ overflow: hidden;
+ line-height: 20px;
+}
+.trow__digit > span {
+ display: flex;
+ flex-direction: column;
+}
+.trow__digit > span > span {
+ height: 20px;
+}
+.trow__dur {
+ color: var(--pw-fg-4);
+ font-size: 11px;
+ text-align: right;
+ font-variant-numeric: tabular-nums;
+ white-space: nowrap;
+}
+.trow__thread {
+ position: absolute;
+ right: 0;
+ bottom: 0;
+ left: 0;
+ height: 8px;
+ overflow: hidden;
+ pointer-events: none;
+}
+.trow__thread-bar {
+ position: absolute;
+ bottom: 0;
+ left: 0;
+ height: 2px;
+ width: 100%;
+ border-radius: 1px;
+ background: color-mix(in srgb, var(--pw-fg-strong) 62%, transparent);
+ transition: background 600ms linear;
+}
+.trow-stack.is-running .trow__thread-bar,
+.trow-stack.is-waiting .trow__thread-bar {
+ width: 4%;
+}
+.trow__thread-bar.is-segmented {
+ height: 3px;
+ background: repeating-linear-gradient(
+  90deg,
+  color-mix(in srgb, var(--pw-fg-strong) 78%, transparent) 0 9px,
+  transparent 9px 13px
+ );
+}
+.trow-stack.is-settled .trow__thread-bar,
+.trow-stack.is-settled .trow__thread-bar.is-segmented {
+ height: 2px;
+ background: color-mix(in srgb, var(--pw-fg-strong) 8%, transparent);
+}
+.trow-stack.is-failed .trow__thread-bar,
+.trow-stack.is-failed .trow__thread-bar.is-segmented {
+ height: 2px;
+ background: rgb(255 122 138 / 0.85);
+ transition: background 200ms linear;
+}
+.trow-stack.is-stopped .trow__thread-bar,
+.trow-stack.is-denied .trow__thread-bar {
+ background: color-mix(in srgb, var(--pw-fg) 28%, transparent);
+}
+.trow-stack.is-waiting .trow__thread-bar {
+ background: rgb(240 200 74 / 0.35);
+}
+.trow__thread-head {
+ position: absolute;
+ bottom: -1px;
+ left: 0;
+ width: 44px;
+ height: 4px;
+ border-radius: 2px;
+ opacity: 0;
+ background: linear-gradient(90deg, transparent, var(--pw-fg-strong));
+}
+.trow-stack.is-waiting .trow__thread-head {
+ opacity: 1;
+ background: linear-gradient(90deg, transparent, #f0c84a);
+ animation: trow-breathe 1.8s ease-in-out infinite;
+}
+.trow__note {
+ height: 22px;
+ padding: 0 8px 0 82px;
+ overflow: hidden;
+ color: var(--pw-fg-4);
+ font: 11.5px / 22px var(--ds-font-family-code);
+ white-space: nowrap;
+ text-overflow: ellipsis;
+}
+.trow__panel {
+ min-width: 0;
+ padding: 0 8px 6px 82px;
+}
+.trow__panel--diff {
+ /* Unlike list/log panels, a diff reads as code, not as an argument's
+     detail — it should start under the row's own left edge, not indented
+     under the path text. */
+ padding-left: 8px;
+}
+.trow__diff {
+ margin: 4px 0 6px;
+ overflow: hidden;
+ border-radius: 6px;
+ background: color-mix(in srgb, var(--pw-fg) 6%, transparent);
+ box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--pw-fg) 8%, transparent);
+}
+.trow__diff-label {
+ padding: 2px 8px 0;
+ color: var(--pw-fg-4);
+ font: 11px / 18px var(--ds-font-family-code);
+}
+.trow__diff-line {
+ display: grid;
+ grid-template-columns: calc(var(--diff-gutter, 3ch) + 14px) 14px minmax(0, 1fr);
+ height: 20px;
+ overflow: hidden;
+ /* Untouched lines stay dim. Adds and removals keep the text color and
+    only tint the row and the sign. */
+ color: var(--pw-fg-3);
+ font: 11.5px / 20px var(--ds-font-family-code);
+ white-space: pre;
+ background: transparent;
+ animation: trow-wipe 250ms linear backwards;
+ animation-delay: calc(250ms + var(--i, 0) * 60ms);
+}
+.trow__diff-line span:first-child {
+ padding: 0 6px 0 8px;
+ color: var(--pw-fg-4);
+ text-align: right;
+}
+.trow__diff-line span:nth-child(2) {
+ color: var(--pw-fg-4);
+}
+.trow__diff-line span:last-child {
+ overflow: hidden;
+ text-overflow: ellipsis;
+}
+.trow__diff-line.is-add,
+.trow__diff-line.is-remove {
+ color: var(--pw-fg-strong);
+}
+.trow__diff-line.is-add {
+ background: var(--pw-add-bg);
+}
+.trow__diff-line.is-add span:nth-child(2) {
+ color: var(--pw-add-sign);
+}
+.trow__diff-line.is-remove {
+ background: var(--pw-del-bg);
+}
+.trow__diff-line.is-remove span:nth-child(2) {
+ color: var(--pw-del-sign);
+}
+/* Workbench redesign: untouched #a6a4b1, changed text #f6f5fa. Add/remove
+   washes come from the user's Code colors (--pw-add-bg / --pw-del-bg). */
+body[data-ds-dark-theme] .trow__diff-line {
+ color: #a6a4b1;
+}
+body[data-ds-dark-theme] .trow__diff-line span:first-child,
+body[data-ds-dark-theme] .trow__diff-line span:nth-child(2) {
+ color: #7a7884;
+}
+body[data-ds-dark-theme] .trow__diff-line.is-add,
+body[data-ds-dark-theme] .trow__diff-line.is-remove {
+ color: #f6f5fa;
+}
+.trow__log {
+ max-height: 360px;
+ margin: 4px 0;
+ overflow: auto;
+ color: var(--pw-fg-3);
+ font: 11.5px / 18px var(--ds-font-family-code);
+ white-space: pre;
+}
+.trow__matches {
+ margin: 4px 0;
+ color: var(--pw-fg-3);
+ font: 11.5px / 18px var(--ds-font-family-code);
+}
+.trow__match-file {
+ color: var(--pw-fg);
+ font-weight: 500;
+}
+.trow__match-line {
+ display: grid;
+ grid-template-columns: 36px minmax(0, 1fr);
+ min-width: 0;
+}
+.trow__match-line span:first-child {
+ color: var(--pw-fg-4);
+ text-align: right;
+ padding-right: 8px;
+}
+.trow__match-line span:last-child {
+ overflow: hidden;
+ white-space: nowrap;
+ text-overflow: ellipsis;
+}
+.trow__matches mark {
+ background: transparent;
+ color: var(--pw-fg-strong);
+ font-weight: 600;
+}
+.trow__more,
+.trow__actions button,
+.trow__open {
+ border: 0;
+ background: transparent;
+ color: var(--pw-fg);
+ font: 11.5px var(--ds-font-family-code);
+ cursor: pointer;
+ padding: 0;
+}
+.trow__actions {
+ display: flex;
+ flex-wrap: wrap;
+ gap: 8px;
+ align-items: center;
+ min-width: 0;
+ padding: 0 8px 4px 82px;
+ color: var(--pw-fg-4);
+ font: 11.5px / 22px var(--ds-font-family-code);
+}
+.trow-nest {
+ min-width: 0;
+ padding-left: 14px;
+}
+.trow-nest--agent {
+ padding-left: 20px;
+}
+.trow-nest > * {
+ animation: trow-in 360ms cubic-bezier(0.16, 1, 0.3, 1) backwards;
+}
+.trow-status {
+ display: flex;
+ flex: none;
+ align-items: baseline;
+ min-width: 0;
+ height: 28px;
+ padding: 0 16px;
+ font: 12px / 28px var(--ds-font-family-code);
+ white-space: nowrap;
+}
+.trow-status__verb {
+ flex: none;
+ color: var(--pw-fg-strong);
+ font-weight: 500;
+}
+.trow-status__meta {
+ min-width: 0;
+ overflow: hidden;
+ color: var(--pw-fg-4);
+ text-overflow: ellipsis;
+}
+.turn-fold__failed {
+ flex: none;
+ font-size: 10.5px;
+ white-space: nowrap;
+}
+@media (prefers-reduced-motion: reduce) {
+ .trow-stack,
+ .trow-stack.is-failed,
+ .trow-stack.is-running .trow__verb,
+ .trow-stack.is-waiting .trow__thread-head,
+ .trow__diff-line,
+ .trow-nest > *,
+ .trow__thread-bar,
+ .trow__thread-head,
+ .trow__digit > span,
+ .trow__strike {
+  animation: none !important;
+  transition: none !important;
+ }
+}

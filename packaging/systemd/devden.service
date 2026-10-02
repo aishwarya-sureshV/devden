@@ -1,0 +1,23 @@
+[Unit]
+Description=DevDen coding workbench
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=devden
+Group=devden
+WorkingDirectory=/home/devden/projects
+Environment=HOME=/home/devden
+Environment=SHELL=/bin/bash
+Environment=PATH=/home/devden/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=DEVDEN_HOST=127.0.0.1
+Environment=DEVDEN_PORT=4319
+EnvironmentFile=/etc/devden.env
+ExecStart=/usr/bin/node /home/devden/devden/server/index.js
+Restart=always
+RestartSec=3
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

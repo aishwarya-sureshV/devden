@@ -1,0 +1,395 @@
+/* ---------- Post-turn Changes card (commit + push to GitHub) ---------- */
+
+.changes {
+ margin: 0 0 8px;
+ /* Match the transcript CONTENT width: the chat column is
+  --pw-chat-content-width wide with 24px side padding, so its tool cards
+  and messages end 48px inside the composer card's width. */
+ width: 100%;
+ max-width: calc(var(--pw-chat-content-width) - 48px);
+ border: 1px solid var(--dsw-alias-border-l2);
+ border-radius: 12px;
+ background: var(--dsw-alias-bg-layer-1);
+ overflow: hidden;
+}
+
+.changes__diffstat {
+ flex: none;
+ display: inline-flex;
+ gap: 6px;
+ font-size: 11px;
+ font-variant-numeric: tabular-nums;
+}
+.changes__diffstat b {
+ color: var(--dsw-alias-state-success-primary, #1a7f37);
+ font-weight: 600;
+}
+.changes__diffstat i {
+ color: var(--dsw-alias-state-danger-primary, #cf222e);
+ font-style: normal;
+}
+.changes__pill-chevron {
+ flex: none;
+ display: inline-flex;
+ color: var(--dsw-alias-label-caption);
+}
+.changes__pill-chevron.is-closed svg {
+ transform: rotate(-90deg);
+}
+.changes__pill-chevron svg {
+ transition: transform 140ms ease;
+}
+.changes__head {
+ display: flex;
+ align-items: center;
+ gap: 10px;
+ padding: 5px 14px;
+ cursor: pointer;
+}
+.changes--collapsed:not(.changes--conflict) .changes__head {
+ border-bottom: 0;
+}
+.changes__head strong {
+ font-size: 12px;
+ letter-spacing: 0.02em;
+}
+.changes__meta {
+ flex: 1;
+ overflow: hidden;
+ color: var(--dsw-alias-label-caption);
+ font-size: 10.5px;
+ text-overflow: ellipsis;
+ white-space: nowrap;
+}
+.changes__expand {
+ flex: none;
+ display: inline-flex;
+ align-items: center;
+ justify-content: center;
+ width: 22px;
+ height: 22px;
+ border: 0;
+ border-radius: 6px;
+ background: transparent;
+ color: var(--dsw-alias-label-caption);
+ cursor: pointer;
+}
+.changes__expand:hover {
+ background: rgb(var(--ink) / 0.08);
+ color: var(--fg0);
+}
+.changes__dismiss {
+ flex: none;
+ width: 22px;
+ height: 22px;
+ border: 0;
+ border-radius: 6px;
+ background: transparent;
+ color: var(--dsw-alias-label-caption);
+ font-size: 14px;
+ line-height: 1;
+ cursor: pointer;
+}
+/* Collapse toggle: collapsed keeps only the header line. */
+.changes--collapsed .changes__foot,
+.changes--collapsed .changes__conflict,
+.changes--collapsed .changes__output {
+ display: none;
+}
+.changes__dismiss:hover {
+ background: var(--dsw-alias-interactive-bg-hover);
+ color: var(--dsw-alias-label-primary);
+}
+/* Workspace identity, moved down from the header: the folder you are in and
+   which branch, as the first thing in the commit row. */
+/* Quota reset time, bottom right of the commit row. */
+.changes__foot {
+ display: flex;
+ flex-wrap: wrap;
+ gap: 8px;
+ padding: 5px 12px;
+ border-top: 1px solid var(--dsw-alias-border-l2);
+}
+.changes__commit-input {
+ flex: 1;
+ min-width: 0;
+ min-height: 30px;
+ padding: 4px 10px;
+ border: 1px solid var(--dsw-alias-border-l2);
+ border-radius: 8px;
+ background: var(--dsw-alias-bg-base);
+ color: var(--dsw-alias-label-primary);
+ font-size: 11px;
+}
+.changes__commit-input::placeholder {
+ color: var(--dsw-alias-label-caption);
+}
+.changes__commit-input:focus-visible {
+ outline: 1px solid var(--dsw-alias-state-business-primary);
+ outline-offset: 0;
+}
+.changes__push {
+ flex: none;
+ min-height: 30px;
+ padding: 4px 14px;
+ border: 1px solid var(--dsw-alias-state-business-primary, #b05d13);
+ border-radius: 8px;
+ background: var(--dsw-alias-state-business-primary, #b05d13);
+ color: #fffdf7;
+ font-size: 11px;
+ font-weight: 600;
+ cursor: pointer;
+}
+.changes__push:hover {
+ background: color-mix(
+  in srgb,
+  var(--dsw-alias-state-business-primary, #b05d13) 86%,
+  black
+ );
+}
+.changes__push:disabled {
+ opacity: 0.6;
+ cursor: default;
+}
+/* Git menu: one header button holding every secondary op, so the card keeps a
+   single primary action instead of a row of competing buttons. */
+.changes__menu-wrap {
+ position: relative;
+ flex: none;
+}
+/* The card clips its children (rounded corners over the file list); the open
+   menu is the one thing that has to escape that box. */
+.changes:has(.changes__menu) {
+ overflow: visible;
+}
+.changes__menu {
+ position: absolute;
+ top: calc(100% + 5px);
+ right: 0;
+ z-index: 30;
+ width: 296px;
+ max-height: 420px;
+ overflow-y: auto;
+ padding: 5px;
+ border: 1px solid var(--dsw-alias-border-l2);
+ border-radius: 10px;
+ background: var(--dsw-alias-bg-layer-1);
+ box-shadow: 0 8px 24px rgb(0 0 0 / 18%);
+}
+.changes__menu-head {
+ margin: 6px 0 3px;
+ padding: 0 7px;
+ color: var(--dsw-alias-label-caption);
+ font-size: 9.5px;
+ font-weight: 600;
+ letter-spacing: 0.06em;
+ text-transform: uppercase;
+}
+.changes__menu-head:first-child {
+ margin-top: 2px;
+}
+.changes__menu > button {
+ display: flex;
+ align-items: baseline;
+ gap: 8px;
+ width: 100%;
+ padding: 5px 7px;
+ border: 0;
+ border-radius: 6px;
+ background: transparent;
+ color: var(--dsw-alias-label-primary);
+ font-size: 11px;
+ text-align: left;
+ cursor: pointer;
+}
+.changes__menu > button:hover:not(:disabled) {
+ background: var(--dsw-alias-interactive-bg-hover);
+}
+.changes__menu > button:disabled {
+ opacity: 0.45;
+ cursor: default;
+}
+/* The trailing span is the "what this actually runs" hint. */
+.changes__menu > button > span:last-child {
+ margin-left: auto;
+ color: var(--dsw-alias-label-caption);
+ font-size: 9.5px;
+ white-space: nowrap;
+}
+/* Two lines per stash: the message gets the full width, the age and the three
+   actions share the second — three buttons and a label never fit on one row. */
+.changes__stash {
+ padding: 4px 7px 5px;
+ border-radius: 6px;
+}
+.changes__stash:hover {
+ background: var(--dsw-alias-interactive-bg-hover);
+}
+.changes__stash-label {
+ display: block;
+ overflow: hidden;
+ color: var(--dsw-alias-label-primary);
+ font-size: 10.5px;
+ text-overflow: ellipsis;
+ white-space: nowrap;
+}
+.changes__stash-age {
+ flex: 1;
+ color: var(--dsw-alias-label-caption);
+ font-size: 9.5px;
+}
+.changes__stash-acts {
+ display: flex;
+ align-items: center;
+ gap: 3px;
+ margin-top: 3px;
+}
+.changes__stash-acts button {
+ padding: 2px 6px;
+ border: 1px solid var(--dsw-alias-border-l2);
+ border-radius: 5px;
+ background: var(--dsw-alias-bg-base);
+ color: var(--dsw-alias-label-secondary);
+ font-size: 9.5px;
+ cursor: pointer;
+}
+.changes__stash-acts button:hover {
+ color: var(--dsw-alias-label-primary);
+ border-color: var(--dsw-alias-state-business-primary, #b05d13);
+}
+.changes__stash-acts button.is-danger:hover {
+ color: var(--ds-status-error, #a4392e);
+ border-color: var(--ds-status-error, #a4392e);
+}
+/* Unfinished merge/rebase: the card swaps its commit footer for this, and the
+   red edge says the repo is in a mode, not just dirty. */
+.changes--conflict {
+ border-color: var(--ds-status-error, #a4392e);
+}
+.changes__conflict {
+ padding: 7px 12px 8px;
+ border-top: 1px solid var(--dsw-alias-border-l2);
+ background: var(--pw-del-bg, rgba(184, 45, 30, 0.08));
+}
+.changes__conflict-text {
+ margin: 0 0 6px;
+ color: var(--dsw-alias-label-secondary);
+ font-size: 10.5px;
+ line-height: 1.5;
+}
+.changes__conflict-text strong {
+ color: var(--ds-status-error, #a4392e);
+ font-size: 11px;
+}
+.changes__conflict-acts {
+ display: flex;
+ flex-wrap: wrap;
+ gap: 6px;
+}
+.changes__conflict-acts button {
+ min-height: 26px;
+ padding: 3px 10px;
+ border: 1px solid var(--dsw-alias-border-l2);
+ border-radius: 7px;
+ background: var(--dsw-alias-bg-base);
+ color: var(--dsw-alias-label-primary);
+ font-size: 10.5px;
+ font-weight: 600;
+ cursor: pointer;
+}
+.changes__conflict-acts button:disabled {
+ opacity: 0.55;
+ cursor: default;
+}
+.changes__conflict-ask {
+ border-color: var(--dsw-alias-state-business-primary, #b05d13) !important;
+ background: var(--dsw-alias-state-business-primary, #b05d13) !important;
+ color: #fffdf7 !important;
+}
+.changes__conflict-continue:hover:not(:disabled) {
+ border-color: var(--dsw-alias-state-business-primary, #b05d13);
+}
+.changes__conflict-abort {
+ margin-left: auto;
+}
+.changes__conflict-abort:hover:not(:disabled) {
+ border-color: var(--ds-status-error, #a4392e);
+ color: var(--ds-status-error, #a4392e);
+}
+
+/* Git result toast: fixed to the viewport (portalled to <body>), so a pull's
+   output never reflows the card or scrolls off with the transcript. Top-right,
+   clear of the composer — the bottom-right corner is the send button. */
+/* Inline failure line for a failed git action (toasts were removed). */
+.changes__error {
+ margin: 6px 14px;
+ padding: 7px 10px;
+ border-radius: 8px;
+ border: 1px solid
+  color-mix(in srgb, var(--ds-status-error, #a4392e) 45%, transparent);
+ background: color-mix(
+  in srgb,
+  var(--ds-status-error, #a4392e) 8%,
+  transparent
+ );
+ color: var(--dsw-alias-label-primary);
+ font-size: 11.5px;
+}
+.changes__error strong {
+ font-size: 11.5px;
+}
+.changes__error pre {
+ margin: 5px 0 0;
+ padding: 6px 8px;
+ max-height: 120px;
+ overflow: auto;
+ border-radius: 6px;
+ background: var(--dsw-alias-bg-base);
+ color: var(--dsw-alias-label-secondary);
+ font-family: var(--ds-font-family-code, ui-monospace, Menlo, monospace);
+ font-size: 10px;
+ line-height: 1.5;
+ white-space: pre-wrap;
+ word-break: break-word;
+}
+
+/* Pushed receipt: hug its git output instead of stretching to the full
+ conversation width — the receipt should match the text it carries. */
+.changes--pushed {
+ width: fit-content;
+}
+
+/* Clean tree: the card shrinks to its header, a repo status bar. */
+.changes--clean .changes__head {
+ border-bottom: 0;
+}
+.changes--clean:not(.changes--pushed) .changes__head strong {
+ color: var(--dsw-alias-label-secondary);
+}
+.changes--pushed .changes__head strong {
+ color: var(--ds-status-success, #2f7d44);
+}
+.changes__check {
+ display: grid;
+ place-items: center;
+ flex: none;
+ width: 18px;
+ height: 18px;
+ border-radius: 50%;
+ color: #fffdf7;
+ background: var(--ds-status-success, #2f7d44);
+ font-size: 11px;
+ font-weight: 700;
+}
+.changes__output {
+ margin: 0;
+ padding: 6px 14px;
+ max-height: 132px;
+ overflow: auto;
+ color: var(--dsw-alias-label-secondary);
+ font-family: var(--ds-font-family-code, ui-monospace, Menlo, monospace);
+ font-size: 10px;
+ line-height: 1.5;
+ white-space: pre-wrap;
+ word-break: break-word;
+}

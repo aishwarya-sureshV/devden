@@ -6,6 +6,9 @@
  * narrower than a quarter; past four they lose height, not width.
  */
 
+/** Most panes the split grid will hold (two rows of four). */
+export const MAX_SPLIT_PANES = 8;
+
 export type PaneDensity = "full" | "compact" | "dense";
 
 export interface SessionPaneLayout {

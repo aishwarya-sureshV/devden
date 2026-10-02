@@ -1,0 +1,612 @@
+/* ---------- Tool cards (agentdeck AgentWorkbench ToolCard) ---------- */
+.tool {
+ border: 1px solid var(--dsw-alias-border-l2);
+ border-radius: 8px;
+ /* Same fill as hovered / active sidebar tabs (.sidebar__nav-item). */
+ background: var(--pw-card);
+ overflow: hidden;
+ font-size: 12px;
+}
+.tool--running {
+ border-color: var(--pw-accent-line);
+}
+.tool--error {
+ border-color: rgba(236, 19, 19, 0.4);
+}
+
+.tool__head {
+ display: flex;
+ align-items: center;
+}
+.tool__toggle {
+ flex: 1;
+ display: flex;
+ align-items: center;
+ gap: 8px;
+ min-width: 0;
+ height: 26px;
+ padding: 0 10px;
+ border: 0;
+ background: transparent;
+ color: inherit;
+ text-align: left;
+ font-family: var(--ds-font-family-code);
+ font-size: 12px;
+ white-space: nowrap;
+}
+/* Direct-child spans default to caption color; the chevron (first child)
+   gets the 9px size, and state/diff/subagent chips keep their own sizes. */
+.tool__toggle > span {
+ color: var(--dsw-alias-label-caption);
+ flex: none;
+}
+.tool__toggle > span:first-child {
+ font-size: 9px;
+}
+.tool__toggle em {
+ font-style: normal;
+ font-weight: 500;
+ color: var(--dsw-alias-label-primary);
+ flex: none;
+}
+.tool__toggle strong {
+ font-weight: 400;
+ color: var(--dsw-alias-label-secondary);
+ overflow: hidden;
+ text-overflow: ellipsis;
+ white-space: nowrap;
+ min-width: 0;
+ font-family: var(--ds-font-family-code);
+ font-size: 12px;
+}
+.tool__state {
+ margin-left: auto;
+ flex: none;
+ font-size: 11px;
+ color: var(--dsw-alias-label-caption);
+}
+.tool__toggle > .tool__state {
+ font-size: 11px;
+}
+.tool--running .tool__state {
+ color: var(--ds-activity);
+}
+.tool--error .tool__state {
+ color: var(--ds-status-error);
+}
+
+.tool__open {
+ flex: none;
+ margin-right: 8px;
+ width: 26px;
+ height: 26px;
+ border-radius: 6px;
+ border: 1px solid var(--dsw-alias-border-l2);
+ background: transparent;
+ color: var(--dsw-alias-label-secondary);
+}
+.tool__open:hover {
+ background: var(--dsw-alias-interactive-bg-hover-solid);
+}
+.tool__popout {
+ flex: none;
+ margin-right: 6px;
+ padding: 3px 8px;
+ border-radius: 999px;
+ border: 1px solid var(--dsw-alias-border-l2);
+ background: transparent;
+ color: var(--dsw-alias-label-secondary);
+ font-size: 11px;
+ cursor: pointer;
+}
+.tool__popout:hover {
+ background: var(--dsw-alias-interactive-bg-hover-solid);
+ color: var(--dsw-alias-label-primary);
+}
+
+.tool__body {
+ border-top: 1px solid var(--dsw-alias-border-l1);
+ max-height: 180px;
+ overflow: auto;
+}
+.tool__body pre {
+ margin: 0;
+ padding: 10px 14px;
+ font-family: var(--ds-font-family-code);
+ font-size: 12px;
+ line-height: 1.5;
+ white-space: pre-wrap;
+ word-break: break-word;
+ color: var(--dsw-alias-label-secondary);
+}
+.tool__body pre[data-language] {
+ position: relative;
+ padding-top: 27px;
+}
+.tool__body pre[data-language]::before {
+ content: attr(data-language);
+ position: absolute;
+ top: 7px;
+ right: 10px;
+ color: var(--ds-status-warning);
+ font-size: 9px;
+ letter-spacing: 0.08em;
+ text-transform: uppercase;
+}
+
+.diff-stats {
+ display: inline-flex;
+ gap: 6px;
+ flex: none;
+ font-size: 11px;
+ font-style: normal;
+}
+.diff-stats b {
+ color: var(--pw-add-sign);
+ font-weight: 600;
+}
+.diff-stats i {
+ color: var(--pw-del-sign);
+ font-style: normal;
+}
+
+.code-numbered {
+ margin: 0;
+ font-family: var(--ds-font-family-code);
+}
+.code-numbered > code {
+ display: block;
+}
+.code-line {
+ display: flex;
+ gap: 12px;
+}
+.code-line__no {
+ flex: none;
+ text-align: right;
+ user-select: none;
+ color: var(--dsw-alias-label-caption);
+ font-variant-numeric: tabular-nums;
+ opacity: 0.75;
+}
+.code-line__text {
+ flex: 1;
+ min-width: 0;
+}
+
+/* Completed exploration compresses into reference-style activity chips. */
+.tool-summary {
+ display: flex;
+ flex-wrap: wrap;
+ gap: 8px;
+ /* Final-output seam: narration text -> collapsed shell-command pill.
+    Bottom margin: pill -> next block, +2px per design feedback. */
+ margin: 2px 0 4px 22px;
+}
+.tool-summary__chip {
+ display: inline-flex;
+ align-items: center;
+ gap: 8px;
+ min-height: 31px;
+ padding: 5px 11px;
+ border: 1px solid var(--dsw-alias-border-l2);
+ border-radius: 6px;
+ background: var(--pw-card);
+ color: var(--dsw-alias-label-secondary);
+ font-size: 12px;
+}
+.tool-summary__chip:hover {
+ border-color: var(--pw-accent-line);
+ background: var(--pw-accent-tint);
+}
+.tool-summary__chip > span {
+ color: var(--pw-teal);
+ font-weight: 700;
+}
+.tool-summary__chip:nth-last-child(-n + 2) > span {
+ color: var(--pw-accent);
+}
+.tool-summary__chip strong {
+ font-weight: 600;
+}
+.tool-summary__chip em {
+ color: var(--dsw-alias-label-caption);
+ font-style: normal;
+}
+
+.active-run {
+ align-self: flex-start;
+ display: inline-flex;
+ align-items: center;
+ gap: 7px;
+ margin: 2px 0 3px 22px;
+ min-height: 29px;
+ padding: 4px 10px;
+ border: 1px solid var(--pw-accent-line);
+ border-radius: 7px;
+ background: var(--pw-accent-tint);
+ color: var(--pw-accent);
+ font-size: 12px;
+}
+.active-run:hover {
+ background: var(--pw-accent-tint-2);
+}
+.active-run__dot {
+ width: 8px;
+ height: 8px;
+ border-radius: 50%;
+ background: var(--pw-accent);
+ animation: pw-run-pulse 1.2s ease-in-out infinite;
+}
+.active-run strong {
+ font-weight: 600;
+}
+.active-run em {
+ color: var(--pw-accent-dim);
+ font-style: normal;
+}
+@keyframes pw-run-pulse {
+ 50% {
+  opacity: 0.45;
+  transform: scale(0.82);
+ }
+}
+
+.response-model-tag {
+ font-size: 10.5px;
+ color: var(--dsw-alias-label-caption);
+ opacity: 0.7;
+ margin-top: 4px;
+ user-select: none;
+}
+
+.response-actions {
+ display: flex;
+ align-items: center;
+ gap: 3px;
+ position: relative;
+ z-index: 1;
+ min-height: 26px;
+ margin-top: 6px;
+ pointer-events: auto;
+}
+.response-actions button {
+ display: inline-flex;
+ align-items: center;
+ justify-content: center;
+ width: 26px;
+ height: 26px;
+ padding: 0;
+ border: 0;
+ border-radius: 5px;
+ background: transparent;
+ color: var(--dsw-alias-label-caption);
+ font-size: 10.5px;
+ cursor: pointer;
+}
+.response-actions button:hover {
+ background: var(--dsw-alias-interactive-bg-hover);
+ color: var(--dsw-alias-label-primary);
+}
+.response-actions button:disabled {
+ opacity: 0.55;
+ cursor: default;
+}
+.response-actions button.is-busy svg {
+ animation: pw-spin 0.8s linear infinite;
+}
+
+/* Detailed command/file activity rail opened from a completed-turn chip. */
+.tool-rail-layer {
+ position: fixed;
+ inset: 0;
+ z-index: 80;
+ pointer-events: none;
+}
+.tool-rail__backdrop {
+ position: absolute;
+ inset: 0;
+ border: 0;
+ background: color-mix(in srgb, var(--dsw-alias-bg-base) 35%, transparent);
+ pointer-events: auto;
+}
+.tool-rail {
+ position: absolute;
+ top: 0;
+ right: 0;
+ bottom: 0;
+ display: flex;
+ flex-direction: column;
+ max-width: 90vw;
+ border-left: 1px solid var(--dsw-alias-border-l3);
+ background: var(--pw-panel);
+ box-shadow: -18px 0 50px rgba(0, 0, 0, 0.18);
+ pointer-events: auto;
+}
+.tool-rail__resize {
+ position: absolute;
+ z-index: 2;
+ top: 0;
+ bottom: 0;
+ left: -5px;
+ width: 10px;
+ padding: 0;
+ border: 0;
+ background: transparent;
+ cursor: col-resize;
+}
+.tool-rail__header {
+ display: flex;
+ align-items: center;
+ justify-content: space-between;
+ min-height: 52px;
+ padding: 10px 14px;
+ border-bottom: 1px solid var(--dsw-alias-border-l2);
+}
+.tool-rail__header > div {
+ display: flex;
+ align-items: flex-start;
+ gap: 9px;
+ min-width: 0;
+}
+.tool-rail__header span {
+ color: var(--pw-accent);
+}
+.tool-rail__header strong {
+ min-width: 0;
+ font-size: 12px;
+ line-height: 1.45;
+ overflow-wrap: anywhere;
+}
+.tool-rail__header > button {
+ width: 28px;
+ height: 28px;
+ border: 0;
+ border-radius: 6px;
+ background: transparent;
+ color: var(--dsw-alias-label-caption);
+ font-size: 18px;
+}
+.tool-rail__header > button:hover {
+ background: var(--dsw-alias-interactive-bg-hover);
+}
+.tool-rail__list {
+ flex: 1;
+ min-height: 0;
+ padding: 10px;
+ overflow: auto;
+}
+.tool-rail__item {
+ margin-bottom: 7px;
+ border: 1px solid var(--dsw-alias-border-l2);
+ border-radius: 7px;
+ background: var(--pw-card);
+ overflow: hidden;
+}
+.tool-rail__item summary {
+ display: grid;
+ grid-template-columns: 22px minmax(0, 1fr) auto;
+ align-items: start;
+ gap: 7px;
+ min-height: 38px;
+ padding: 6px 9px;
+ cursor: pointer;
+ list-style: none;
+}
+.tool-rail__item summary::-webkit-details-marker {
+ display: none;
+}
+.tool-rail__item summary > span {
+ color: var(--dsw-alias-label-caption);
+ font-size: 10px;
+}
+.tool-rail__item summary code {
+ min-width: 0;
+ color: var(--dsw-alias-label-secondary);
+ font: 11px / 1.45 var(--ds-font-family-code);
+ overflow-wrap: anywhere;
+ word-break: break-word;
+ white-space: normal;
+}
+.tool-rail__item summary em {
+ color: var(--dsw-alias-label-caption);
+ font-size: 9.5px;
+ font-style: normal;
+}
+.tool-rail__detail {
+ border-top: 1px solid var(--dsw-alias-border-l1);
+}
+.tool-rail__command {
+ display: flex;
+ align-items: flex-start;
+ gap: 8px;
+ padding: 9px;
+ background: var(--pw-card-strong);
+}
+.tool-rail__command code {
+ flex: 1;
+ min-width: 0;
+ color: var(--pw-accent);
+ font: 10.5px / 1.5 var(--ds-font-family-code);
+ white-space: pre-wrap;
+ word-break: break-word;
+}
+.tool-rail__copy {
+ display: grid;
+ place-items: center;
+ flex: none;
+ width: 27px;
+ height: 27px;
+ padding: 0;
+ border: 1px solid var(--dsw-alias-border-l2);
+ border-radius: 5px;
+ background: transparent;
+ color: var(--dsw-alias-label-caption);
+}
+.tool-rail__copy:hover {
+ background: var(--dsw-alias-interactive-bg-hover);
+}
+.tool-rail__detail pre {
+ max-height: 250px;
+ margin: 0;
+ padding: 9px;
+ overflow: auto;
+ color: var(--dsw-alias-label-secondary);
+ font: 10.5px / 1.5 var(--ds-font-family-code);
+ white-space: pre-wrap;
+ word-break: break-word;
+}
+
+/* notices */
+.notice {
+ /* Ambient status asides, not conversation; as a chip it is a footnote
+     to the row above it rather than a full-width transcript block. */
+ display: inline-flex;
+ align-items: center;
+ width: fit-content;
+ max-width: 100%;
+ margin: 2px 0 2px 22px;
+ padding: 2px 9px;
+ border-radius: 999px;
+ font-size: 11px;
+ border: 1px solid var(--dsw-alias-border-l2);
+ background: var(--dsw-alias-bg-layer-1);
+ color: var(--dsw-alias-label-caption);
+}
+/* Warnings and errors stay blocks — agent stderr and failed turns are
+   actionable, so they keep their weight instead of shrinking to a chip.
+   No left inset: blocks span the full transcript column, the same width as
+   tool cards and the Changes/input pills above the composer. Anything new
+   that appears inside the conversation must respect this same width. */
+.notice--warning,
+.notice--error {
+ display: block;
+ width: auto;
+ margin: 8px 0;
+ padding: 8px 12px;
+ border-radius: 8px;
+ font-size: 12.5px;
+ color: var(--dsw-alias-label-secondary);
+}
+.notice--warning {
+ border-color: var(--pw-accent-line);
+ color: var(--pw-accent);
+}
+.notice--error {
+ border-color: rgba(248, 113, 113, 0.45);
+ color: var(--ds-status-error);
+}
+
+/* thinking loader */
+.thinking {
+ display: inline-flex;
+ align-items: center;
+ gap: 8px;
+ color: var(--dsw-alias-label-secondary);
+ font-size: 13px;
+ padding: 6px 0;
+ /* Sit on the composer card's left edge, not the extra transcript indent. */
+ margin-left: calc(
+  var(--composer-pad-left, 12px) -
+  var(--column-pad-left, 16px)
+ );
+}
+/* A run blocked on a supervisor reply is not just slow — nothing moves until
+   the parent answers, so it must not read as ordinary progress. */
+.thinking--attention {
+ color: var(--dsw-alias-label-primary);
+ font-weight: 500;
+}
+.thinking--attention .thinking__spinner {
+ animation: none;
+ opacity: 0.6;
+}
+.thinking__line,
+.thinking__dots {
+ color: var(--g-highlight, var(--pw-accent));
+}
+.thinking__words {
+ background-image: linear-gradient(
+  100deg,
+  var(--g-highlight, var(--pw-accent)) 0%,
+  var(--g-highlight, var(--pw-accent)) 46%,
+  #fff 50%,
+  var(--g-highlight, var(--pw-accent)) 54%,
+  var(--g-highlight, var(--pw-accent)) 100%
+ );
+ background-size: 280% 100%;
+ background-repeat: no-repeat;
+ -webkit-background-clip: text;
+ background-clip: text;
+ -webkit-text-fill-color: transparent;
+ animation: thinking-ray 5.5s linear infinite;
+}
+.thinking__line {
+ display: inline-flex;
+ align-items: baseline;
+ animation: thinking-line-in 0.55s cubic-bezier(0.16, 0.84, 0.32, 1);
+}
+@keyframes thinking-line-in {
+ from {
+  opacity: 0;
+  transform: translateY(8px);
+ }
+ to {
+  opacity: 1;
+  transform: none;
+ }
+}
+@keyframes thinking-ray {
+ 0% {
+  background-position: 100% 0;
+ }
+ 100% {
+  background-position: 0% 0;
+ }
+}
+@media (prefers-reduced-motion: reduce) {
+ .thinking__line,
+ .thinking__words {
+  animation: none;
+ }
+ .thinking__words {
+  background: none;
+  -webkit-text-fill-color: currentColor;
+ }
+}
+.thinking__dots::after {
+ content: "…";
+ animation: pw-dots 1.2s steps(4) infinite;
+}
+.thinking__meta {
+ font-size: 11px;
+ font-variant-numeric: tabular-nums;
+ color: var(--dsw-alias-label-dimmed, #817d89);
+}
+@keyframes pw-dots {
+ 0% {
+  content: "";
+ }
+ 33% {
+  content: ".";
+ }
+ 66% {
+  content: "..";
+ }
+ 100% {
+  content: "...";
+ }
+}
+.thinking__spinner {
+ width: 12px;
+ height: 12px;
+ border-radius: 50%;
+ border: 2px solid var(--dsw-alias-border-l3);
+ border-top-color: var(--ds-activity);
+ animation: pw-spin 0.8s linear infinite;
+}
+@keyframes pw-spin {
+ to {
+  transform: rotate(360deg);
+ }
+}

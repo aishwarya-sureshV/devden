@@ -31,7 +31,8 @@ export class ApprovalGate {
   }
 
   get enabled() {
-    return this.agent.agentMode === "manual";
+    const mode = this.agent.agentMode;
+    return mode === "manual" || mode === "auto-edit";
   }
 
   /**
@@ -44,11 +45,20 @@ export class ApprovalGate {
     title,
     detail,
     options = DEFAULT_APPROVAL_OPTIONS,
+    requestId = randomUUID(),
   }) {
     if (!this.enabled) return { allow: true, choice: undefined };
+    // Auto-edit applies file changes on its own. Commands and deletes still ask.
+    if (
+      this.agent.agentMode === "auto-edit" &&
+      !/bash|shell|exec|command|terminal|powershell|delete|execute/i.test(
+        String(toolName ?? ""),
+      )
+    ) {
+      return { allow: true, choice: undefined };
+    }
     if (this.allowedTools.has(toolName))
       return { allow: true, choice: "allow_always" };
-    const requestId = randomUUID();
     const choice = await new Promise((resolve) => {
       const timer = setTimeout(() => {
         this.pending.delete(requestId);
@@ -60,7 +70,7 @@ export class ApprovalGate {
         });
         resolve("deny");
       }, APPROVAL_TIMEOUT_MS);
-      this.pending.set(requestId, { resolve, toolName, timer });
+      this.pending.set(requestId, { resolve, toolName, timer, optionIds: options.map((option) => option.id) });
       this.agent.emit({
         type: "approval_request",
         sessionKey: this.agent.sessionKey,
@@ -77,6 +87,7 @@ export class ApprovalGate {
   resolve(requestId, optionId) {
     const entry = this.pending.get(requestId);
     if (!entry) return { ok: false, error: "no pending approval with that id" };
+    if (!entry.optionIds.includes(optionId)) return { ok: false, error: "invalid approval option" };
     clearTimeout(entry.timer);
     this.pending.delete(requestId);
     if (optionId === "allow_always") this.allowedTools.add(entry.toolName);

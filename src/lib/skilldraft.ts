@@ -11,6 +11,7 @@
  */
 
 export interface SkillDraftSeed {
+  backend?: "pi" | "codex";
   name: string;
   description: string;
   body: string;

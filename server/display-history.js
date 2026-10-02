@@ -10,17 +10,14 @@
  * that arrived after that rewrite.
  */
 import { createHash } from "node:crypto";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { devdenHome } from "./setup-state.js";
+import { devdenHome, docGet, docSet } from "./db.js";
 
-export function displayHistoryDir() {
-  return join(devdenHome(), "display-history");
-}
-
-function overlayPath(sessionPath) {
+/** Pre-SQLite installs kept overlays in display-history/<sha256>.json. */
+function legacyOverlayPath(sessionPath) {
   const hash = createHash("sha256").update(String(sessionPath)).digest("hex");
-  return join(displayHistoryDir(), `${hash}.json`);
+  return join(devdenHome(), "display-history", `${hash}.json`);
 }
 
 function textOf(message) {
@@ -88,13 +85,20 @@ export function mergeDisplay(overlay, current) {
   return [...overlay.before, ...live.slice(prefix)];
 }
 
+function validOverlay(parsed) {
+  return parsed && Array.isArray(parsed.before) ? parsed : null;
+}
+
 export async function loadDisplayOverlay(sessionPath) {
   if (!sessionPath) return null;
+  const stored = validOverlay(docGet("display-history", String(sessionPath)));
+  if (stored) return stored;
   try {
-    const raw = await readFile(overlayPath(sessionPath), "utf8");
-    const parsed = JSON.parse(raw);
-    if (!parsed || !Array.isArray(parsed.before)) return null;
-    return parsed;
+    const legacy = validOverlay(
+      JSON.parse(await readFile(legacyOverlayPath(sessionPath), "utf8")),
+    );
+    if (legacy) docSet("display-history", String(sessionPath), legacy);
+    return legacy;
   } catch {
     return null;
   }
@@ -102,15 +106,11 @@ export async function loadDisplayOverlay(sessionPath) {
 
 export async function saveDisplayOverlay(sessionPath, { before, after }) {
   if (!sessionPath || !Array.isArray(before) || before.length === 0) return;
-  await mkdir(displayHistoryDir(), { recursive: true });
-  await writeFile(
-    overlayPath(sessionPath),
-    JSON.stringify({
-      sessionPath,
-      before,
-      after: Array.isArray(after) ? after : [],
-    }),
-  );
+  docSet("display-history", String(sessionPath), {
+    sessionPath,
+    before,
+    after: Array.isArray(after) ? after : [],
+  });
 }
 
 export async function withDisplayHistory(sessionPath, messages) {

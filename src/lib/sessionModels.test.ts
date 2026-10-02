@@ -17,7 +17,8 @@ describe('formatSessionModelName', () => {
 
   it('labels other common session models', () => {
     assert.equal(formatSessionModelName('glm-5.3-flash:cloud'), 'GLM 5.3 Flash')
-    assert.equal(formatSessionModelName('claude-sonnet-5'), 'Claude Sonnet 5')
+    assert.equal(formatSessionModelName('claude-sonnet-5'), 'Sonnet 5')
+    assert.equal(formatSessionModelName('claude-opus-5-5'), 'Opus 5.5')
   })
 })
 

@@ -4,6 +4,7 @@ import {
   type AgentBackend,
   type ResumeSession,
 } from "./api.ts";
+import { formatClaudeModelName, isClaudeModel } from "./claudeModels.ts";
 
 const BRANDS: Record<string, string> = {
   claude: "Claude",
@@ -22,6 +23,7 @@ const BRANDS: Record<string, string> = {
 export function formatSessionModelName(id: string | undefined): string {
   const raw = String(id || "").trim();
   if (!raw) return "Unknown model";
+  if (isClaudeModel(raw)) return formatClaudeModelName(raw);
   return raw
     .replace(/:cloud$/i, "")
     .split(/[-_]+/)

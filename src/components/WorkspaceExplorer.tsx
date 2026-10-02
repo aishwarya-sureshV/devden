@@ -16,7 +16,7 @@ import {
   type WorkspaceFileResponse,
 } from "../lib/api";
 import { highlightCode } from "../lib/highlight";
-import { langFromPath } from "../lib/toolCards";
+import { langFromPath, type ToolDiff } from "../lib/toolCards";
 import type { EditorNavigation } from "./CodeEditor";
 import {
   EditorPalette,
@@ -24,6 +24,9 @@ import {
   type PaletteResult,
 } from "./EditorPalette";
 import { CopyButton } from "./CopyButton";
+import { DiffColorButton } from "./DiffColorEditor";
+import { DiffView } from "./DiffView";
+import { parseUnifiedDiff } from "./ChangesPanel";
 import { RichText } from "./RichText";
 import {
   IconCode,
@@ -66,8 +69,18 @@ const FOLDER_COLORS: Record<string, string> = {
 };
 
 const FOLDER_PALETTE = [
-  "#ff7a8a", "#ff9f6a", "#f0c84a", "#86e6b0", "#5fd49a", "#4fd1c5",
-  "#6ad4e0", "#6aa8ff", "#9cc4ff", "#c3a6ff", "#ff9cc4", "#e8b84a",
+  "#ff7a8a",
+  "#ff9f6a",
+  "#f0c84a",
+  "#86e6b0",
+  "#5fd49a",
+  "#4fd1c5",
+  "#6ad4e0",
+  "#6aa8ff",
+  "#9cc4ff",
+  "#c3a6ff",
+  "#ff9cc4",
+  "#e8b84a",
 ];
 
 /** Stable per-name color: the same folder is always the same tint. */
@@ -95,24 +108,56 @@ function FolderGlyph({ color }: { color: string }) {
 
 // Glyph + color per extension. \uFE0E forces text (not emoji) presentation.
 const EXT_BADGE: Record<string, [string, string]> = {
-  js: ["JS", "#f0db4f"], mjs: ["JS", "#f0db4f"], cjs: ["JS", "#f0db4f"],
-  json: ["{}", "#f5c77e"], jsonc: ["{}", "#f5c77e"],
-  yaml: ["≡", "#ff9f6a"], yml: ["≡", "#ff9f6a"], toml: ["≡", "#ff9f6a"],
-  md: ["M↓", "#9cc4ff"], mdx: ["M↓", "#9cc4ff"], txt: ["≣", "#a6a4b1"],
-  css: ["#", "#c3a6ff"], scss: ["#", "#c3a6ff"], less: ["#", "#c3a6ff"],
-  html: ["<>", "#ff8a65"], xml: ["<>", "#ff8a65"], vue: ["V", "#5fd49a"],
-  py: ["Py", "#6aa8ff"], rb: ["Rb", "#ff7a8a"], go: ["Go", "#6ad4e0"],
-  rs: ["Rs", "#ff9f6a"], swift: ["Sw", "#ff8a50"], java: ["Jv", "#ff9f6a"],
-  kt: ["Kt", "#c3a6ff"], c: ["C", "#9cc4ff"], h: ["H", "#9cc4ff"],
-  cpp: ["C+", "#9cc4ff"], cs: ["C#", "#c3a6ff"], php: ["P", "#c3a6ff"],
-  sh: ["$", "#86e6b0"], zsh: ["$", "#86e6b0"], bash: ["$", "#86e6b0"],
-  sql: ["⛁\uFE0E", "#f5c77e"], db: ["⛁\uFE0E", "#f5c77e"],
-  png: ["▣", "#ff9cc4"], jpg: ["▣", "#ff9cc4"], jpeg: ["▣", "#ff9cc4"],
-  gif: ["▣", "#ff9cc4"], webp: ["▣", "#ff9cc4"], ico: ["▣", "#ff9cc4"],
-  svg: ["◇", "#ffb86a"], pdf: ["▤", "#ff7a8a"],
-  mp4: ["▶\uFE0E", "#ff9cc4"], mov: ["▶\uFE0E", "#ff9cc4"], mp3: ["♪", "#ff9cc4"],
-  zip: ["▦", "#a6a4b1"], gz: ["▦", "#a6a4b1"], lock: ["⊟", "#7a7884"],
-  log: ["≣", "#7a7884"], env: ["⚙\uFE0E", "#86e6b0"],
+  js: ["JS", "#f0db4f"],
+  mjs: ["JS", "#f0db4f"],
+  cjs: ["JS", "#f0db4f"],
+  json: ["{}", "#f5c77e"],
+  jsonc: ["{}", "#f5c77e"],
+  yaml: ["≡", "#ff9f6a"],
+  yml: ["≡", "#ff9f6a"],
+  toml: ["≡", "#ff9f6a"],
+  md: ["M↓", "#9cc4ff"],
+  mdx: ["M↓", "#9cc4ff"],
+  txt: ["≣", "#a6a4b1"],
+  css: ["#", "#c3a6ff"],
+  scss: ["#", "#c3a6ff"],
+  less: ["#", "#c3a6ff"],
+  html: ["<>", "#ff8a65"],
+  xml: ["<>", "#ff8a65"],
+  vue: ["V", "#5fd49a"],
+  py: ["Py", "#6aa8ff"],
+  rb: ["Rb", "#ff7a8a"],
+  go: ["Go", "#6ad4e0"],
+  rs: ["Rs", "#ff9f6a"],
+  swift: ["Sw", "#ff8a50"],
+  java: ["Jv", "#ff9f6a"],
+  kt: ["Kt", "#c3a6ff"],
+  c: ["C", "#9cc4ff"],
+  h: ["H", "#9cc4ff"],
+  cpp: ["C+", "#9cc4ff"],
+  cs: ["C#", "#c3a6ff"],
+  php: ["P", "#c3a6ff"],
+  sh: ["$", "#86e6b0"],
+  zsh: ["$", "#86e6b0"],
+  bash: ["$", "#86e6b0"],
+  sql: ["⛁\uFE0E", "#f5c77e"],
+  db: ["⛁\uFE0E", "#f5c77e"],
+  png: ["▣", "#ff9cc4"],
+  jpg: ["▣", "#ff9cc4"],
+  jpeg: ["▣", "#ff9cc4"],
+  gif: ["▣", "#ff9cc4"],
+  webp: ["▣", "#ff9cc4"],
+  ico: ["▣", "#ff9cc4"],
+  svg: ["◇", "#ffb86a"],
+  pdf: ["▤", "#ff7a8a"],
+  mp4: ["▶\uFE0E", "#ff9cc4"],
+  mov: ["▶\uFE0E", "#ff9cc4"],
+  mp3: ["♪", "#ff9cc4"],
+  zip: ["▦", "#a6a4b1"],
+  gz: ["▦", "#a6a4b1"],
+  lock: ["⊟", "#7a7884"],
+  log: ["≣", "#7a7884"],
+  env: ["⚙\uFE0E", "#86e6b0"],
 };
 
 /** Colored file marks from the redesign; `.ts` rules match the mock exactly. */
@@ -123,16 +168,25 @@ function fileBadge(name: string): { glyph: string; bg: string; fg: string } {
     bg: `color-mix(in srgb, ${fg} 18%, transparent)`,
   });
   const lower = name.toLowerCase();
-  if (/\.(test|spec)\.[cm]?[jt]sx?$/.test(lower)) return mk("⚗\uFE0E", "#d4c2ff");
+  if (/\.(test|spec)\.[cm]?[jt]sx?$/.test(lower))
+    return mk("⚗\uFE0E", "#d4c2ff");
   if (/\.[jt]sx$/.test(lower)) return mk("⚛\uFE0E", "#8fe6ef");
-  if (lower === "package-lock.json" || lower.endsWith(".lock")) return mk("⊟", "#7a7884");
-  if (lower.startsWith(".env") || lower.startsWith(".git") || lower.endsWith("rc"))
+  if (lower === "package-lock.json" || lower.endsWith(".lock"))
+    return mk("⊟", "#7a7884");
+  if (
+    lower.startsWith(".env") ||
+    lower.startsWith(".git") ||
+    lower.endsWith("rc")
+  )
     return mk("⚙\uFE0E", "#a6a4b1");
   if (lower === "dockerfile") return mk("◳", "#6aa8ff");
   if (lower === "license") return mk("§", "#a6a4b1");
-  const ext = lower.includes(".") ? lower.slice(lower.lastIndexOf(".") + 1) : "";
+  const ext = lower.includes(".")
+    ? lower.slice(lower.lastIndexOf(".") + 1)
+    : "";
   if (ext === "ts" || ext === "mts" || ext === "cts") {
-    if (/shader|theme|appearance|highlight/.test(lower)) return mk("✦\uFE0E", "#ff9cc4");
+    if (/shader|theme|appearance|highlight/.test(lower))
+      return mk("✦\uFE0E", "#ff9cc4");
     if (/api|board|session/.test(lower)) return mk("◆", "#9cc4ff");
     return mk("●", "#f0c84a");
   }
@@ -211,24 +265,27 @@ function visibleEntries(
   entries: WorkspaceEntry[],
   query: string,
   listings: Record<string, WorkspaceEntry[]>,
-  showHidden: boolean,
 ): WorkspaceEntry[] {
   const needle = query.trim().toLowerCase();
   return entries.filter((entry) => {
-    if (!showHidden && entry.hidden) return false;
     if (!needle) return true;
     if (entry.name.toLowerCase().includes(needle)) return true;
     if (entry.type !== "directory") return false;
     const children = listings[entry.path];
     if (!children) return true;
-    return visibleEntries(children, query, listings, showHidden).length > 0;
+    return visibleEntries(children, query, listings).length > 0;
   });
 }
+
+type ExplorerTab = "files" | "changes";
 
 function ExplorerPanel({
   root,
   visible = true,
   placement,
+  tab,
+  sessionKey,
+  onTabChange,
   onPlacementChange,
   onClose,
   onAddToChat,
@@ -239,6 +296,13 @@ function ExplorerPanel({
   root: string;
   visible?: boolean;
   placement: WorkspacePlacement;
+  /** Which side of the tree pane is showing: the file tree or the branch's
+   *  changed files. Owned by the parent so the changes card's expand button
+   *  can switch it remotely. */
+  tab: ExplorerTab;
+  /** The session whose git state the Changes tab diffs against its base. */
+  sessionKey?: string;
+  onTabChange: (tab: ExplorerTab) => void;
   onPlacementChange: (placement: WorkspacePlacement) => void;
   onClose: () => void;
   onAddToChat?: (path: string) => void;
@@ -262,7 +326,6 @@ function ExplorerPanel({
   const [mdPreview, setMdPreview] = useState(true);
   const [fileLoading, setFileLoading] = useState(false);
   const [query, setQuery] = useState("");
-  const [showHidden, setShowHidden] = useState(false);
   const [truncatedRoots, setTruncatedRoots] = useState<ReadonlySet<string>>(
     () => new Set(),
   );
@@ -384,6 +447,13 @@ function ExplorerPanel({
     return () => window.removeEventListener("keydown", onKey);
   }, [menu, onClose, palette, renaming, visible]);
 
+  // Switching away from the Changes tab closes its open diff so the editor
+  // pane goes back to showing the selected file (or the placeholder).
+  const switchTab = (next: ExplorerTab) => {
+    if (next === "files") setOpenChangePath(null);
+    onTabChange(next);
+  };
+
   const toggleDirectory = (path: string) => {
     setExpanded((current) => {
       const next = new Set(current);
@@ -401,6 +471,7 @@ function ExplorerPanel({
     jumpTo?: { line: number; column?: number },
   ) => {
     if (dirty && !window.confirm("Discard unsaved changes?")) return;
+    setOpenChangePath(null);
     setSelected(path);
     setMenu(null);
     setFileLoading(true);
@@ -609,9 +680,53 @@ function ExplorerPanel({
 
   const rootEntries = listings[root] ?? [];
   const shownRoot = useMemo(
-    () => visibleEntries(rootEntries, query, listings, showHidden),
-    [listings, query, rootEntries, showHidden],
+    () => visibleEntries(rootEntries, query, listings),
+    [listings, query, rootEntries],
   );
+
+  const [baseChanges, setBaseChanges] = useState<GitChange[] | null>(null);
+  const [changeDiffs, setChangeDiffs] = useState<
+    Record<string, ToolDiff | undefined>
+  >({});
+
+  // Files this branch changed since its base (main). `base=1` widens the
+  // numstat from the dirty tree to the whole worktree branch.
+  useEffect(() => {
+    if (tab !== "changes" || !sessionKey) return;
+    let alive = true;
+    setBaseChanges(null);
+    api
+      .gitChanges(sessionKey, root, true)
+      .then((result) => {
+        if (alive) setBaseChanges(result.changes ?? []);
+      })
+      .catch(() => {
+        if (alive) setBaseChanges([]);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [tab, sessionKey, root]);
+
+  // Clicking a changed file shows its diff (vs the same base) in the editor
+  // pane instead of the current file content.
+  const [openChangePath, setOpenChangePath] = useState<string | null>(null);
+  const openChange = async (path: string) => {
+    setOpenChangePath(path);
+    setSelected(null);
+    setFile(null);
+    setDraft("");
+    if (!sessionKey || changeDiffs[path] !== undefined) return;
+    try {
+      const result = await api.gitFileDiff(sessionKey, root, path, true);
+      setChangeDiffs((current) => ({
+        ...current,
+        [path]: result.ok ? parseUnifiedDiff(result.diff ?? "") : undefined,
+      }));
+    } catch {
+      setChangeDiffs((current) => ({ ...current, [path]: undefined }));
+    }
+  };
   const language = file?.path ? langFromPath(file.path) : undefined;
   const sizeLabel = formatSize(file?.size);
   const isMarkdown = /\.(md|mdx|markdown)$/i.test(file?.name ?? "");
@@ -647,68 +762,129 @@ function ExplorerPanel({
           style={{ width: treeWidth, flexBasis: treeWidth }}
         >
           <div className="workspace-explorer__search">
-            <IconSearch size={12} />
-            <input
-              type="search"
-              value={query}
-              placeholder="Filter files"
-              aria-label="Filter workspace files"
-              onChange={(event) => setQuery(event.target.value)}
-            />
-            <label className="workspace-explorer__hidden">
-              <input
-                type="checkbox"
-                checked={showHidden}
-                onChange={(event) => setShowHidden(event.target.checked)}
-              />
-              hidden
-            </label>
+            {tab === "files" && (
+              <>
+                <IconSearch size={12} />
+                <input
+                  type="search"
+                  value={query}
+                  placeholder="Filter files"
+                  aria-label="Filter workspace files"
+                  onChange={(event) => setQuery(event.target.value)}
+                />
+              </>
+            )}
+            <div className="workspace-explorer__tabs" role="tablist">
+              <button
+                type="button"
+                role="tab"
+                aria-selected={tab === "files"}
+                className={`workspace-explorer__tab${tab === "files" ? " is-active" : ""}`}
+                onClick={() => switchTab("files")}
+              >
+                Files
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={tab === "changes"}
+                className={`workspace-explorer__tab${tab === "changes" ? " is-active" : ""}`}
+                onClick={() => switchTab("changes")}
+              >
+                Changes
+                {baseChanges?.length ? (
+                  <span className="workspace-explorer__tab-count">
+                    {baseChanges.length}
+                  </span>
+                ) : null}
+              </button>
+            </div>
           </div>
           <div
             className="workspace-explorer__list"
-            aria-busy={loadingPaths.has(root)}
+            aria-busy={
+              tab === "changes" ? baseChanges === null : loadingPaths.has(root)
+            }
           >
-            {loadingPaths.has(root) && !listings[root] && (
-              <div className="workspace-explorer__status">Reading project…</div>
-            )}
-            {errors[root] && (
-              <div className="workspace-explorer__error" role="alert">
-                {errors[root]}
-              </div>
-            )}
-            {!loadingPaths.has(root) &&
-              !errors[root] &&
-              shownRoot.length === 0 && (
+            {tab === "changes" ? (
+              baseChanges === null ? (
                 <div className="workspace-explorer__status">
-                  {query ? "No matching files." : "This folder is empty."}
+                  Reading changes…
                 </div>
-              )}
-            {shownRoot.map((entry) => (
-              <TreeNode
-                key={entry.path}
-                entry={entry}
-                depth={0}
-                query={query}
-                showHidden={showHidden}
-                expanded={expanded}
-                listings={listings}
-                loadingPaths={loadingPaths}
-                errors={errors}
-                truncatedRoots={truncatedRoots}
-                selected={selected}
-                renaming={renaming}
-                onToggle={toggleDirectory}
-                onOpenFile={openFile}
-                onMenu={openMenu}
-                onRename={renameEntry}
-                onCancelRename={() => setRenaming(null)}
-                git={git}
-              />
-            ))}
-            {truncatedRoots.has(root) && (
-              <div className="workspace-explorer__status">
-                Showing the first 2,000 entries.
-              </div>
+              ) : baseChanges.length === 0 ? (
+                <div className="workspace-explorer__status">
+                  No changes against the main branch.
+                </div>
+              ) : (
+                baseChanges.map((change) => (
+                  <button
+                    key={change.path}
+                    type="button"
+                    className={`workspace-change${openChangePath === change.path ? " is-active" : ""}`}
+                    title={change.path}
+                    onClick={() => void openChange(change.path)}
+                  >
+                    <span
+                      className={`workspace-change__status is-${change.status}`}
+                    >
+                      {GIT_LETTER[change.status]}
+                    </span>
+                    <span className="workspace-change__path">
+                      {change.path}
+                    </span>
+                    <span className="workspace-change__stats">
+                      <b>+{change.additions}</b>
+                      <i>−{change.deletions}</i>
+                    </span>
+                  </button>
+                ))
+              )
+            ) : (
+              <>
+                {loadingPaths.has(root) && !listings[root] && (
+                  <div className="workspace-explorer__status">
+                    Reading project…
+                  </div>
+                )}
+                {errors[root] && (
+                  <div className="workspace-explorer__error" role="alert">
+                    {errors[root]}
+                  </div>
+                )}
+                {!loadingPaths.has(root) &&
+                  !errors[root] &&
+                  shownRoot.length === 0 && (
+                    <div className="workspace-explorer__status">
+                      {query ? "No matching files." : "This folder is empty."}
+                    </div>
+                  )}
+                {shownRoot.map((entry) => (
+                  <TreeNode
+                    key={entry.path}
+                    entry={entry}
+                    depth={0}
+                    query={query}
+                    expanded={expanded}
+                    listings={listings}
+                    loadingPaths={loadingPaths}
+                    errors={errors}
+                    truncatedRoots={truncatedRoots}
+                    selected={selected}
+                    renaming={renaming}
+                    onToggle={toggleDirectory}
+                    onOpenFile={openFile}
+                    onMenu={openMenu}
+                    onRename={renameEntry}
+                    onCancelRename={() => setRenaming(null)}
+                    git={git}
+                  />
+                ))}
+                {truncatedRoots.has(root) && (
+                  <div className="workspace-explorer__status">
+                    Showing the first 2,000 entries.
+                  </div>
+                )}
+              </>
             )}
           </div>
           <button
@@ -721,7 +897,18 @@ function ExplorerPanel({
         </div>
 
         <section className="workspace-explorer__editor" aria-label="Source">
-          {!selected && (
+          {openChangePath &&
+            (changeDiffs[openChangePath] ? (
+              <div className="workspace-explorer__code workspace-explorer__diff">
+                <DiffView
+                  diff={changeDiffs[openChangePath]!}
+                  path={`${root.replace(/\/$/, "")}/${openChangePath}`}
+                />
+              </div>
+            ) : (
+              <div className="workspace-explorer__status">Loading diff…</div>
+            ))}
+          {!selected && !openChangePath && (
             <div className="workspace-explorer__placeholder">
               <IconCode size={22} />
               <strong>Browse the project</strong>
@@ -787,6 +974,7 @@ function ExplorerPanel({
                     {saving ? "Saving…" : "Save"}
                   </button>
                 )}
+                <DiffColorButton className="workspace-explorer__copy" />
                 <CopyButton
                   text={draft || file.content}
                   label="Copy file"
@@ -943,7 +1131,6 @@ function TreeNode({
   entry,
   depth,
   query,
-  showHidden,
   expanded,
   listings,
   loadingPaths,
@@ -962,7 +1149,6 @@ function TreeNode({
   entry: WorkspaceEntry;
   depth: number;
   query: string;
-  showHidden: boolean;
   expanded: ReadonlySet<string>;
   listings: Record<string, WorkspaceEntry[]>;
   loadingPaths: ReadonlySet<string>;
@@ -984,7 +1170,7 @@ function TreeNode({
   const badge = gitBadge(git, entry.path);
   const mark = isDirectory ? null : fileBadge(entry.name);
   const children = isOpen
-    ? visibleEntries(listings[entry.path] ?? [], query, listings, showHidden)
+    ? visibleEntries(listings[entry.path] ?? [], query, listings)
     : [];
   const heavy = isDirectory && HEAVY_DIRS.has(entry.name);
   const isRenaming = renaming === entry.path;
@@ -1041,9 +1227,7 @@ function TreeNode({
           )}
           {isDirectory ? (
             <span className="workspace-tree__folder">
-              <FolderGlyph
-                color={folderColor(entry.name)}
-              />
+              <FolderGlyph color={folderColor(entry.name)} />
             </span>
           ) : (
             <span
@@ -1085,7 +1269,6 @@ function TreeNode({
             entry={child}
             depth={depth + 1}
             query={query}
-            showHidden={showHidden}
             expanded={expanded}
             listings={listings}
             loadingPaths={loadingPaths}
@@ -1314,6 +1497,7 @@ export function WorkspaceExplorer(
       key={viewRoot}
       {...rest}
       root={viewRoot}
+      sessionKey={sessionKey}
       worktreePicker={picker}
       git={git}
     />

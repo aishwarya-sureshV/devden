@@ -1,6 +1,6 @@
 import type { TimelineItem } from "../lib/timeline";
 import { formatTurnDuration } from "../lib/turnReview";
-import { formatWorkedAt, splitFilePath } from "../lib/turnFold";
+import { fileKind, formatWorkedAt, splitFilePath } from "../lib/turnFold";
 import {
   getToolDiff,
   getToolFileView,
@@ -97,9 +97,12 @@ export function TurnFoldBar({
 export function TurnFilesCard({
   files,
   onOpenFile,
+  latest = false,
 }: {
   files: TurnChangedFile[];
   onOpenFile: (view: ToolFileView) => void;
+  /** Newest turn that changed files: the Changes dock replaces it while mounted. */
+  latest?: boolean;
 }) {
   if (!files.length) return null;
   const added = files.reduce((sum, file) => sum + file.added, 0);
@@ -107,66 +110,74 @@ export function TurnFilesCard({
   const firstView = files
     .map((file) => getToolFileView(file.item))
     .find((view): view is ToolFileView => view !== null);
+  const total = added + removed;
   return (
-    <div className="turn-files">
+    <div className={`turn-files${latest ? " turn-files--latest" : ""}`}>
       <div className="turn-files__head">
-        <span className="turn-files__label">
-          {files.length} changed file{files.length === 1 ? "" : "s"}
+        <span className="turn-files__title">
+          <span className="turn-files__label">
+            Changed {files.length} file{files.length === 1 ? "" : "s"}
+          </span>
+          <span className="turn-files__sum">
+            <span className="turn-files__add">+{added}</span>
+            <span className="turn-files__del">−{removed}</span>
+          </span>
+          {total > 0 && (
+            <span className="turn-files__bar is-total" aria-hidden>
+              <span
+                className="turn-files__bar-add"
+                style={{ flexGrow: added / total }}
+              />
+              <span
+                className="turn-files__bar-del"
+                style={{ flexGrow: removed / total }}
+              />
+            </span>
+          )}
         </span>
-        {added > 0 && <span className="turn-files__add">+{added}</span>}
-        {removed > 0 && <span className="turn-files__del">−{removed}</span>}
-        <span className="turn-files__spacer" />
         {firstView && (
           <button
             type="button"
             className="turn-files__open"
             onClick={() => onOpenFile(firstView)}
           >
-            Open diff
+            Review
           </button>
         )}
       </div>
-      {files.map((file) => {
-        const view = getToolFileView(file.item);
-        const { dir, name } = splitFilePath(file.path);
-        const total = file.added + file.removed;
-        const addW = total ? (file.added / total) * 100 : 0;
-        const delW = total ? (file.removed / total) * 100 : 0;
-        return (
-          <button
-            key={file.path}
-            type="button"
-            className="turn-files__row"
-            disabled={!view}
-            onClick={() => {
-              if (view) onOpenFile(view);
-            }}
-          >
-            <span className="turn-files__dir">{dir}</span>
-            <span className="turn-files__name">{name}</span>
-            <span className="turn-files__bar" aria-hidden>
-              {total > 0 && (
-                <>
-                  <span
-                    className="turn-files__bar-add"
-                    style={{ width: `${addW}%` }}
-                  />
-                  <span
-                    className="turn-files__bar-del"
-                    style={{ width: `${delW}%` }}
-                  />
-                </>
-              )}
-            </span>
-            {file.added > 0 && (
-              <span className="turn-files__add">+{file.added}</span>
-            )}
-            {file.removed > 0 && (
-              <span className="turn-files__del">−{file.removed}</span>
-            )}
-          </button>
-        );
-      })}
+      <ul className="turn-files__list">
+        {files.map((file) => {
+          const view = getToolFileView(file.item);
+          const { dir, name } = splitFilePath(file.path);
+          const kind = fileKind(file.path);
+          return (
+            <li key={file.path}>
+              <button
+                type="button"
+                className="turn-files__row"
+                disabled={!view}
+                title={file.path}
+                onClick={() => {
+                  if (view) onOpenFile(view);
+                }}
+              >
+                <span className="fbadge" data-kind={kind}>
+                  {kind}
+                </span>
+                <span className="turn-files__path">
+                  <span className="turn-files__dir">{dir}</span>
+                  <span className="turn-files__name">{name}</span>
+                </span>
+                <span className="turn-files__stat">
+                  <span className="turn-files__add">+{file.added}</span>
+                  <span className="turn-files__del">−{file.removed}</span>
+                </span>
+                {view && <span className="turn-files__go">Diff</span>}
+              </button>
+            </li>
+          );
+        })}
+      </ul>
     </div>
   );
 }

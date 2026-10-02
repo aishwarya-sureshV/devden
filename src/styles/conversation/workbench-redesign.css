@@ -1,0 +1,574 @@
+/* ---------- Workbench redesign ---------- */
+.conversation {
+ --composer-pad-left: 12px;
+}
+.conversation__column {
+ --column-pad-left: 16px;
+ padding: 12px var(--column-pad-left) 0;
+}
+.chat-turn {
+ margin-bottom: 10px;
+ gap: 8px;
+}
+.conversation-header,
+.conversation-header.is-compact,
+.conversation-header.is-dense {
+ height: 40px;
+ min-height: 40px;
+ padding: 0;
+}
+.conversation-header__row,
+.conversation-header.is-compact .conversation-header__row,
+.conversation-header.is-dense .conversation-header__row {
+ height: 40px;
+ min-height: 40px;
+ gap: 10px;
+ padding: 0 8px 0 14px;
+}
+.conversation-header__pill {
+ display: flex;
+ align-items: center;
+ gap: 6px;
+ height: 22px;
+ padding: 0 8px 0 4px;
+ border-radius: 999px;
+ background: rgb(128 128 128 / 0.12);
+ flex: none;
+}
+/* Bare agent logo, no square tile. Blinks while the turn runs. */
+.conversation-header__pill-mark {
+ display: inline-flex;
+ align-items: center;
+ justify-content: center;
+}
+.conversation-header__pill-mark.is-live {
+ animation: pulse 1.3s ease-in-out infinite;
+}
+.conversation-header__session-title {
+ flex: 1 1 auto;
+ font-weight: 600;
+ font-size: 13px;
+}
+.conversation-header__tabs {
+ margin-left: auto;
+ flex: none;
+}
+.conversation-header__divider {
+ width: 1px;
+ height: 16px;
+ background: rgb(128 128 128 / 0.28);
+ flex: none;
+}
+.conversation-header__segment {
+ gap: 2px;
+ padding: 2px;
+ border-radius: 8px;
+ background: rgb(0 0 0 / 0.22);
+ box-shadow: inset 0 0 0 1px rgb(128 128 128 / 0.12);
+}
+.conversation-header__segment > button {
+ height: 24px;
+ padding: 0 10px;
+ border-radius: 6px;
+ font-size: 12px;
+}
+.conversation-header__more {
+ width: 26px;
+ height: 26px;
+ border: 0;
+ border-radius: 6px;
+ color: var(--dsw-alias-label-tertiary);
+}
+.conversation-header__download.conversation-header__icon-btn.is-active {
+ background: rgb(182 156 255 / 0.16);
+ color: var(--pw-accent);
+}
+.context-fill,
+.context-fill.is-exact {
+ height: 2px;
+ bottom: -1px;
+ background: transparent;
+ border-radius: 2px;
+}
+.context-fill > span {
+ border-radius: 2px;
+}
+.user-msg {
+ max-width: min(86%, 760px);
+ padding: 6px 11px;
+ border: 0;
+ border-radius: 12px 12px 4px 12px;
+ box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.08);
+}
+.tl {
+ padding-left: 18px;
+ margin: 0;
+}
+.tl__node {
+ width: 7px;
+ height: 7px;
+ left: 1px;
+ top: 7px;
+}
+.tl--assistant .tl__node {
+ background: #5fd49a;
+}
+.tl::before {
+ left: 4px;
+ width: 1px;
+}
+.tl--tool .tl__node {
+ display: none;
+}
+.chat-turn > .tl--tool + .tl--tool {
+ margin-top: 0;
+}
+.chat-turn > .tl--tool .tool {
+ border-radius: 0;
+}
+.chat-turn > .tl--tool + .tl--tool .tool {
+ border-top: 0;
+}
+.chat-turn > :not(.tl--tool) + .tl--tool .tool,
+.chat-turn > .tl--tool:first-child .tool {
+ border-top-left-radius: 8px;
+ border-top-right-radius: 8px;
+}
+.chat-turn > .tl--tool:not(:has(+ .tl--tool)) .tool {
+ border-bottom-left-radius: 8px;
+ border-bottom-right-radius: 8px;
+}
+.tool__toggle {
+ height: 26px;
+ padding: 0 10px;
+ gap: 8px;
+ font: 12px var(--ds-font-family-code);
+}
+.tool__toggle em {
+ font-family: var(--ds-font-family-code);
+ font-weight: 500;
+}
+.tool__open {
+ width: 20px;
+ height: 20px;
+ margin-right: 6px;
+}
+.turn-fold {
+ max-width: none;
+ height: 24px;
+ margin: 0;
+ border-bottom: 1px solid var(--dsw-alias-border-l1);
+}
+.turn-fold__rule {
+ display: none;
+}
+.turn-fold__worked {
+ font-size: 12px;
+ font-weight: 500;
+}
+.turn-fold__action {
+ margin-left: auto;
+ color: var(--dsw-alias-label-dimmed);
+ font-size: 12px;
+}
+.composer {
+ padding: 6px var(--composer-pad-left, 12px) 10px;
+}
+.composer__card {
+ gap: 6px;
+ padding: 8px 8px 8px 12px;
+ border-radius: 12px;
+}
+.composer__card:focus-within {
+ box-shadow:
+  inset 0 1px 0 rgb(255 255 255 / 0.08),
+  0 0 0 1px rgb(182 156 255 / 0.45),
+  0 0 0 4px rgb(182 156 255 / 0.1);
+}
+.composer__textarea {
+ height: 28px;
+ min-height: 28px;
+ padding: 2px 0 4px;
+ font-size: 13px;
+}
+.composer__row {
+ padding: 0;
+}
+.composer__turn-bar:has(.changes--collapsed) {
+ align-items: center;
+ height: 28px;
+ gap: 8px;
+ margin: 0 0 6px;
+ padding: 0 4px 0 10px;
+ border-radius: 8px;
+ background: rgb(0 0 0 / 0.18);
+ box-shadow: inset 0 0 0 1px rgb(128 128 128 / 0.14);
+}
+.composer__turn-bar:has(.changes--collapsed) .changes,
+.composer__turn-bar:has(.changes--collapsed) .changes__head {
+ height: 28px;
+ border: 0;
+ background: transparent;
+ box-shadow: none;
+ padding: 0;
+}
+.workspace-explorer__search {
+ display: flex;
+ align-items: center;
+ gap: 7px;
+ height: 26px;
+ margin: 8px 8px 4px;
+ padding: 0 8px;
+}
+.workspace-explorer__search .workspace-explorer__tabs {
+ margin: 0 0 0 auto;
+}
+.workspace-tree__item {
+ min-height: 22px;
+ height: 22px;
+ font-size: 12.5px;
+}
+.workspace-tree__badge {
+ flex: none;
+ width: 16px;
+ height: 16px;
+ display: grid;
+ place-items: center;
+ border-radius: 5px;
+ font-size: 10px;
+ line-height: 1;
+}
+.workspace-tree__badge.is-text {
+ font: 700 7.5px / 1 var(--font-mono, ui-monospace, Menlo, monospace);
+ letter-spacing: -0.03em;
+ text-shadow: none;
+}
+.workspace-tree__item.is-git-A:not([aria-expanded]) .workspace-tree__name {
+ color: #86e6b0;
+}
+.workspace-tree__item.is-git-M:not([aria-expanded]) .workspace-tree__name {
+ color: #f5c77e;
+}
+.workspace-tree__item .workspace-tree__git {
+ min-width: 15px;
+ height: 15px;
+ padding: 0 3px;
+ border-radius: 4px;
+ font: 700 9.5px var(--ds-font-family-code);
+ display: grid;
+ place-items: center;
+}
+.workspace-tree__item .workspace-tree__git.is-A {
+ color: #5fd49a;
+ background: rgb(95 212 154 / 0.18);
+}
+.workspace-tree__item .workspace-tree__git.is-M {
+ color: #f0b35a;
+ background: rgb(240 179 90 / 0.18);
+}
+/* The pastels above are dark-theme colors and wash out on a light surface;
+   light takes the Daylight git tokens from theme.css. */
+body:not([data-ds-dark-theme])
+ .workspace-tree__item.is-git-A:not([aria-expanded])
+ .workspace-tree__name {
+ color: var(--git-added);
+}
+body:not([data-ds-dark-theme])
+ .workspace-tree__item.is-git-M:not([aria-expanded])
+ .workspace-tree__name {
+ color: var(--git-modified);
+}
+body:not([data-ds-dark-theme]) .workspace-tree__item .workspace-tree__git.is-A {
+ color: var(--git-added);
+ background: color-mix(in srgb, var(--git-added) 14%, transparent);
+}
+body:not([data-ds-dark-theme]) .workspace-tree__item .workspace-tree__git.is-M {
+ color: var(--git-modified);
+ background: color-mix(in srgb, var(--git-modified) 14%, transparent);
+}
+.workspace-explorer__file-head {
+ height: 34px;
+}
+.workspace-explorer__file-head > .workspace-explorer__tab {
+ height: 24px;
+ font-size: 12.5px;
+ padding: 0 6px 0 9px;
+}
+.workspace-explorer__statusbar {
+ display: none;
+}
+.workspace-explorer__code.workspace-explorer__md {
+ padding: 16px 22px 28px;
+ font: 13.5px / 1.6 var(--ds-font-family, -apple-system, sans-serif);
+ color: var(--fg2, inherit);
+}
+.workspace-explorer__code,
+.workspace-explorer__editor .cm-scroller {
+ font-size: 12px;
+ line-height: 18px;
+}
+@media (max-width: 1149px) {
+ .workspace-explorer__editor {
+  display: none;
+ }
+ .workspace-explorer__tree {
+  width: auto !important;
+  flex: 1 1 auto !important;
+  flex-basis: auto !important;
+ }
+ .workspace-explorer__tree-resize {
+  display: none;
+ }
+}
+
+/* Trajectory shares the column with the file panel, so it has to shrink
+   and wrap instead of staying 760px and sliding off-screen. */
+.trajectory,
+.backend-log {
+ min-width: 0;
+}
+.trajectory__toolbar {
+ flex-wrap: wrap;
+ gap: 8px 12px;
+}
+.trajectory__search {
+ flex: 1 1 140px;
+ min-width: 0;
+ width: auto;
+}
+.trajectory__record-main {
+ grid-template-columns: auto auto minmax(0, 1fr) auto;
+ align-items: start;
+}
+.trajectory__summary {
+ -webkit-line-clamp: 4;
+}
+
+/* Model picker: agent chips on top, that agent's models below. */
+.native-model-controls {
+ position: relative;
+}
+button.native-model-controls__field {
+ height: 100%;
+ padding: 0;
+ border: 0;
+ background: transparent;
+ color: inherit;
+ font: inherit;
+ cursor: pointer;
+}
+button.native-model-controls__field:disabled {
+ cursor: default;
+}
+.composer__model-menu {
+ width: 368px;
+ max-width: min(368px, calc(100vw - 24px));
+ white-space: normal;
+}
+.composer--tight .composer__model-menu {
+ width: min(368px, calc(100vw - 24px));
+ max-width: min(368px, calc(100vw - 24px));
+}
+.composer__model-columns {
+ display: flex;
+ gap: 6px;
+ min-height: 0;
+}
+.composer__model-backends {
+ display: flex;
+ flex-direction: column;
+ flex-wrap: nowrap;
+ gap: 2px;
+ width: 104px;
+ flex: none;
+ padding: 0 6px 0 0;
+ margin: 0;
+ overflow: hidden;
+ border-bottom: 0;
+ border-right: 1px solid rgb(255 255 255 / 0.08);
+}
+.composer__model-models {
+ flex: 1;
+ min-width: 0;
+ display: flex;
+ flex-direction: column;
+ overflow: hidden;
+}
+.composer__model-menu .composer__model-backends button {
+ width: 100%;
+ height: 34px;
+ flex-direction: column;
+ justify-content: center;
+ align-items: stretch;
+ gap: 3px;
+ padding: 0 8px;
+ font-size: 12px;
+}
+.composer__model-agent-name {
+ display: flex;
+ flex-direction: row;
+ align-items: center;
+ gap: 7px;
+ width: 100%;
+ font-weight: 500;
+}
+.composer__model-backends button > span {
+ display: inline-flex;
+}
+.composer__model-menu button:disabled {
+ opacity: 0.4;
+ cursor: not-allowed;
+}
+.composer__model-list {
+ max-height: 240px;
+ overflow-y: auto;
+}
+.composer__model-menu .composer__model-list button {
+ padding: 5px 10px;
+}
+.composer__model-empty {
+ display: block;
+ padding: 8px 10px;
+ color: var(--dsw-alias-label-dimmed);
+ font-size: 12px;
+ font-style: normal;
+}
+
+/* Model menu upgrades (workbench redesign): search, per-agent usage bars,
+   keyboard-highlight row and the footer hint. */
+.composer__model-search {
+ display: flex;
+ align-items: center;
+ gap: 7px;
+ height: 26px;
+ margin: 0 4px 6px;
+ padding: 0 8px;
+ border-bottom: 1px solid rgb(255 255 255 / 0.08);
+ border-radius: 0;
+ color: #7a7884;
+}
+.composer__model-search input {
+ flex: 1;
+ min-width: 0;
+ border: 0;
+ background: none;
+ outline: none;
+ color: var(--dsw-alias-label-primary);
+ font: 500 13px var(--dsw-font-family);
+}
+.composer__model-search-kbd {
+ flex: none;
+ font-size: 10.5px;
+ color: var(--dsw-alias-label-dimmed);
+}
+.composer__model-menu .composer__agent-usage {
+ display: flex;
+ flex-direction: row;
+ align-items: center;
+ gap: 6px;
+ width: 100%;
+ padding-left: 19px;
+ flex: none;
+}
+.composer__model-menu .composer__agent-usage i {
+ display: block;
+ flex: 1;
+ width: auto;
+ height: 3px;
+ border-radius: 2px;
+ background: rgb(255 255 255 / 0.1);
+ overflow: hidden;
+}
+.composer__model-menu .composer__agent-usage i b {
+ display: block;
+ height: 100%;
+ border-radius: 2px;
+ background: rgb(255 255 255 / 0.45);
+}
+.composer__model-menu .composer__model-list .composer__model-check {
+ flex: none;
+ width: 14px;
+ text-align: center;
+ color: #b69cff;
+}
+.composer__model-menu .composer__agent-usage.is-low i b {
+ background: var(--pw-yellow);
+}
+.composer__model-menu .composer__agent-usage.is-critical i b {
+ background: var(--pw-red);
+}
+.composer__model-menu .composer__agent-usage > span {
+ flex: none;
+ min-width: 26px;
+ text-align: right;
+ font-size: 10px;
+ color: var(--dsw-alias-label-dimmed);
+}
+.composer__model-list button.is-highlighted {
+ background: var(--pw-accent-tint);
+}
+.composer__model-footer {
+ margin-top: 6px;
+ padding: 8px 8px 3px;
+ border-top: 1px solid rgb(255 255 255 / 0.08);
+ color: #a6a4b1;
+ font-size: 11.5px;
+}
+/* ponytail: descendant selector gave the nested logo span width:100%+flex:none,
+   pushing agent names off the clipped column edge — names already styled via
+   .composer__model-agent-name / .composer__agent-usage class rules. */
+.composer__model-menu .composer__mode-heading {
+ padding: 2px 8px 5px;
+ font-size: 10px;
+ font-weight: 600;
+ letter-spacing: 0.09em;
+ text-transform: uppercase;
+}
+
+/* Frosted menu from the workbench redesign. Every popup menu uses it. */
+:is(
+ .composer__mode-menu,
+ .conversation-header__overflow-menu,
+ .sidebar__session-popover,
+ .sidebar__filters,
+ .changes__menu,
+ .workspace-picker__menu,
+ .workspace-menu,
+ .route-picker,
+ .route-setup__add-menu,
+ .turn-complete__menu,
+ .slash-menu,
+ .app-footer__motion,
+ .editor-palette
+) {
+ --dsw-alias-label-primary: #f6f5fa;
+ --dsw-alias-label-secondary: #d2d0da;
+ --dsw-alias-label-tertiary: #a6a4b1;
+ --dsw-alias-label-caption: #7a7884;
+ --dsw-alias-label-dimmed: #7a7884;
+ --dsw-alias-border-l1: rgb(255 255 255 / 0.07);
+ --dsw-alias-border-l2: rgb(255 255 255 / 0.1);
+ --dsw-alias-border-l3: rgb(255 255 255 / 0.1);
+ --dsw-alias-interactive-bg-hover: rgb(255 255 255 / 0.09);
+ --dsw-alias-bg-layer-1: transparent;
+ --dsw-alias-bg-layer-2: rgb(255 255 255 / 0.06);
+ --pw-fg: #d2d0da;
+ --pw-fg-strong: #f6f5fa;
+ --pw-fg-2: #d2d0da;
+ --pw-fg-3: #a6a4b1;
+ --pw-fg-4: #7a7884;
+ --pw-pop: transparent;
+ --pw-accent-tint: rgb(255 255 255 / 0.09);
+ --pw-accent-tint-2: rgb(255 255 255 / 0.09);
+ background: rgba(26, 27, 34, 0.86);
+ backdrop-filter: blur(28px) saturate(1.6);
+ -webkit-backdrop-filter: blur(28px) saturate(1.6);
+ border: 0;
+ border-radius: 12px;
+ box-shadow:
+  inset 0 0 0 1px rgb(255 255 255 / 0.1),
+  inset 0 1px 0 rgb(255 255 255 / 0.08),
+  0 20px 50px rgb(0 0 0 / 0.55),
+  0 2px 8px rgb(0 0 0 / 0.35);
+ color: #d2d0da;
+}

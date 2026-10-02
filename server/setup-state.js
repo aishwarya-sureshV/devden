@@ -2,36 +2,38 @@
  * First-run setup. Done means the welcome / agents / start screens stay
  * closed. The choice of default agent and workspace is remembered with it.
  */
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { devdenHome, docGet, docSet } from "./db.js";
 
-export function devdenHome() {
-  if (process.env.DEVDEN_HOME) return process.env.DEVDEN_HOME;
-  const next = join(homedir(), ".devden");
-  const previous = join(homedir(), ".pi-web");
-  if (existsSync(next) || !existsSync(previous)) return next;
-  return previous;
-}
+export { devdenHome };
 
-function file() {
-  return join(devdenHome(), "onboarding.json");
+function normalize(raw) {
+  return {
+    done: Boolean(raw?.done),
+    defaultBackend:
+      typeof raw?.defaultBackend === "string" && raw.defaultBackend
+        ? raw.defaultBackend.slice(0, 40)
+        : null,
+    workspace:
+      typeof raw?.workspace === "string" && raw.workspace
+        ? raw.workspace.slice(0, 1000)
+        : null,
+  };
 }
 
 export function readSetup() {
+  const stored = docGet("setup", "onboarding");
+  if (stored) return normalize(stored);
+  // Pre-SQLite installs kept this in onboarding.json; adopt it once.
   try {
-    const parsed = JSON.parse(readFileSync(file(), "utf8"));
-    return {
-      done: Boolean(parsed?.done),
-      defaultBackend:
-        typeof parsed?.defaultBackend === "string"
-          ? parsed.defaultBackend
-          : null,
-      workspace:
-        typeof parsed?.workspace === "string" ? parsed.workspace : null,
-    };
+    const legacy = normalize(
+      JSON.parse(readFileSync(join(devdenHome(), "onboarding.json"), "utf8")),
+    );
+    docSet("setup", "onboarding", legacy);
+    return legacy;
   } catch {
-    // No onboarding.json yet: installs that already have history predate
+    // Nothing saved yet: installs that already have history predate
     // onboarding and should go straight to the workbench.
     const existing = ["transcripts", "routes", "display-history"].some(
       (dir) => existsSync(join(devdenHome(), dir)),
@@ -41,22 +43,7 @@ export function readSetup() {
 }
 
 export function writeSetup(input) {
-  const next = {
-    done: Boolean(input?.done),
-    defaultBackend:
-      typeof input?.defaultBackend === "string" && input.defaultBackend
-        ? input.defaultBackend.slice(0, 40)
-        : null,
-    workspace:
-      typeof input?.workspace === "string" && input.workspace
-        ? input.workspace.slice(0, 1000)
-        : null,
-  };
-  const home = devdenHome();
-  mkdirSync(home, { recursive: true });
-  const path = file();
-  const tmp = `${path}.tmp`;
-  writeFileSync(tmp, `${JSON.stringify(next, null, 2)}\n`);
-  renameSync(tmp, path);
+  const next = normalize(input);
+  docSet("setup", "onboarding", next);
   return next;
 }

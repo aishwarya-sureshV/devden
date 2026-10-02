@@ -5,13 +5,6 @@ import {
   type CSSProperties,
 } from "react";
 import {
-  AGENT_BACKENDS,
-  backendMark,
-  type AgentBackend,
-  type ProviderUsage,
-} from "../lib/api";
-import { useBackendUsage, usageLeft } from "../lib/backendUsage";
-import {
   CUSTOM_SCENE,
   CUSTOM_WALLPAPER,
   cycleBackdrop,
@@ -34,11 +27,10 @@ const MOTIONS: [WallpaperMotion, string][] = [
 /**
  * App footer (status bar). Right side holds the wallpaper controls from the
  * workbench redesign: ‹ thumbnail + name ›, the motion popover and Custom
- * upload. The left side carries the backend usage meters.
+ * upload. Usage lives on the composer chip.
  */
 export function AppFooter() {
   const settings = useSyncExternalStore(subscribeAppearance, getAppearance);
-  const usage = useBackendUsage();
   const [motionOpen, setMotionOpen] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
   const motionRef = useRef<HTMLButtonElement>(null);
@@ -63,11 +55,7 @@ export function AppFooter() {
 
   return (
     <footer className="app-footer" role="contentinfo">
-      <div className="app-footer__side">
-        {AGENT_BACKENDS.map((backend) => (
-          <UsageMeter key={backend} backend={backend} usage={usage[backend]} />
-        ))}
-      </div>
+      <div className="app-footer__side" />
       <div className="app-footer__wall">
         <button
           type="button"
@@ -165,44 +153,6 @@ function motionLabel(motion: WallpaperMotion): string {
     : motion === "drift"
       ? "Drift"
       : "Drift + parallax";
-}
-
-/** One backend's quota: glyph, % left bar (amber <25%, red <10%), reset on hover. */
-function UsageMeter({
-  backend,
-  usage,
-}: {
-  backend: AgentBackend;
-  usage?: ProviderUsage;
-}) {
-  const mark = backendMark(backend);
-  const { left, text, resetIn } = usageLeft(usage);
-  const value = left === null ? (text ?? "—") : `${left}%`;
-  const low = left !== null && left < 25;
-  const critical = left !== null && left < 10;
-  const title = [
-    backend,
-    left === null ? "no quota data" : `${left}% left`,
-    resetIn ? `resets in ${resetIn}` : undefined,
-  ]
-    .filter(Boolean)
-    .join(" · ");
-  return (
-    <span className="app-footer__meter" title={title}>
-      <span className="app-footer__meter-glyph" style={{ color: mark.color }}>
-        {mark.glyph}
-      </span>
-      <span className="app-footer__meter-bar">
-        <i
-          className={critical ? "is-critical" : low ? "is-low" : undefined}
-          style={{ width: `${left ?? 0}%` }}
-        />
-      </span>
-      <span className={critical ? "is-critical" : low ? "is-low" : undefined}>
-        {value}
-      </span>
-    </span>
-  );
 }
 
 /** Mode control + intensity slider, anchored above the motion button. */

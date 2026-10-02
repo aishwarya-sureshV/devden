@@ -1,6 +1,6 @@
 import { strict as assert } from "node:assert";
 import test from "node:test";
-import { messagesFromCodexLog } from "./sessions.js";
+import { listSessions, messagesFromCodexLog } from "./sessions.js";
 import { threadIdFromPath } from "./codex-agent.js";
 
 const line = (payload, type = "response_item") =>
@@ -63,4 +63,56 @@ test("recovers the thread id from a rollout path", () => {
     "01a0774c-fcd3-7073-90c7-8e40dc764182",
   );
   assert.equal(threadIdFromPath("/Users/x/notes.jsonl"), undefined);
+});
+
+
+test("concurrent Codex listings share pagination and keep sidebar reply tails small", async (t) => {
+  const { mkdtemp, writeFile, readFile, rm } = await import("node:fs/promises");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const { closeSharedCodex } = await import("./codex-app-server.js");
+  const dir = await mkdtemp(join(tmpdir(), "devden-listing-"));
+  const executable = join(dir, "codex");
+  const calls = join(dir, "calls");
+  const path = join(dir, "rollout.jsonl");
+  const originalBin = process.env.DEVDEN_CODEX_BIN;
+  closeSharedCodex();
+  t.after(async () => {
+    closeSharedCodex();
+    if (originalBin === undefined) delete process.env.DEVDEN_CODEX_BIN;
+    else process.env.DEVDEN_CODEX_BIN = originalBin;
+    await rm(dir, { recursive: true, force: true });
+  });
+  await writeFile(path, line({ type: "message", role: "assistant", content: [{ text: "x".repeat(4000) + "Which one?" }] }));
+  await writeFile(executable, `#!${process.execPath}
+import { createInterface } from "node:readline";
+import { appendFileSync } from "node:fs";
+createInterface({ input: process.stdin }).on("line", (line) => {
+  const req = JSON.parse(line);
+  if (req.id === undefined) return;
+  let result = {};
+  if (req.method === "thread/list") {
+    appendFileSync(${JSON.stringify(calls)}, "list\\n");
+    result = req.params.cursor ? { data: [] } : {
+      data: [{ path: ${JSON.stringify(path)}, preview: "fixture", cwd: ${JSON.stringify(dir)}, createdAt: 1 }], nextCursor: "page2"
+    };
+  }
+  setTimeout(() => process.stdout.write(JSON.stringify({ id: req.id, result }) + "\\n"), 10);
+});
+`, { mode: 0o755 });
+  process.env.DEVDEN_CODEX_BIN = executable;
+  const [recent, duplicate, archived] = await Promise.all([
+    listSessions({ backend: "codex" }),
+    listSessions({ backend: "codex" }),
+    listSessions({ backend: "codex", archived: true }),
+  ]);
+  assert.equal(recent.ok, true, recent.error);
+  assert.deepEqual(recent, duplicate);
+  assert.equal(archived.sessions.length, 0);
+  assert.equal((await readFile(calls, "utf8")).trim().split("\n").length, 2);
+  assert.equal(recent.sessions[0].lastAssistantText.length, 800);
+  assert.ok(recent.sessions[0].lastAssistantText.endsWith("Which one?"));
+  await writeFile(path, line({ type: "message", role: "assistant", content: [{ text: "updated" }] }));
+  const refreshed = await listSessions({ backend: "codex" });
+  assert.equal(refreshed.sessions[0].lastAssistantText, "updated");
 });

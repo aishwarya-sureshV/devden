@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { api, type BackendInfo } from "../lib/api";
 import { useStore } from "../lib/store";
-import { copyText } from "./CopyButton";
+import { AgentConnect } from "./AgentConnect";
 
 /** Row order matches onboarding's card order. */
 const ROW_ORDER = ["claude", "codex", "grok", "pi"];
@@ -10,55 +10,36 @@ type Kind = "ready" | "auth" | "missing";
 
 function kindOf(agent: BackendInfo): Kind {
   if (!agent.path) return "missing";
-  if (agent.auth === "missing") return "auth";
+  if (agent.auth !== "ok") return "auth";
   return "ready";
 }
 
 const STATUS: Record<
   Kind,
-  { label: string; dot: string; dotRing: string; cta: string }
+  { label: string; dot: string; dotRing: string }
 > = {
   ready: {
-    label: "Signed in",
+    label: "Connected",
     dot: "var(--pw-green)",
     dotRing: "var(--pw-green)",
-    cta: "",
   },
   auth: {
     label: "Sign in needed",
     dot: "var(--pw-yellow-soft)",
     dotRing: "var(--pw-yellow)",
-    cta: "Sign in",
   },
   missing: {
     label: "Not installed",
     dot: "transparent",
     dotRing: "var(--pw-fg-5)",
-    cta: "Set up",
   },
 };
-
-interface Step {
-  label: string;
-  cmd: string;
-}
-
-function stepsFor(agent: BackendInfo): Step[] {
-  const steps: Step[] = [];
-  if (!agent.path && agent.installCommand)
-    steps.push({ label: "Install", cmd: agent.installCommand });
-  if (agent.loginCommand)
-    steps.push({ label: "Sign in", cmd: agent.loginCommand });
-  return steps;
-}
 
 export function SettingsAgents() {
   const { defaultBackend, setDefaultBackend } = useStore();
   const [agents, setAgents] = useState<BackendInfo[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  const [open, setOpen] = useState("");
-  const [copied, setCopied] = useState("");
   const [onboarding, setOnboarding] = useState<{
     done: boolean;
     workspace: string | null;
@@ -157,10 +138,10 @@ export function SettingsAgents() {
     <div className="agents-settings">
       <div className="agents-settings__head">
         <div>
-          <h2>Agents</h2>
+          <h2>Your agents</h2>
           <p>
-            The CLIs devden can drive. Install one, sign in with it in your
-            terminal, then re-check. New sessions start on the default.
+            Connect an agent here. We'll handle installation and help you sign
+            in. New sessions start on your default agent.
           </p>
         </div>
         <div className="agents-settings__actions">
@@ -185,9 +166,7 @@ export function SettingsAgents() {
         {rows.map((agent) => {
           const kind = kindOf(agent);
           const look = STATUS[kind];
-          const open_ = open === agent.id;
           const isDefault = defaultBackend === agent.id;
-          const steps = stepsFor(agent);
           return (
             <div className="agents-settings__item" key={agent.id}>
               <div className="agents-settings__row">
@@ -217,51 +196,9 @@ export function SettingsAgents() {
                       Make default
                     </button>
                   )}
-                  {kind !== "ready" && steps.length > 0 && (
-                    <button
-                      type="button"
-                      aria-expanded={open_}
-                      onClick={() => setOpen(open_ ? "" : agent.id)}
-                    >
-                      {open_ ? "Hide" : look.cta}
-                    </button>
-                  )}
+                  {kind !== "ready" && <AgentConnect agent={agent} onConnected={setAgents} />}
                 </div>
               </div>
-              {open_ && (
-                <div className="agents-settings__steps">
-                  {steps.map((step, index) => (
-                    <div className="agents-settings__step" key={step.label}>
-                      <span>{String(index + 1).padStart(2, "0")}</span>
-                      <div>
-                        <span>{step.label}</span>
-                        <code>{step.cmd}</code>
-                      </div>
-                      <button
-                        type="button"
-                        aria-label={`Copy ${step.label.toLowerCase()} command`}
-                        onClick={() => {
-                          void copyText(step.cmd).then(() => {
-                            setCopied(`${agent.id}:${index}`);
-                            window.setTimeout(() => setCopied(""), 1400);
-                          });
-                        }}
-                      >
-                        {copied === `${agent.id}:${index}` ? "Copied" : "Copy"}
-                      </button>
-                    </div>
-                  ))}
-                  <div className="agents-settings__steps-footer">
-                    <span>
-                      Run these in any terminal, then re-check. Nothing is
-                      installed from here.
-                    </span>
-                    <button type="button" onClick={() => void load(true)}>
-                      ↻ Re-check {agent.id}
-                    </button>
-                  </div>
-                </div>
-              )}
             </div>
           );
         })}

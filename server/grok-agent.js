@@ -66,6 +66,11 @@ import {
   stripTrailingCompactTurn,
 } from "./sessions.js";
 import {
+  contextTokensFromJournal,
+  contextWindowForModel,
+  turnUsagesFromJournal,
+} from "./grok-context.js";
+import {
   cwdFromGrokSession,
   promptIndexFromTimestamp,
   resolvePromptIndex,
@@ -606,7 +611,27 @@ class GrokAgentProcess {
               // as a gate option id, which maps onto ACP's optionId here.
               // Read-only calls (kind "read") never prompt — same category
               // split the pi extension and Claude Code use.
-              if (self.agentMode === "manual") {
+              const toolKind = String(params.toolCall?.kind ?? "");
+              if (
+                self.agentMode === "auto-edit" &&
+                !/execute|delete/i.test(toolKind)
+              ) {
+                const allow = options.find(
+                  (o) => o.kind === "allow_once" || o.kind === "allow_always",
+                );
+                return allow
+                  ? {
+                      outcome: {
+                        outcome: "selected",
+                        optionId: allow.optionId,
+                      },
+                    }
+                  : { outcome: { outcome: "cancelled" } };
+              }
+              if (
+                self.agentMode === "manual" ||
+                self.agentMode === "auto-edit"
+              ) {
                 if (params.toolCall?.kind === "read") {
                   const readAllow = options.find(
                     (o) => o.kind === "allow_once" || o.kind === "allow_always",
@@ -621,7 +646,10 @@ class GrokAgentProcess {
                     : { outcome: { outcome: "cancelled" } };
                 }
                 const { allow, choice } = await self.approvalGate.request({
-                  toolName: String(params.toolCall?.title ?? "tool"),
+                  toolName:
+                    self.agentMode === "auto-edit"
+                      ? `${toolKind} ${String(params.toolCall?.title ?? "tool")}`
+                      : String(params.toolCall?.title ?? "tool"),
                   title: String(params.toolCall?.title ?? "tool"),
                   detail: params.toolCall?.rawInput,
                   options: options.map((option) => ({
@@ -1489,7 +1517,8 @@ class GrokAgentProcess {
             ? withGrokPrefix(
                 message,
                 repoContext(this.cwd),
-                this.agentMode === "manual",
+                this.agentMode === "manual" ||
+                  this.agentMode === "auto-edit",
               )
             : message,
       },
@@ -1590,6 +1619,13 @@ class GrokAgentProcess {
       }
       this.flushHeldParentText();
       this.closeOpenBlock(this.turn);
+      // The timeline only records usage from message_end. turn_end alone
+      // left the session card summing nothing, or summing a stale copy.
+      this.emit({
+        type: "message_end",
+        sessionKey: this.sessionKey,
+        message: assistantMessage,
+      });
       this.emit({
         type: "turn_end",
         sessionKey: this.sessionKey,
@@ -1740,6 +1776,11 @@ class GrokAgentProcess {
     this.turn = undefined;
     this.closeOpenBlock(turn);
     turn.message.stopReason = "end_turn";
+    this.emit({
+      type: "message_end",
+      sessionKey: this.sessionKey,
+      message: turn.message,
+    });
     this.emit({
       type: "turn_end",
       sessionKey: this.sessionKey,
@@ -2115,6 +2156,79 @@ class GrokAgentProcess {
     }
     this.thinkingLevel = level;
     return { ok: true, state: await this.getState() };
+  }
+
+  /**
+   * Current window fill from the journal, and the session ledger from
+   * usage.json (one row per completed turn, already summed by grok).
+   */
+  async getContextUsage() {
+    const dir = this.sessionFile ? dirname(this.sessionFile) : "";
+    if (!dir)
+      return { ok: false, error: "Grok has not reported context usage yet" };
+    let journal = "";
+    let usageFile;
+    try {
+      journal = await readFile(join(dir, "updates.jsonl"), "utf8");
+    } catch {
+      journal = "";
+    }
+    try {
+      usageFile = JSON.parse(await readFile(join(dir, "usage.json"), "utf8"));
+    } catch {
+      usageFile = undefined;
+    }
+    const totalTokens = contextTokensFromJournal(journal);
+    if (!totalTokens)
+      return { ok: false, error: "Grok has not reported context usage yet" };
+    let windowInfo = null;
+    try {
+      windowInfo = contextWindowForModel(
+        await this.fetchModelCatalog(),
+        this.model?.id || usageFile?.session?.primaryModelId,
+      );
+    } catch {
+      windowInfo = null;
+    }
+    if (!windowInfo)
+      return { ok: false, error: "Grok has not reported a context window" };
+    const turns = turnUsagesFromJournal(journal);
+    const summed = turns.reduce(
+      (total, turn) => {
+        const usage = usageFrom(turn);
+        total.input += usage.input;
+        total.output += usage.output;
+        total.cacheRead += usage.cacheRead;
+        total.cacheWrite += usage.cacheWrite;
+        total.durationMs += Number(turn.apiDurationMs) || 0;
+        return total;
+      },
+      { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, durationMs: 0 },
+    );
+    const ledger = usageFile?.session ? usageFrom(usageFile.session) : summed;
+    const session =
+      ledger.input || ledger.output || ledger.cacheRead
+        ? {
+            input: ledger.input,
+            output: ledger.output,
+            cacheRead: ledger.cacheRead,
+            cacheWrite: ledger.cacheWrite,
+            durationMs: summed.durationMs,
+          }
+        : undefined;
+    return {
+      ok: true,
+      data: {
+        totalTokens,
+        maxTokens: windowInfo.maxTokens,
+        percent: Math.round((totalTokens / windowInfo.maxTokens) * 100),
+        model: windowInfo.model,
+        autoCompactThreshold: windowInfo.autoCompactThreshold,
+        isAutoCompactEnabled: windowInfo.isAutoCompactEnabled,
+        categories: [],
+        ...(session ? { session } : {}),
+      },
+    };
   }
 
   async getUsage(force = false) {

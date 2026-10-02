@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
+import { spawn } from "node-pty";
 import {
   clipOutput,
   commandToPtyInput,
@@ -43,6 +44,36 @@ describe("commandToPtyInput", () => {
       commandToPtyInput("grok mcp add x\ngrok mcp doctor x"),
       "grok mcp add x\rgrok mcp doctor x\recho PIWEB_EXIT:$?\r",
     );
+  });
+  it("keeps interactive login and its completion marker in one shell statement", () => {
+    const input = commandToPtyInput("'/a path/cli' login --device-auth", true);
+    assert.equal(input.split("\r").length, 2);
+    assert.match(input, /^eval '/);
+    assert.match(input, /; echo PIWEB_EXIT:\$\?\r$/);
+  });
+  it("leaves provider input for the user and reports completion through a real PTY", async () => {
+    const terminal = spawn("/bin/sh", [], { cols: 120, rows: 24 });
+    try {
+      await new Promise<void>((resolve, reject) => {
+        let output = "";
+        let sent = false;
+        const timer = setTimeout(() => reject(new Error("Interactive command timed out")), 5000);
+        terminal.onData((chunk) => {
+          output += chunk;
+          if (!sent && /(?:^|[\r\n])ENTER_CODE\r?\n/.test(output)) {
+            sent = true;
+            terminal.write("user-code\r");
+          }
+          const result = ingestPtyChunk("", output);
+          if (result.exitCode != null) {
+            clearTimeout(timer);
+            try { assert.equal(result.exitCode, 0); assert.equal(sent, true); resolve(); }
+            catch (error) { reject(error); }
+          }
+        });
+        terminal.write(commandToPtyInput("printf 'ENTER_CODE\\n'; read -r answer; [ \"$answer\" = 'user-code' ]", true));
+      });
+    } finally { terminal.kill(); }
   });
 });
 

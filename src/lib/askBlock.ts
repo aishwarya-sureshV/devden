@@ -153,12 +153,47 @@ function stripTrailingXmlTags(raw: string): string {
   return lines.join("\n");
 }
 
+/** Missing closer for a truncated/unbalanced payload; null when balanced. */
+function missingClosers(raw: string): string {
+  const stack: string[] = [];
+  let inString = false;
+  let escaped = false;
+  for (const char of raw) {
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (inString) {
+      if (char === "\\") escaped = true;
+      else if (char === '"') inString = false;
+      continue;
+    }
+    if (char === '"') inString = true;
+    else if (char === "{" || char === "[") stack.push(char === "{" ? "}" : "]");
+    else if (char === "}" || char === "]") stack.pop();
+  }
+  // Unclosed string = garbage mid-payload, not a truncation; repair would
+  // invent a value.
+  if (inString || escaped) return "";
+  return stack.toReversed().join("");
+}
+
 export function parseAsk(raw: string): AskQuestion[] | null {
   let parsed: unknown;
+  const body = stripTrailingXmlTags(raw);
   try {
-    parsed = JSON.parse(stripTrailingXmlTags(raw));
+    parsed = JSON.parse(body);
   } catch {
-    return null;
+    // Models routinely end an ask payload one bracket short (claude drops the
+    // final root `}` right before the closing fence). Close what is left
+    // open; if that still isn't valid JSON it stays a raw block.
+    const closer = missingClosers(body);
+    if (!closer) return null;
+    try {
+      parsed = JSON.parse(body + closer);
+    } catch {
+      return null;
+    }
   }
   const list = Array.isArray(parsed)
     ? parsed

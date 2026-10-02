@@ -14,6 +14,7 @@ import {
   type ToolDiff,
   type ToolFileView,
 } from "../lib/toolCards";
+import { syntaxLang } from "../lib/syntaxPaint";
 import {
   describeTool,
   formatDuration,
@@ -25,8 +26,80 @@ import {
   type ResultPart,
   type ToolRowModel,
 } from "../lib/toolRow";
+import { SynText } from "./SynText";
 
 type ToolItem = Extract<TimelineItem, { kind: "tool" }>;
+
+function splitPath(path: string): { dir: string; file: string } {
+  const parts = path.split("/");
+  const file = parts.pop() || path;
+  return { dir: parts.length ? `${parts.join("/")}/` : "", file };
+}
+
+/** Recessed edit preview. Nine lines, then a fade and a more-lines toggle. */
+function EditWell({
+  title,
+  diff,
+  inDock,
+  dockWord,
+  onOpen,
+}: {
+  title: string;
+  diff: ToolDiff;
+  inDock: boolean;
+  dockWord: string;
+  onOpen: () => void;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const code = diff.lines.filter((line) => line.kind !== "meta");
+  const preview = 9;
+  const shown = expanded ? code : code.slice(0, preview);
+  const more = code.length - shown.length;
+  const path = splitPath(title);
+  const lang = syntaxLang(undefined, title);
+  return (
+    <div className={`edit-well${inDock ? " is-open" : ""}`}>
+      <div className="edit-well__head">
+        <span className="edit-well__verb">edit</span>
+        <span className="edit-well__path" title={title}>
+          {path.dir && <span>{path.dir}</span>}
+          <strong>{path.file}</strong>
+        </span>
+        <span className="edit-well__stat">
+          {diff.added > 0 && <span className="is-add">+{diff.added}</span>}
+          {diff.removed > 0 && <span className="is-del">−{diff.removed}</span>}
+        </span>
+        <button type="button" className="edit-well__open" onClick={onOpen}>
+          {inDock ? dockWord : "Open diff ↗"}
+        </button>
+      </div>
+      <div className={`edit-well__body${more > 0 ? " is-fade" : ""}`}>
+        {shown.map((line, index) => (
+          <div key={index} className={`edit-well__line is-${line.kind}`}>
+            <span>{line.lineNo ?? ""}</span>
+            <span>
+              {line.kind === "add" ? "+" : line.kind === "remove" ? "−" : ""}
+            </span>
+            <span>
+              <SynText text={line.text} lang={lang} />
+            </span>
+          </div>
+        ))}
+      </div>
+      {code.length > preview && (
+        <button
+          type="button"
+          className="edit-well__more"
+          onClick={() => setExpanded((open) => !open)}
+        >
+          {expanded
+            ? "Show fewer lines"
+            : `${code.length - preview} more lines`}
+        </button>
+      )}
+    </div>
+  );
+}
 
 export function ToolCard({
   item,
@@ -35,6 +108,8 @@ export function ToolCard({
   cwd = "",
   repeat = 1,
   expandDiff = false,
+  dockTitle = null,
+  dockWord = "In panel",
 }: {
   item: ToolItem;
   onOpenFile: (view: ToolFileView) => void;
@@ -43,6 +118,9 @@ export function ToolCard({
   cwd?: string;
   repeat?: number;
   expandDiff?: boolean;
+  /** Title of the file currently open in the review dock, if this session owns it. */
+  dockTitle?: string | null;
+  dockWord?: string;
 }) {
   const model = describeTool(item, cwd, repeat);
   const elapsed = useElapsed(item);
@@ -84,6 +162,29 @@ export function ToolCard({
     if (view) onOpenFile(view);
     else if (diff) onOpenFile({ title: model.title, diff });
   };
+  const fullDiff = model.detail === "diff" ? getToolDiff(item) : null;
+  if (fullDiff && (fullDiff.added > 0 || fullDiff.removed > 0)) {
+    const fileView = getToolFileView(item);
+    const title = fileView?.title || model.title;
+    return (
+      <article className="tl tl--tool">
+        <span className="tl__node" />
+        <EditWell
+          title={title}
+          diff={fullDiff}
+          inDock={dockTitle === title}
+          dockWord={dockWord}
+          onOpen={() =>
+            onOpenFile(
+              fileView
+                ? { ...fileView, diff: fullDiff }
+                : { title, diff: fullDiff },
+            )
+          }
+        />
+      </article>
+    );
+  }
   return (
     <article className="tl tl--tool">
       <span className="tl__node" />
@@ -146,6 +247,8 @@ export function ToolCard({
                   item={child}
                   onOpenFile={onOpenFile}
                   cwd={cwd}
+                  dockTitle={dockTitle}
+                  dockWord={dockWord}
                 />
               ))}
             </div>
@@ -628,35 +731,4 @@ function useElapsed(item: ToolItem): number {
   }, [running]);
   if (!running) return item.elapsed ?? 0;
   return Math.max(0, now - item.startedAt);
-}
-
-export function DiffPreview({ diff }: { diff: ToolDiff }) {
-  const numbered = diff.lines.some((line) => line.lineNo != null);
-  const width = String(
-    Math.max(0, ...diff.lines.map((line) => line.lineNo ?? 0)),
-  ).length;
-  return (
-    <div className="diff">
-      {diff.lines.map((line, index) => (
-        <div
-          key={`${index}-${line.text}`}
-          className={`diff__line is-${line.kind}`}
-        >
-          {numbered && (
-            <span
-              className="diff__no"
-              aria-hidden="true"
-              style={{ minWidth: `${width}ch` }}
-            >
-              {line.kind === "meta" ? "" : (line.lineNo ?? "")}
-            </span>
-          )}
-          <span className="diff__mark">
-            {line.kind === "add" ? "+" : line.kind === "remove" ? "−" : " "}
-          </span>
-          <code>{line.text}</code>
-        </div>
-      ))}
-    </div>
-  );
 }

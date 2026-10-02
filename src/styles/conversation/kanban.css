@@ -1,0 +1,414 @@
+/* Kanban board slide-over — same shell as .route-pane, wider for 4 lanes. */
+.board-pane {
+ flex: none;
+ display: flex;
+ flex-direction: column;
+ width: min(760px, 58vw);
+ min-width: 420px;
+ min-height: 0;
+ background: var(--pw-panel);
+ border-left: 1px solid var(--dsw-alias-border-l1);
+}
+.board-pane__head {
+ flex: none;
+ display: flex;
+ align-items: center;
+ gap: 10px;
+ padding: 10px 12px;
+ border-bottom: 1px solid var(--dsw-alias-border-l1);
+ min-height: 50px;
+}
+.board-pane__back {
+ flex: none;
+ border: 1px solid var(--dsw-alias-border-l2);
+ border-radius: 5px;
+ background: var(--pw-card);
+ padding: 4px 8px;
+ font: inherit;
+ font-size: 11px;
+ color: var(--dsw-alias-label-secondary);
+ cursor: pointer;
+}
+.board-pane__back:hover {
+ color: var(--pw-accent);
+ border-color: var(--pw-accent-line);
+}
+.board-pane__identity {
+ flex: 1;
+ min-width: 0;
+ display: flex;
+ flex-direction: column;
+ gap: 1px;
+}
+.board-pane__identity strong {
+ font-size: 12px;
+}
+.board-pane__identity span {
+ font-size: 11px;
+ color: var(--dsw-alias-label-dimmed);
+}
+.board-pane__close {
+ flex: none;
+ width: 28px;
+ height: 28px;
+ border: 0;
+ background: transparent;
+ color: var(--dsw-alias-label-caption);
+ font-size: 18px;
+ cursor: pointer;
+}
+.board-pane__close:hover {
+ color: var(--pw-accent);
+}
+
+/* Lanes are sunken tracks, so an empty column still reads as a column. */
+.board-pane__columns {
+ flex: 1;
+ min-height: 0;
+ display: grid;
+ grid-template-columns: repeat(4, minmax(0, 1fr));
+ gap: 10px;
+ padding: 12px;
+ overflow-x: auto;
+}
+.board-col {
+ min-width: 0;
+ display: flex;
+ flex-direction: column;
+ min-height: 0;
+ border-radius: 9px;
+ background: var(--pw-sunken);
+ border: 1px solid var(--dsw-alias-border-l1);
+ overflow: hidden;
+}
+.board-col.is-over {
+ border-color: var(--pw-accent-line);
+}
+.board-col__head {
+ flex: none;
+ display: flex;
+ align-items: center;
+ gap: 7px;
+ padding: 0 10px;
+ height: 32px;
+ border-bottom: 1px solid var(--dsw-alias-border-l1);
+ background: var(--pw-chip);
+}
+.board-col__dot {
+ flex: none;
+ width: 5px;
+ height: 5px;
+ border-radius: 50%;
+}
+.board-col__name {
+ flex: 1;
+ min-width: 0;
+ font-size: 10.5px;
+ letter-spacing: 0.08em;
+ text-transform: uppercase;
+ color: var(--dsw-alias-label-secondary);
+ overflow: hidden;
+ text-overflow: ellipsis;
+ white-space: nowrap;
+}
+.board-col__count {
+ flex: none;
+ font-size: 10.5px;
+ color: var(--dsw-alias-label-dimmed);
+}
+.board-col__list {
+ flex: 1;
+ min-height: 34px;
+ overflow-y: auto;
+ padding: 9px 8px;
+ display: flex;
+ flex-direction: column;
+ gap: 7px;
+}
+/* An empty lane says what belongs in it rather than standing blank. */
+.board-col__empty {
+ display: flex;
+ flex-direction: column;
+ gap: 5px;
+ padding: 11px 10px;
+ border: 1px dashed var(--dsw-alias-border-l2);
+ border-radius: 7px;
+}
+.board-col__empty span {
+ font-size: 10px;
+ letter-spacing: 0.06em;
+ text-transform: uppercase;
+ color: var(--dsw-alias-label-caption);
+}
+.board-col__empty small {
+ font-size: 10px;
+ line-height: 1.55;
+ color: var(--dsw-alias-label-dimmed);
+}
+.board-card {
+ position: relative;
+ display: grid;
+ grid-template-columns: 1fr auto;
+ align-items: start;
+ gap: 3px 4px;
+ padding: 8px 6px 8px 9px;
+ border-radius: 7px;
+ background: var(--pw-card);
+ border: 1px solid var(--dsw-alias-border-l2);
+ box-shadow: 0 1px 0 rgba(38, 32, 24, 0.04);
+ cursor: pointer;
+}
+.board-card:hover {
+ border-color: var(--pw-accent-line);
+}
+.board-card:focus-visible {
+ outline: 2px solid var(--pw-accent);
+ outline-offset: 1px;
+}
+.board-card.is-dragging {
+ opacity: 0.4;
+}
+.board-card.is-before::before {
+ content: "";
+ position: absolute;
+ left: 0;
+ right: 0;
+ top: -4px;
+ height: 2px;
+ border-radius: 2px;
+ background: var(--pw-accent);
+}
+.board-card__title {
+ min-width: 0;
+ font-size: 12px;
+ line-height: 1.45;
+ color: var(--dsw-alias-label-primary);
+ overflow-wrap: anywhere;
+}
+/* Only what is actually attached to the card — never inferred state. */
+.board-card__marks {
+ grid-column: 1 / -1;
+ display: flex;
+ flex-wrap: wrap;
+ gap: 4px;
+}
+.board-card__marks span {
+ font-size: 9px;
+ letter-spacing: 0.06em;
+ padding: 1px 5px;
+ border-radius: 3px;
+ background: var(--pw-chip);
+ color: var(--dsw-alias-label-dimmed);
+}
+/* Native select: a dropdown is the one control that needs no custom menu. */
+.board-card__priority {
+ appearance: none;
+ border: 0;
+ border-radius: 3px;
+ padding: 1px 4px;
+ font: inherit;
+ font-size: 9px;
+ letter-spacing: 0.06em;
+ background: var(--pw-chip);
+ color: var(--dsw-alias-label-dimmed);
+ cursor: pointer;
+}
+.board-card__priority:hover {
+ color: var(--dsw-alias-label-secondary);
+}
+.board-card__priority.is-high {
+ background: var(--pw-accent-tint-2);
+ color: var(--pw-accent);
+}
+.board-card__priority.is-low {
+ opacity: 0.7;
+}
+.board-card__priority:focus-visible {
+ outline: 2px solid var(--pw-accent);
+ outline-offset: 1px;
+}
+
+.board-card__drop {
+ grid-row: 1;
+ grid-column: 2;
+ flex: none;
+ border: 0;
+ background: transparent;
+ padding: 0 1px;
+ color: var(--dsw-alias-label-dimmed);
+ cursor: pointer;
+ opacity: 0;
+}
+.board-card:hover .board-card__drop,
+.board-card:focus-within .board-card__drop {
+ opacity: 1;
+}
+.board-card__drop:hover {
+ color: var(--pw-danger, #e5534b);
+}
+.board-col__add {
+ flex: none;
+ display: flex;
+ align-items: center;
+ gap: 5px;
+ padding: 7px 10px 8px;
+ border-top: 1px solid var(--dsw-alias-border-l1);
+ color: var(--dsw-alias-label-dimmed);
+}
+.board-col__add input {
+ flex: 1;
+ min-width: 0;
+ border: 0;
+ background: transparent;
+ font: inherit;
+ font-size: 11.5px;
+ color: var(--dsw-alias-label-primary);
+ outline: none;
+}
+.board-pane__foot {
+ flex: none;
+ display: flex;
+ align-items: center;
+ gap: 10px;
+ height: 32px;
+ padding: 0 14px;
+ border-top: 1px solid var(--dsw-alias-border-l1);
+ background: var(--pw-chip);
+ font-size: 10px;
+ color: var(--dsw-alias-label-dimmed);
+}
+.board-pane__foot kbd {
+ font: inherit;
+ color: var(--dsw-alias-label-caption);
+}
+.board-pane__rule {
+ width: 1px;
+ height: 10px;
+ background: var(--dsw-alias-border-l2);
+}
+
+/* Card detail. Four lanes in this pane are far too narrow to expand into,
+   so an opened card takes the whole board area and the header offers "back". */
+.board-detail {
+ flex: 1;
+ min-height: 0;
+ overflow-y: auto;
+ display: flex;
+ flex-direction: column;
+ gap: 12px;
+ padding: 14px;
+}
+.board-detail__title {
+ flex: none;
+ border: 0;
+ border-bottom: 1px solid var(--dsw-alias-border-l2);
+ background: transparent;
+ padding: 0 0 8px;
+ font: inherit;
+ font-size: 14px;
+ line-height: 1.4;
+ color: var(--dsw-alias-label-primary);
+ outline: none;
+}
+.board-detail__title:focus {
+ border-bottom-color: var(--pw-accent);
+}
+.board-detail__note {
+ flex: none;
+ min-height: 120px;
+ resize: vertical;
+ border: 1px solid var(--dsw-alias-border-l2);
+ border-radius: 7px;
+ background: var(--pw-card);
+ padding: 10px;
+ font: inherit;
+ font-size: 12px;
+ line-height: 1.6;
+ color: var(--dsw-alias-label-primary);
+ outline: none;
+}
+.board-detail__note:focus {
+ border-color: var(--pw-accent-line);
+}
+.board-detail__shot {
+ flex: none;
+ display: flex;
+ flex-direction: column;
+ gap: 6px;
+}
+.board-detail__drop {
+ display: flex;
+ flex-direction: column;
+ align-items: center;
+ gap: 4px;
+ padding: 20px 12px;
+ border: 1px dashed var(--dsw-alias-border-l2);
+ border-radius: 7px;
+ background: transparent;
+ font: inherit;
+ font-size: 11.5px;
+ color: var(--dsw-alias-label-secondary);
+ cursor: pointer;
+}
+.board-detail__drop:hover {
+ border-color: var(--pw-accent-line);
+ color: var(--pw-accent);
+}
+.board-detail__drop small {
+ font-size: 10px;
+ color: var(--dsw-alias-label-dimmed);
+}
+.board-detail__shot figure {
+ margin: 0;
+ display: flex;
+ flex-direction: column;
+ gap: 6px;
+}
+.board-detail__shot img {
+ width: 100%;
+ border-radius: 7px;
+ border: 1px solid var(--dsw-alias-border-l2);
+}
+.board-detail__shot figcaption button,
+.board-detail__delete,
+.board-detail__open {
+ display: inline-flex;
+ align-items: center;
+ gap: 5px;
+ border: 1px solid var(--dsw-alias-border-l2);
+ border-radius: 5px;
+ background: var(--pw-card);
+ padding: 5px 9px;
+ font: inherit;
+ font-size: 11px;
+ color: var(--dsw-alias-label-secondary);
+ cursor: pointer;
+}
+.board-detail__open:hover {
+ color: var(--pw-accent);
+ border-color: var(--pw-accent-line);
+}
+.board-detail__shot figcaption button:hover,
+.board-detail__delete:hover {
+ color: var(--pw-danger, #e5534b);
+}
+.board-detail__error {
+ margin: 0;
+ font-size: 11px;
+ color: var(--pw-red);
+}
+.board-detail__foot {
+ margin-top: auto;
+ display: flex;
+ align-items: center;
+ gap: 8px;
+ padding-top: 12px;
+ border-top: 1px solid var(--dsw-alias-border-l1);
+}
+.board-detail__spacer {
+ flex: 1;
+}
+.board-detail__gone {
+ font-size: 11px;
+ color: var(--dsw-alias-label-dimmed);
+}

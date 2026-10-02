@@ -4,22 +4,13 @@
  * which roles the user assigned so the UI can restore them.
  */
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { devdenHome } from "./setup-state.js";
+import { devdenHome, docGet, docSet } from "./db.js";
 
 const KINDS = new Set(["plan", "diagnose", "execute", "review"]);
 const BACKENDS = new Set(["pi", "claude", "grok", "codex"]);
 const TEMPLATES = new Set(["diagnose", "fix", "plan", "custom"]);
-
-export function routeStoreDir(root = join(devdenHome(), "routes")) {
-  return root;
-}
-
-function fileFor(dir, id) {
-  const hash = createHash("sha1").update(id).digest("hex");
-  return join(dir, `${hash}.json`);
-}
 
 export function normalizeRoute(raw) {
   if (!raw || typeof raw !== "object") return null;
@@ -53,44 +44,42 @@ export function normalizeRoute(raw) {
   };
 }
 
-async function readRouteFile(path) {
+/** Pre-SQLite installs kept routes in routes/<sha1>.json; adopt on read. */
+async function readLegacy(home, id) {
+  const hash = createHash("sha1").update(id).digest("hex");
   try {
-    const parsed = JSON.parse(await readFile(path, "utf8"));
-    return normalizeRoute(parsed);
+    const route = normalizeRoute(
+      JSON.parse(await readFile(join(home, "routes", `${hash}.json`), "utf8")),
+    );
+    if (route) docSet("routes", id, route, home);
+    return route;
   } catch {
     return null;
   }
 }
 
-export async function loadRoute(
-  sessionKey,
-  sessionFile = "",
-  dir = routeStoreDir(),
-) {
+async function readRoute(home, id) {
+  const stored = docGet("routes", id, home);
+  if (stored) return normalizeRoute(stored);
+  return readLegacy(home, id);
+}
+
+/** `home` is the devden data dir; tests point it at a temp folder. */
+export async function loadRoute(sessionKey, sessionFile = "", home = devdenHome()) {
   if (sessionFile) {
-    const fromFile = await readRouteFile(fileFor(dir, `file:${sessionFile}`));
+    const fromFile = await readRoute(home, `file:${sessionFile}`);
     if (fromFile) return fromFile;
   }
-  if (sessionKey) return readRouteFile(fileFor(dir, `key:${sessionKey}`));
+  if (sessionKey) return readRoute(home, `key:${sessionKey}`);
   return null;
 }
 
-export async function saveRoute(
-  sessionKey,
-  sessionFile,
-  raw,
-  dir = routeStoreDir(),
-) {
+export async function saveRoute(sessionKey, sessionFile, raw, home = devdenHome()) {
   const route = normalizeRoute(raw);
   if (!route) return { ok: false, error: "Invalid route." };
-  await mkdir(dir, { recursive: true });
-  const body = `${JSON.stringify(route, null, 2)}\n`;
-  const writes = [];
-  if (sessionKey) writes.push(writeFile(fileFor(dir, `key:${sessionKey}`), body));
-  if (sessionFile)
-    writes.push(writeFile(fileFor(dir, `file:${sessionFile}`), body));
-  if (writes.length === 0)
+  if (!sessionKey && !sessionFile)
     return { ok: false, error: "Missing session key." };
-  await Promise.all(writes);
+  if (sessionKey) docSet("routes", `key:${sessionKey}`, route, home);
+  if (sessionFile) docSet("routes", `file:${sessionFile}`, route, home);
   return { ok: true, route };
 }

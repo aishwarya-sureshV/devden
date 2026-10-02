@@ -25,7 +25,8 @@ import {
 import { loadCodexUsage } from "./codex-usage.js";
 import { loadGrokUsage } from "./grok-usage.js";
 import { ollamaResets } from "./ollama-resets.js";
-import { readResumeSession } from "./sessions.js";
+import { messagesFromPiLog, readResumeSession } from "./sessions.js";
+import { contextTokensFromPiMessages } from "./pi-context.js";
 import { logFault } from "./log-fault.js";
 import { buildReassertion, findDroppedInstructions } from "./context-guard.js";
 import {
@@ -89,11 +90,11 @@ function resolvePiExecutable() {
   return process.env.DEVDEN_PI_BIN || "pi";
 }
 
-// pi's own answer to "what thinking levels exist" (confirmed against a live
-// RPC session across several different configured models -- it never varies
-// per model, it's the same fixed CLI-level ladder `pi --help` documents).
-// Kept as a constant so a session that has no live process yet -- every
-// saved session, until its first message -- can still answer this instead
+// pi's fixed ladder (see its getSupportedThinkingLevels). Per model, the
+// visible set is pruned by the model's own thinkingLevelMap -- that DOES vary
+// per model (a live RPC confirms: get_available_thinking_levels answers for
+// the session's current model). The constant stays as the cold-session
+// fallback so a saved session with no process yet can still answer instead
 // of 500ing.
 const PI_THINKING_LEVELS = [
   "off",
@@ -106,6 +107,20 @@ const PI_THINKING_LEVELS = [
 ];
 
 const LIST_MODELS_TIMEOUT_MS = 15_000;
+
+// Port of pi's getSupportedThinkingLevels: a reasoning-capable model exposes
+// the extended ladder except levels its thinkingLevelMap marks null
+// (hidden); xhigh/max additionally require the map to define them. This is
+// what lets the UI slider show the total efforts for the selected model
+// (e.g. models lacking a max mapping cap at xhigh/high).
+export function supportedThinkingLevels(model) {
+  if (!model?.reasoning) return ["off"];
+  return PI_THINKING_LEVELS.filter((level) => {
+    const mapped = model.thinkingLevelMap?.[level];
+    if (mapped === null) return false;
+    return level === "xhigh" || level === "max" ? mapped !== undefined : true;
+  });
+}
 
 /**
  * `pi --list-models` is a one-shot, standalone listing -- no RPC session
@@ -406,9 +421,9 @@ export class PiAgentProcess {
         type: "notice",
         tone: "error",
         sessionKey: this.sessionKey,
-        message: !settled
-          ? "The model stopped responding and pi could not interrupt the call. Restart the session to recover."
-          : `The model stopped responding and ${MODEL_STALL_MAX_RETRIES} automatic resumes didn't help. The turn was stopped — resend when the provider is responsive.`,
+        message: settled
+          ? `The model stopped responding and ${MODEL_STALL_MAX_RETRIES} automatic resumes didn't help. The turn was stopped — resend when the provider is responsive.`
+          : "The model stopped responding and pi could not interrupt the call. Restart the session to recover.",
       });
       return;
     }
@@ -427,8 +442,7 @@ export class PiAgentProcess {
         resolve(ok);
       };
       const off = this.onEvent((event) => {
-        if (event.type === "__status" && event.status !== "working")
-          done(true);
+        if (event.type === "__status" && event.status !== "working") done(true);
       });
       const timer = setTimeout(() => done(false), ms);
     });
@@ -578,7 +592,7 @@ export class PiAgentProcess {
     const systemPrompt = [
       // Manual mode skips the pre-tool narration line: the approval card
       // already shows what is about to run, so it would be pure token spend.
-      options.agentMode === "manual"
+      options.agentMode === "manual" || options.agentMode === "auto-edit"
         ? CO_PARTNER_PROMPT_MANUAL
         : CO_PARTNER_PROMPT,
       CLARIFY_PROMPT,
@@ -604,7 +618,7 @@ export class PiAgentProcess {
     if (existsSync(join(cwd, ".mcp.json"))) {
       args.push("--mcp-config", join(cwd, ".mcp.json"));
     }
-    if (this.agentMode === "manual") {
+    if (this.agentMode === "manual" || this.agentMode === "auto-edit") {
       // pi's RPC protocol has no built-in tool approval; the extension
       // provides it by blocking tool_call and asking over ctx.ui.select,
       // which reaches us as extension_ui_request on the RPC stream.
@@ -628,6 +642,7 @@ export class PiAgentProcess {
         // call back into this server to run/read user-visible tabs.
         DEVDEN_PORT: TERMINAL_TABS_PORT,
         DEVDEN_SESSION_KEY: this.sessionKey,
+        DEVDEN_AGENT_MODE: options.agentMode || "",
         FORCE_COLOR: "0",
         NO_COLOR: "1",
       }),
@@ -1102,7 +1117,17 @@ export class PiAgentProcess {
       // pi registers the grok provider too; this UI drives pi, not grok.
       (model) => !/^grok/i.test(String(model?.provider ?? "")),
     );
-    return { ok: true, models: mergeModelLists(models, ollama) };
+    // Catalog models carry reasoning/thinkingLevelMap (the standalone text
+    // listing does not) -- annotate with the levels the model supports so
+    // the composer slider can match each selected model.
+    return {
+      ok: true,
+      models: mergeModelLists(models, ollama).map((model) =>
+        typeof model.reasoning === "boolean" || model.thinkingLevelMap
+          ? { ...model, levels: supportedThinkingLevels(model) }
+          : model,
+      ),
+    };
   }
 
   async getThinkingLevels() {
@@ -1117,6 +1142,45 @@ export class PiAgentProcess {
     return {
       ok: true,
       levels: Array.isArray(data) ? data : (data?.levels ?? []),
+    };
+  }
+
+  /** Last reply's provider token count against the model's context window. */
+  async getContextUsage() {
+    let messages = [];
+    let model = this.lastState?.model;
+    if (this.process) {
+      try {
+        const state = await this.getState(8_000);
+        model = state?.model ?? model;
+        messages = await this.getMessages(8_000);
+      } catch (error) {
+        return { ok: false, error: String(error?.message ?? error) };
+      }
+    } else if (this.lastState?.sessionFile) {
+      try {
+        messages = messagesFromPiLog(
+          await readFile(this.lastState.sessionFile, "utf8"),
+        );
+      } catch {
+        messages = [];
+      }
+    }
+    const totalTokens = contextTokensFromPiMessages(messages);
+    const maxTokens = Number(model?.contextWindow);
+    if (!totalTokens || !Number.isFinite(maxTokens) || maxTokens <= 0)
+      return { ok: false, error: "Pi has not reported context usage yet" };
+    return {
+      ok: true,
+      data: {
+        totalTokens,
+        maxTokens,
+        percent: Math.round((totalTokens / maxTokens) * 100),
+        model: String(model?.id ?? ""),
+        autoCompactThreshold: 0,
+        isAutoCompactEnabled: false,
+        categories: [],
+      },
     };
   }
 

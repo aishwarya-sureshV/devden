@@ -124,3 +124,31 @@ export function isTurnLogOpen(opts: {
   if (opts.explicit === false) return false;
   return opts.isLast;
 }
+
+/** Short type badge for a file row ("tsx", "css", "test"); CSS colors it. */
+export function fileKind(path: string): string {
+  const name = path.split("/").pop() ?? path;
+  if (/\.(test|spec)\.[a-z]+$/i.test(name)) return "test";
+  const dot = name.lastIndexOf(".");
+  return dot > 0 ? name.slice(dot + 1, dot + 5).toLowerCase() : "file";
+}
+
+/**
+ * Did this session's own tools write `changePath` (repo-relative, from git)?
+ * Tool paths are usually absolute; relative ones are taken from `cwd`.
+ * ponytail: assumes cwd is the repo root; a session started in a subfolder
+ * would need git's prefix (`git rev-parse --show-prefix`) to match.
+ */
+export function isSessionPath(
+  changePath: string,
+  sessionPaths: readonly string[],
+  cwd: string,
+): boolean {
+  const root = `${cwd.replace(/\/+$/, "")}/`;
+  return sessionPaths.some(
+    (path) =>
+      (path.startsWith(root)
+        ? path.slice(root.length)
+        : path.replace(/^\.\//, "")) === changePath,
+  );
+}

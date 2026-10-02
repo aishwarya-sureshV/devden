@@ -1,9 +1,6 @@
 import { strict as assert } from "node:assert";
 import test from "node:test";
-import {
-  isStaleThinkingLevelMap,
-  listOllamaModels,
-} from "./ollama-models.js";
+import { isStaleThinkingLevelMap, listOllamaModels } from "./ollama-models.js";
 
 test("the capped map written before xhigh/max support is stale", () => {
   assert.equal(
@@ -55,6 +52,17 @@ test("a cloud model that reports thinking is registered as reasoning-capable", a
     const models = await listOllamaModels();
     const cloud = models.find((m) => m.id === "deepseek-v4-flash:cloud");
     assert.equal(cloud.reasoning, true);
+    // The daemon object has no map; reasoning models must carry the full
+    // 1:1 map so supportedThinkingLevels exposes every level through max.
+    assert.deepEqual(cloud.thinkingLevelMap, {
+      off: "none",
+      minimal: "minimal",
+      low: "low",
+      medium: "medium",
+      high: "high",
+      xhigh: "xhigh",
+      max: "max",
+    });
     assert.equal(models.find((m) => m.id === "llava:7b").reasoning, false);
   } finally {
     globalThis.fetch = original;

@@ -35,7 +35,9 @@ export function shouldAdoptLiveAgent(body = {}) {
 /** Options the prompt and fork routes both have to hand to start(). */
 export function startOptionsFromBody(body = {}) {
   const agentMode =
-    body.agentMode === "plan" || body.agentMode === "manual"
+    body.agentMode === "plan" ||
+    body.agentMode === "manual" ||
+    body.agentMode === "auto-edit"
       ? body.agentMode
       : undefined;
   return {

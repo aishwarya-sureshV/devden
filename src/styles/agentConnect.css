@@ -1,0 +1,46 @@
+.agent-connect {
+  width: min(760px, calc(100vw - 32px));
+  max-height: calc(100dvh - 32px);
+  box-sizing: border-box;
+  overflow: auto;
+  padding: 24px;
+  border: 1px solid var(--dsw-alias-border-l3);
+  border-radius: 16px;
+  background: var(--pw-panel);
+  color: var(--pw-fg);
+}
+.agent-connect::backdrop { background: rgb(0 0 0 / 55%); }
+.agent-connect__head, .agent-connect__footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+.agent-connect h2 { margin: 0; font-size: 20px; }
+.agent-connect p { font-size: 14px; line-height: 1.5; }
+.agent-connect__head button, .agent-connect__footer button, .agent-connect__button {
+  display: inline-flex;
+  align-items: center;
+  padding: 9px 14px;
+  border: 1px solid var(--dsw-alias-border-l3);
+  border-radius: 8px;
+  background: var(--pw-accent);
+  color: var(--dsw-alias-bg-base);
+  cursor: pointer;
+  text-decoration: none;
+  font: inherit;
+  font-size: 13px;
+}
+.agent-connect__progress { margin: 12px 0; font-size: 14px; }
+.agent-connect__hint, .agent-connect__footer { color: var(--pw-fg-3); font-size: 12px; }
+.agent-connect__terminal { height: 320px; margin: 16px 0; }
+.agent-connect__terminal .terminal-page { height: 100%; }
+.agent-connect:focus-visible, .agent-connect button:focus-visible, .agent-connect__button:focus-visible {
+  outline: 2px solid var(--pw-accent);
+  outline-offset: 3px;
+}
+@media (max-width: 600px) {
+  .agent-connect { padding: 16px; }
+  .agent-connect__head, .agent-connect__footer { align-items: flex-start; }
+  .agent-connect__terminal { height: 260px; }
+}

@@ -4,9 +4,20 @@
 set -euo pipefail
 
 LAUNCHER_NAME="devden"
+# Resolve npm's symlink before sourcing the helper next to the real launcher.
+launcher_path="${BASH_SOURCE[0]}"
+while [[ -L "$launcher_path" ]]; do
+  launcher_dir="$(cd -P "$(dirname "$launcher_path")" && pwd)"
+  link_target="$(readlink "$launcher_path")"
+  if [[ "$link_target" == /* ]]; then
+    launcher_path="$link_target"
+  else
+    launcher_path="$launcher_dir/$link_target"
+  fi
+done
+DEVDEN_ROOT="$(cd -P "$(dirname "$launcher_path")/.." && pwd)"
 # shellcheck source=lib/devden-launcher.sh
-source "$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/devden-launcher.sh"
-resolve_devden_root
+source "$DEVDEN_ROOT/bin/lib/devden-launcher.sh"
 
 usage() {
   cat <<EOF
@@ -29,7 +40,7 @@ stop_server() {
     echo "devden: port $PORT is in use by another application" >&2
     return 1
   fi
-  kill -TERM "$server_pid" 2>/dev/null || true
+  terminate_server "$server_pid" 2>/dev/null || true
   for _ in $(seq 1 20); do
     lsof -tiTCP:"$PORT" -sTCP:LISTEN >/dev/null 2>&1 || { echo "devden: stopped"; return 0; }
     sleep 0.1

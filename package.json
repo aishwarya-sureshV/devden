@@ -9,7 +9,7 @@
     "url": "git+https://github.com/aishwarya-sureshV/devden.git"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=22.13"
   },
   "os": [
     "darwin",
@@ -22,6 +22,8 @@
     "bin/devden",
     "bin/lib",
     "server",
+    "scripts/deploy.mjs",
+    "scripts/supervise.mjs",
     "dist"
   ],
   "scripts": {

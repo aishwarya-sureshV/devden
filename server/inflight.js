@@ -15,11 +15,13 @@
  * adoptLiveAgent() rebinds the running agent to whatever key the page comes
  * back with.
  */
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
+import { docGet, docSet } from "./db.js";
 
-const STATE_PATH = join(homedir(), ".pi", "agent", "devden-inflight.json");
+/** Where pre-SQLite installs kept the record; adopted once at boot. */
+const LEGACY_PATH = join(homedir(), ".pi", "agent", "devden-inflight.json");
 // A turn interrupted days ago is stale context, not work in progress; the
 // user has moved on and silently spending tokens on it would be worse than
 // dropping it.
@@ -34,10 +36,7 @@ const running = new Map();
 function persist() {
   try {
     const entries = [...running.values()].filter((entry) => entry.sessionPath);
-    // On a host that has never run pi, ~/.pi/agent does not exist and every
-    // write failed into the catch below -- auto-resume silently never worked.
-    mkdirSync(dirname(STATE_PATH), { recursive: true });
-    writeFileSync(STATE_PATH, `${JSON.stringify(entries, null, 2)}\n`);
+    docSet("inflight", "running", entries);
   } catch {
     // Losing the record only costs the auto-resume; never fail a live turn
     // because this file could not be written.
@@ -120,14 +119,21 @@ export function runningSessionPaths() {
  * re-registers them.
  */
 export function takeInterruptedTurns() {
-  let entries;
+  let entries = [];
   try {
-    entries = JSON.parse(readFileSync(STATE_PATH, "utf8"));
+    const stored = docGet("inflight", "running");
+    if (Array.isArray(stored)) entries = stored;
   } catch {
-    return [];
+    // An unreadable database only costs the auto-resume.
   }
-  persist(); // the live map is empty at boot, so this truncates the file
-  if (!Array.isArray(entries)) return [];
+  try {
+    const legacy = JSON.parse(readFileSync(LEGACY_PATH, "utf8"));
+    if (Array.isArray(legacy)) entries = [...entries, ...legacy];
+    rmSync(LEGACY_PATH, { force: true });
+  } catch {
+    // No legacy record: the usual case.
+  }
+  persist(); // the live map is empty at boot, so this truncates the record
   const now = Date.now();
   const live = entries.filter(
     (entry) =>

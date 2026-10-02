@@ -1,0 +1,293 @@
+/* inline confirm for "restore files to this point" */
+.rewind {
+ display: inline-flex;
+ align-items: center;
+ gap: 6px;
+ font-size: 11.5px;
+ color: var(--dsw-alias-label-secondary);
+}
+.rewind__summary {
+ white-space: nowrap;
+}
+.rewind__error {
+ color: var(--ds-status-error);
+}
+.rewind__confirm,
+.rewind__cancel {
+ padding: 2px 8px;
+ border-radius: 6px;
+ border: 1px solid var(--dsw-alias-border-l2);
+ background: var(--dsw-alias-bg-layer-2);
+ color: var(--dsw-alias-label-primary);
+ font-size: 11.5px;
+ cursor: pointer;
+}
+.rewind__confirm {
+ border-color: var(--pw-accent-line);
+ color: var(--pw-accent);
+}
+.rewind__confirm:disabled {
+ opacity: 0.5;
+ cursor: default;
+}
+
+/* "@" file picker reuses the slash-menu shell; paths need room to breathe. */
+.mention-menu .slash-menu__item code {
+ white-space: nowrap;
+}
+.mention-menu .slash-menu__item span {
+ opacity: 0.7;
+ overflow: hidden;
+ text-overflow: ellipsis;
+ white-space: nowrap;
+ direction: rtl;
+ text-align: left;
+}
+
+/* Compaction progress: the backend answers one long POST with no progress
+   events, so the fill is a slow 0→100% ease the strip unmounts on completion.
+   ponytail: theater, not telemetry — wire real progress if the backend ever
+   streams compaction stages. */
+.compacting-strip {
+ margin: 0 auto 8px;
+ /* Same cap as the composer card and the changes card, so all boxes in the
+    composer stack share one width. */
+ width: 100%;
+ max-width: calc(var(--pw-chat-content-width) - 48px);
+ box-sizing: border-box;
+ padding: 10px 16px 12px;
+ border-radius: 10px;
+ border: 1px dashed var(--dsw-alias-border-l2);
+ background: var(--dsw-alias-bg-layer-1);
+}
+.compacting-strip__hint {
+ margin: 0 0 8px;
+ color: var(--dsw-alias-label-secondary);
+ font-size: 12.5px;
+}
+.compacting-strip__bar {
+ height: 4px;
+ border-radius: 999px;
+ overflow: hidden;
+ background: color-mix(in srgb, var(--dsw-alias-border-l2) 72%, transparent);
+}
+.compacting-strip__fill {
+ display: block;
+ height: 100%;
+ width: 0;
+ border-radius: inherit;
+ background: linear-gradient(90deg, var(--pw-teal), var(--pw-accent));
+ animation: compacting-fill 45s cubic-bezier(0.25, 0.6, 0.35, 1) forwards;
+}
+@keyframes compacting-fill {
+ from {
+  width: 0%;
+ }
+ to {
+  width: 100%;
+ }
+}
+
+/* Messages waiting behind the running turn. */
+.queue-strip {
+ display: flex;
+ flex-direction: column;
+ gap: 6px;
+ margin: 0 auto 8px;
+ /* Same cap as the composer card and the changes card, so all boxes in the
+    composer stack share one width. */
+ width: 100%;
+ max-width: calc(var(--pw-chat-content-width) - 48px);
+ box-sizing: border-box;
+}
+.queue-chip {
+ display: flex;
+ align-items: center;
+ gap: 10px;
+ padding: 7px 12px;
+ border-radius: 6px;
+ border: 1px solid var(--pw-teal-line);
+ background: var(--pw-teal-tint);
+ color: var(--pw-fg-3);
+ font-size: 12px;
+}
+.queue-chip__index {
+ flex: none;
+ /* The design's label treatment, worn by the queue position. */
+ color: var(--pw-teal);
+ font-size: 10px;
+ letter-spacing: 0.1em;
+ text-transform: uppercase;
+}
+.queue-chip__text {
+ flex: 1;
+ min-width: 0;
+ overflow: hidden;
+ text-overflow: ellipsis;
+ white-space: nowrap;
+}
+.queue-chip button {
+ flex: none;
+ border: 0;
+ background: none;
+ color: var(--dsw-alias-label-dimmed);
+ font-size: 11px;
+ line-height: 1;
+ cursor: pointer;
+ padding: 0 2px;
+}
+.queue-chip button:hover {
+ color: var(--pw-red);
+}
+
+/* Per-hunk revert controls under a file's diff. */
+
+.queue-strip__hint {
+ display: flex;
+ align-items: center;
+ justify-content: space-between;
+ gap: 8px;
+ margin: 0 2px 2px;
+ font-size: 11px;
+ color: var(--dsw-alias-label-caption);
+}
+.queue-strip__steer {
+ flex: none;
+ padding: 3px 9px;
+ border: 1px solid var(--pw-accent-line);
+ border-radius: 6px;
+ background: var(--pw-card);
+ color: var(--pw-accent);
+ font-size: 11px;
+ cursor: pointer;
+}
+.queue-strip__steer:hover {
+ background: var(--pw-accent-tint);
+}
+.queue-strip__clear {
+ flex: none;
+ padding: 3px 9px;
+ border: 1px solid transparent;
+ border-radius: 6px;
+ background: none;
+ color: var(--dsw-alias-label-caption);
+ font-size: 11px;
+ cursor: pointer;
+}
+.queue-strip__clear:hover {
+ border-color: var(--pw-line);
+ color: var(--pw-text);
+}
+
+/* The quota wall. Same width cap as the composer card above it, and the
+   warm accent so it reads as "you are blocked", not as another ambient chip. */
+.limit-strip {
+ display: flex;
+ align-items: center;
+ gap: 8px;
+ margin: 0 auto 6px;
+ width: 100%;
+ max-width: calc(var(--pw-chat-content-width) - 48px);
+ box-sizing: border-box;
+ padding: 5px 10px;
+ border: 1px solid var(--pw-accent-line);
+ border-radius: 8px;
+ background: var(--pw-accent-tint-2);
+ color: var(--pw-accent);
+ font-size: 12px;
+ line-height: 1.35;
+}
+.limit-strip__icon {
+ flex: none;
+ display: inline-flex;
+ color: var(--pw-yellow);
+}
+.limit-strip__text {
+ flex: 1;
+ min-width: 0;
+ margin: 0;
+}
+.limit-strip__text strong {
+ font-weight: 600;
+}
+.limit-strip__countdown {
+ color: var(--pw-accent-dim);
+}
+.limit-strip__actions {
+ flex: none;
+ display: flex;
+ align-items: center;
+ gap: 4px;
+}
+.limit-strip__resume {
+ flex: none;
+ padding: 2px 10px;
+ border-radius: 6px;
+ font-size: 11px;
+ line-height: 1.2;
+ cursor: pointer;
+}
+.limit-strip__resume {
+ border: 1px solid var(--pw-accent-line);
+ background: var(--pw-card);
+ color: var(--pw-accent);
+ font-weight: 600;
+}
+.limit-strip__resume:hover:not(:disabled) {
+ background: var(--pw-accent-tint);
+}
+.limit-strip__resume:disabled {
+ opacity: 0.45;
+ cursor: default;
+}
+@media (max-width: 640px) {
+ .limit-strip {
+  flex-wrap: wrap;
+ }
+}
+
+/* Subagent work, nested inside the Task call that spawned it. */
+.tool__subagents {
+ flex: none;
+ padding: 1px 7px;
+ border-radius: 999px;
+ background: var(--dsw-alias-bg-layer-2);
+ color: var(--dsw-alias-label-secondary);
+ font-size: 10.5px;
+ white-space: nowrap;
+}
+.tool__nested {
+ border-top: 1px solid var(--dsw-alias-border-l2);
+}
+.tool__nested-toggle {
+ display: flex;
+ align-items: center;
+ gap: 6px;
+ width: 100%;
+ padding: 7px 10px;
+ border: 0;
+ background: none;
+ color: var(--dsw-alias-label-secondary);
+ font-size: 11.5px;
+ text-align: left;
+ cursor: pointer;
+}
+.tool__nested-toggle:hover {
+ color: var(--dsw-alias-label-primary);
+}
+.tool__nested-toggle span {
+ font-size: 9px;
+ opacity: 0.7;
+}
+/* Indent the whole nested run so depth is legible at a glance. */
+.tool__nested-list {
+ padding: 0 8px 8px 18px;
+ border-left: 2px solid var(--pw-accent-line);
+ margin-left: 10px;
+}
+.tool__nested-list .tl--tool {
+ margin: 4px 0;
+}
+.tool__nested-list .tl__node {
+ display: none;
+}

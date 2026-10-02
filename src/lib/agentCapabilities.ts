@@ -41,11 +41,11 @@ const DEFAULT_CAPABILITIES: AgentCapabilities = {
 const BACKEND_CAPABILITIES: Record<BuiltinBackend, AgentCapabilities> = {
   pi: {
     ...DEFAULT_CAPABILITIES,
+    contextUsage: true,
     setSessionName: true,
   },
   claude: {
     ...DEFAULT_CAPABILITIES,
-    lazyStart: false,
     contextUsage: true,
     settings: true,
     mcp: true,
@@ -55,6 +55,7 @@ const BACKEND_CAPABILITIES: Record<BuiltinBackend, AgentCapabilities> = {
     ...DEFAULT_CAPABILITIES,
     steer: false,
     fork: true,
+    contextUsage: true,
     warmStart: true,
   },
   codex: {
@@ -62,6 +63,9 @@ const BACKEND_CAPABILITIES: Record<BuiltinBackend, AgentCapabilities> = {
     fork: true,
     compactInstructions: false,
     setSessionName: true,
+    contextUsage: true,
+    settings: true,
+    mcp: true,
   },
 };
 

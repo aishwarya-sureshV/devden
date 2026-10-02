@@ -1,0 +1,311 @@
+/* .turn-files (per-turn change card) is styled in workbenchSkin.css. */
+
+/* Review split button: lives in the Changes header after the diffstat. The
+ main half reruns the last reviewer; the caret opens the reviewer menu. A
+ hairline after it separates "act on the diff" from the view icons. */
+.turn-complete {
+ position: relative;
+ flex: none;
+ display: inline-flex;
+ align-items: stretch;
+ margin-left: auto;
+ border: 1px solid var(--dsw-alias-border-l2);
+ border-radius: 7px;
+}
+.changes__head .turn-complete {
+ margin: 0 9px 0 0;
+}
+.changes__head .turn-complete::after {
+ content: "";
+ position: absolute;
+ top: 4px;
+ bottom: 4px;
+ right: -10px;
+ width: 1px;
+ background: var(--dsw-alias-border-l2);
+}
+.turn-complete__review,
+.turn-complete__caret {
+ display: inline-flex;
+ align-items: center;
+ height: 22px;
+ border: 0;
+ background: transparent;
+ color: var(--dsw-alias-label-primary);
+ font: inherit;
+ cursor: pointer;
+}
+.turn-complete__review {
+ gap: 6px;
+ padding: 0 9px 0 8px;
+ border-radius: 6px 0 0 6px;
+}
+.turn-complete__review strong {
+ font-size: 11.5px;
+ font-weight: 600;
+ white-space: nowrap;
+}
+.turn-complete__agent {
+ font-weight: 500;
+ color: var(--dsw-alias-label-caption);
+}
+.turn-complete__caret {
+ justify-content: center;
+ width: 20px;
+ border-left: 1px solid var(--dsw-alias-border-l2);
+ border-radius: 0 6px 6px 0;
+ color: var(--dsw-alias-label-caption);
+}
+.turn-complete__review:hover:not(:disabled),
+.turn-complete__caret:hover:not(:disabled),
+.turn-complete.is-open .turn-complete__caret {
+ background: var(--dsw-alias-interactive-bg-hover);
+}
+.turn-complete__caret svg {
+ transition: transform 140ms ease;
+}
+.turn-complete.is-open .turn-complete__caret svg {
+ transform: rotate(180deg);
+}
+.turn-complete__review:disabled,
+.turn-complete__caret:disabled {
+ opacity: 0.5;
+ cursor: default;
+}
+.composer--tight .turn-complete__agent {
+ display: none;
+}
+.turn-complete__menu {
+ position: absolute;
+ right: 0;
+ top: 100%;
+ z-index: 50;
+ width: min(260px, 70vw);
+ padding: 4px;
+ border: 1px solid var(--dsw-alias-border-l2);
+ border-radius: 9px;
+ background: var(--dsw-alias-bg-layer-1);
+ box-shadow: 0 18px 40px rgb(58 44 26 / 16%);
+}
+.turn-complete__menu button {
+ display: flex;
+ align-items: center;
+ gap: 9px;
+ width: 100%;
+ padding: 6px 8px;
+ border: 0;
+ border-radius: 6px;
+ background: transparent;
+ color: var(--dsw-alias-label-primary);
+ font: inherit;
+ font-size: 12.5px;
+ text-align: left;
+ cursor: pointer;
+}
+.turn-complete__menu button:hover {
+ background: var(--dsw-alias-interactive-bg-hover);
+}
+.turn-complete__menu button.is-current::after {
+ content: "✓";
+ margin-left: auto;
+ color: var(--dsw-alias-label-caption);
+}
+.turn-complete__hint {
+ margin: 4px 2px 0;
+ padding: 6px 6px 2px;
+ border-top: 1px solid var(--dsw-alias-border-l2);
+ font-size: 10px;
+ line-height: 1.5;
+ color: var(--dsw-alias-label-dimmed);
+}
+.review-card {
+ box-sizing: border-box;
+ width: 100%;
+ max-width: calc(var(--pw-chat-content-width) - 48px);
+ margin: 4px auto 12px;
+ overflow: hidden;
+ border: 1px solid var(--pw-teal-line);
+ border-left: 3px solid var(--pw-teal);
+ border-radius: 9px;
+ background: var(--dsw-alias-bg-layer-1);
+}
+.review-card__head {
+ display: flex;
+ flex-wrap: wrap;
+ align-items: center;
+ gap: 10px;
+ padding: 11px 14px;
+ border-bottom: 1px solid var(--dsw-alias-border-l2);
+ background: var(--pw-teal-tint);
+ font-size: 12px;
+}
+.review-card__tile {
+ flex: none;
+ display: grid;
+ place-items: center;
+ width: 26px;
+ height: 26px;
+ border-radius: 8px;
+ border: 1px solid var(--pw-teal-line);
+ background: var(--dsw-alias-bg-layer-1);
+}
+.review-card__head strong {
+ font-size: 13px;
+}
+.review-card__meta {
+ color: var(--dsw-alias-label-dimmed);
+ font-size: 11px;
+}
+.review-card__verdict {
+ margin-left: auto;
+ padding: 3px 9px;
+ border-radius: 5px;
+ background: color-mix(in srgb, var(--pw-green) 16%, transparent);
+ color: var(--pw-green);
+ font-size: 11px;
+ font-weight: 700;
+}
+.review-card__verdict.is-issues {
+ background: color-mix(in srgb, var(--pw-orange) 16%, transparent);
+ color: var(--pw-orange);
+}
+.review-card__verdict.is-changes {
+ background: color-mix(in srgb, var(--pw-red) 16%, transparent);
+ color: var(--pw-red);
+}
+.review-card__counts {
+ flex: none;
+ color: var(--pw-fg-4);
+ font-size: 11px;
+}
+.review-card__body {
+ padding: 14px 16px;
+ font-size: 12.5px;
+ line-height: 1.7;
+ color: var(--dsw-alias-label-secondary);
+}
+.review-card__empty {
+ margin: 0;
+ color: var(--dsw-alias-label-dimmed);
+}
+.review-card__findings {
+ margin: 12px 0 0;
+ padding: 0;
+ list-style: none;
+ border: 1px solid var(--dsw-alias-border-l2);
+ border-radius: 8px;
+ overflow: hidden;
+}
+.review-card__group {
+ margin-top: 12px;
+}
+.review-card__group:first-child {
+ margin-top: 0;
+}
+.review-card__group-title {
+ margin: 0 0 6px;
+ font-size: 9px;
+ font-weight: 700;
+ letter-spacing: 0.14em;
+ text-transform: uppercase;
+}
+.review-card__group-title.is-blocker {
+ color: var(--pw-red);
+}
+.review-card__group-title.is-major {
+ color: var(--pw-orange);
+}
+.review-card__group-title.is-minor {
+ color: var(--pw-yellow);
+}
+.review-card__finding {
+ display: flex;
+ flex-wrap: wrap;
+ align-items: baseline;
+ gap: 8px;
+ padding: 10px 12px;
+ border-bottom: 1px solid var(--dsw-alias-border-l2);
+ font-size: 12px;
+}
+.review-card__finding:last-child {
+ border-bottom: 0;
+}
+.review-card__dot {
+ flex: none;
+ width: 6px;
+ height: 6px;
+ margin-top: 0.45em;
+ border-radius: 50%;
+ background: var(--pw-fg-5);
+}
+.review-card__finding.is-blocker .review-card__dot {
+ background: var(--pw-red);
+}
+.review-card__finding.is-major .review-card__dot {
+ background: var(--pw-orange);
+}
+.review-card__finding.is-minor .review-card__dot {
+ background: var(--pw-yellow);
+}
+.review-card__finding code {
+ padding: 1px 6px;
+ border-radius: 4px;
+ background: var(--pw-accent-tint-2);
+ color: var(--pw-accent);
+ font-size: 11px;
+}
+.review-card__finding em {
+ font-size: 9px;
+ font-style: normal;
+ letter-spacing: 0.14em;
+ text-transform: uppercase;
+ color: var(--dsw-alias-label-dimmed);
+}
+.review-card__finding.is-blocker em,
+.review-card__finding.is-blocking em {
+ color: var(--pw-red);
+}
+.review-card__finding.is-major em,
+.review-card__finding.is-concern em {
+ color: var(--pw-orange);
+}
+.review-card__finding.is-minor em,
+.review-card__finding.is-note em,
+.review-card__finding.is-question em {
+ color: var(--pw-yellow);
+}
+.review-card__finding.is-agreed em {
+ color: var(--pw-green);
+}
+.review-card__foot {
+ display: flex;
+ align-items: center;
+ gap: 8px;
+ padding: 10px 14px 12px;
+}
+.review-card__foot button {
+ padding: 7px 12px;
+ border: 1px solid var(--dsw-alias-border-l2);
+ border-radius: 7px;
+ background: transparent;
+ color: var(--dsw-alias-label-secondary);
+ font: inherit;
+ font-size: 12px;
+ cursor: pointer;
+}
+.review-card__foot button:hover {
+ border-color: var(--pw-accent-line);
+ color: var(--pw-accent);
+}
+.review-card__primary {
+ background: var(--pw-teal) !important;
+ border-color: var(--pw-teal) !important;
+ color: #fff !important;
+}
+.review-card__primary:disabled {
+ opacity: 0.5;
+ cursor: default;
+}
+.review-card__dismiss {
+ margin-left: auto;
+}

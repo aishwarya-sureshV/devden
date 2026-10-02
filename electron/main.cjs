@@ -55,7 +55,11 @@ function projectRoot() {
 
 function getJson(pathname) {
   return new Promise((resolve) => {
-    const req = http.get(`http://${HOST}:${PORT}${pathname}`, (res) => {
+    const req = http.get(`http://${HOST}:${PORT}${pathname}`, {
+      headers: process.env.DEVDEN_TOKEN
+        ? { Authorization: `Bearer ${process.env.DEVDEN_TOKEN.trim()}` }
+        : {},
+    }, (res) => {
       let body = "";
       res.on("data", (chunk) => {
         body += chunk;

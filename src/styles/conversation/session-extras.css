@@ -1,0 +1,201 @@
+/* Floating actions for a chat text selection. Fixed to the selection rect. */
+.selection-tools {
+ position: fixed;
+ z-index: 40;
+ transform: translate(-50%, calc(-100% - 8px));
+ display: flex;
+ align-items: center;
+ gap: 2px;
+ padding: 3px;
+ border-radius: 8px;
+ /* pw-pop, not pw-panel: pw-panel is fully transparent in glass mode. */
+ background: var(--pw-pop);
+ border: 1px solid var(--dsw-alias-border-l2);
+ box-shadow: 0 6px 20px rgb(0 0 0 / 0.18);
+}
+.selection-tools button {
+ display: flex;
+ align-items: center;
+ gap: 5px;
+ padding: 5px 8px;
+ border: 0;
+ border-radius: 6px;
+ background: transparent;
+ font: inherit;
+ font-size: 11.5px;
+ color: var(--dsw-alias-label-secondary);
+ cursor: pointer;
+ white-space: nowrap;
+}
+.selection-tools button:hover {
+ background: var(--dsw-alias-bg-layer-1);
+ color: var(--dsw-alias-label-primary);
+}
+.selection-tools__rule {
+ width: 1px;
+ align-self: stretch;
+ margin: 3px 1px;
+ background: var(--dsw-alias-border-l2);
+}
+
+/* Agent-launched terminal tabs (run_in_terminal). One card per tab, output
+   streams in place; the server owns the process, so it survives the agent. */
+.terminal-card {
+ margin: 6px 0;
+ border: 1px solid var(--dsw-alias-border-l2);
+ border-radius: 10px;
+ background: var(--dsw-alias-bg-layer-1);
+ overflow: hidden;
+}
+.terminal-card__header {
+ display: flex;
+ align-items: center;
+ gap: 8px;
+ padding: 6px 10px;
+ font-size: 12px;
+ border-bottom: 1px solid var(--dsw-alias-border-l2);
+}
+.terminal-card__dot {
+ width: 8px;
+ height: 8px;
+ border-radius: 50%;
+ background: var(--dsw-alias-label-caption);
+ flex: none;
+}
+.terminal-card__dot.is-running {
+ background: var(--dsw-alias-fill-success, #2ea043);
+ animation: terminal-card-pulse 1.6s ease-in-out infinite;
+}
+@keyframes terminal-card-pulse {
+ 50% {
+  opacity: 0.35;
+ }
+}
+.terminal-card__title {
+ flex: 1;
+ min-width: 0;
+ overflow: hidden;
+ text-overflow: ellipsis;
+ white-space: nowrap;
+ font-weight: 500;
+}
+.terminal-card__status {
+ color: var(--dsw-alias-label-caption);
+ font-size: 11px;
+ flex: none;
+}
+.terminal-card__stop {
+ flex: none;
+ font-size: 11px;
+ padding: 2px 8px;
+ border-radius: 6px;
+ border: 1px solid var(--dsw-alias-border-l2);
+ background: transparent;
+ color: var(--dsw-alias-label-caption);
+ cursor: pointer;
+}
+.terminal-card__stop:hover {
+ color: var(--dsw-alias-label-strong, inherit);
+}
+.terminal-card__output {
+ margin: 0;
+ padding: 8px 10px;
+ max-height: 260px;
+ overflow: auto;
+ font-family: var(--dsw-alias-font-mono, ui-monospace, monospace);
+ font-size: 11px;
+ line-height: 1.5;
+ white-space: pre-wrap;
+ word-break: break-word;
+}
+
+/* Inline title editing: the input replaces the title button in place. */
+.conversation-header__title-input {
+ flex: 0 1 auto;
+ min-width: 0;
+ width: min(24em, 100%);
+ padding: 1px 6px;
+ border: 1px solid var(--pw-accent-line);
+ border-radius: 6px;
+ background: var(--dsw-alias-bg-layer-1);
+ color: var(--pw-fg-strong);
+ font-size: 14px;
+ font-weight: 400;
+ letter-spacing: -0.01em;
+}
+.conversation-header__identity .conversation-header__title-input {
+ width: min(14em, 100%);
+ font-size: 11.5px;
+}
+.conversation-header__title-input:focus {
+ outline: none;
+ border-color: var(--pw-accent);
+}
+
+/* Context fill: usage share of the context window, pinned to the header's
+   bottom edge. As a flex item in this row it had no definite width for the
+   fill's percentage to resolve against, so it collapsed to the 2px min-width
+   of its own span and read as a dot wedged between the tabs and the action
+   buttons. */
+.context-fill {
+ position: absolute;
+ right: 0;
+ bottom: 0;
+ left: 0;
+ height: 3px;
+ overflow: hidden;
+ border-radius: 999px;
+ background: color-mix(in srgb, var(--dsw-alias-border-l2) 72%, transparent);
+}
+.context-fill > span {
+ display: block;
+ height: 100%;
+ min-width: 2px;
+ border-radius: inherit;
+ background: linear-gradient(90deg, var(--pw-teal), var(--pw-accent));
+ transition: width 240ms ease;
+}
+/* Context gauge: exact counts read slightly stronger than the estimate, and
+   the bar turns to the warning colour as auto-compact approaches. */
+.context-fill.is-exact {
+ height: 4px;
+}
+.context-fill.is-near-limit > span {
+ background: linear-gradient(
+  90deg,
+  var(--pw-accent),
+  var(--ds-status-warning, #d08a3a)
+ );
+}
+
+/* Compaction notice: one compact line, click to expand the summary. */
+.notice__summary {
+ background: none;
+ border: 0;
+ padding: 0;
+ margin: 0;
+ font: inherit;
+ color: inherit;
+ cursor: pointer;
+ text-align: left;
+}
+.notice__summary:hover {
+ text-decoration: underline;
+ text-underline-offset: 2px;
+}
+.notice:has(> .notice__detail) {
+ display: block;
+ width: auto;
+}
+.notice__detail {
+ margin: 6px 0 0;
+ padding: 8px 10px;
+ border-radius: 6px;
+ background: var(--dsw-alias-bg-layer-1);
+ color: var(--dsw-alias-label-secondary);
+ font-size: 11.5px;
+ white-space: pre-wrap;
+ word-break: break-word;
+ max-height: 320px;
+ overflow: auto;
+}

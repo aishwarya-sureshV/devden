@@ -4,6 +4,7 @@ import {
   type BackendInfo,
 } from "../lib/api";
 import { useStore } from "../lib/store";
+import { AgentConnect } from "./AgentConnect";
 
 type Step = "welcome" | "agents" | "start";
 
@@ -18,32 +19,19 @@ function ordered(list: BackendInfo[]) {
 }
 
 function ready(agent: BackendInfo) {
-  return Boolean(agent.path) && agent.auth !== "missing";
+  return Boolean(agent.path) && agent.auth === "ok";
 }
 
 function cardKind(agent: BackendInfo): "ready" | "signed-out" | "missing" {
   if (!agent.path) return "missing";
-  if (agent.auth === "missing") return "signed-out";
+  if (agent.auth !== "ok") return "signed-out";
   return "ready";
 }
 
 function statusLabel(kind: ReturnType<typeof cardKind>) {
   if (kind === "ready") return "ready";
   if (kind === "signed-out") return "not signed in";
-  return "not on PATH";
-}
-
-async function copyText(text: string) {
-  try {
-    await navigator.clipboard.writeText(text);
-  } catch {
-    const area = document.createElement("textarea");
-    area.value = text;
-    document.body.appendChild(area);
-    area.select();
-    document.execCommand("copy");
-    area.remove();
-  }
+  return "not installed";
 }
 
 export function Onboarding() {
@@ -52,7 +40,6 @@ export function Onboarding() {
   const [agents, setAgents] = useState<BackendInfo[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  const [copied, setCopied] = useState("");
   const [workspace, setWorkspace] = useState("");
   const [recents, setRecents] = useState<string[]>([]);
   const [defaultId, setDefaultId] = useState("");
@@ -125,7 +112,7 @@ export function Onboarding() {
         <div className="setup__brand">
           <div className="setup__mark">π</div>
           <div>
-            <strong>pi</strong>
+            <strong>devden</strong>
             <span>first run</span>
           </div>
         </div>
@@ -161,13 +148,9 @@ export function Onboarding() {
                 readyCount={readyCount}
                 allReady={allReady}
                 noneFound={noneFound}
-                copied={copied}
                 error={error}
                 onRecheck={() => void load(true)}
-                onCopy={async (id, text) => {
-                  await copyText(text);
-                  setCopied(id);
-                }}
+                onConnected={setAgents}
                 onBack={() => setStep("welcome")}
                 onContinue={() => setStep("start")}
               />
@@ -219,7 +202,8 @@ function Welcome({ onNext }: { onNext: () => void }) {
     <>
       <h1>A web workbench for the coding agents you already have.</h1>
       <p>
-        devden drives the <code>claude</code>, <code>codex</code>, <code>pi</code> and <code>grok</code> CLIs on this machine. Each keeps its own login, keys and models. Nothing here asks for an API key.
+        Choose an agent and we'll help you connect it. DevDen runs your agents
+        on this machine, using your own accounts and saved sign-ins.
       </p>
       <div className="setup__choices">
         <div className="setup__kicker">WHAT YOU GET</div>
@@ -245,10 +229,9 @@ function Agents({
   readyCount,
   allReady,
   noneFound,
-  copied,
   error,
   onRecheck,
-  onCopy,
+  onConnected,
   onBack,
   onContinue,
 }: {
@@ -259,10 +242,9 @@ function Agents({
   readyCount: number;
   allReady: boolean;
   noneFound: boolean;
-  copied: string;
   error: string;
   onRecheck: () => void;
-  onCopy: (id: string, text: string) => void;
+  onConnected: (agents: BackendInfo[]) => void;
   onBack: () => void;
   onContinue: () => void;
 }) {
@@ -270,8 +252,8 @@ function Agents({
   const blurb = allReady
     ? "Every agent below was found and is signed in. Nothing to install."
     : noneFound
-      ? "devden doesn't run models itself — it drives CLIs. Install one below (any one is enough), sign in with it, then re-check."
-      : "We looked on your PATH. Ready ones work now; install or sign in to the rest whenever you like.";
+      ? "Pick an agent below. We'll install it and start sign-in for you. One is enough to get started."
+      : "Your connected agents are ready. Connect any others whenever you like.";
   return (
     <>
       <div className="setup__lead">
@@ -297,33 +279,9 @@ function Agents({
                 <span className={`setup__status is-${kind}`}>{statusLabel(kind)}</span>
               </div>
               {agent.version && <div className="setup__version">{agent.version}</div>}
-              {kind === "missing" && agent.installCommand && (
-                <>
-                  <div className="setup__install">
-                    <code>{agent.installCommand}</code>
-                    <button
-                      type="button"
-                      className="setup__copy"
-                      aria-label={`Copy install command for ${agent.id}`}
-                      onClick={() => onCopy(agent.id, agent.installCommand || "")}
-                    >
-                      {copied === agent.id ? "copied" : "copy"}
-                    </button>
-                  </div>
-                  {agent.loginCommand && (
-                    <div className="setup__hint">
-                      then run <code>{agent.loginCommand}</code> once to sign in
-                    </div>
-                  )}
-                </>
-              )}
+              {kind !== "ready" && <AgentConnect agent={agent} onConnected={onConnected} />}
               {kind === "missing" && !agent.installCommand && (
                 <div className="setup__meta">{agent.command}</div>
-              )}
-              {kind === "signed-out" && agent.loginCommand && (
-                <div className="setup__hint">
-                  run <code>{agent.loginCommand}</code> in a terminal
-                </div>
               )}
               {kind === "ready" && (
                 <div className="setup__meta">
@@ -343,7 +301,7 @@ function Agents({
           </button>
         ) : (
           <div className="setup__actions">
-            <span className="setup__hint">install at least one</span>
+            <span className="setup__hint">connect one agent to continue</span>
             <span className="setup__disabled">Continue</span>
           </div>
         )}

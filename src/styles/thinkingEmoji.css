@@ -1,0 +1,423 @@
+/* One motion per thinking-quip emoji. The glyph is the activity,
+   so the row no longer needs a spinner. */
+.thinking__emoji {
+ display: inline-block;
+ margin-right: 6px;
+ font-size: 15px;
+ line-height: 1;
+ vertical-align: -2px;
+ transform-origin: center;
+}
+
+.thinking__emoji--brain {
+ animation: emoji-brain 2.2s ease-in-out infinite;
+}
+@keyframes emoji-brain {
+ 0%, 100% { transform: scale(1) rotate(0deg); }
+ 35% { transform: scale(1.16) rotate(-10deg); }
+ 70% { transform: scale(1.04) rotate(9deg); }
+}
+
+.thinking__emoji--gear {
+ animation: emoji-gear 1.5s linear infinite;
+}
+@keyframes emoji-gear {
+ to { transform: rotate(360deg); }
+}
+
+.thinking__emoji--wrench {
+ animation: emoji-wrench 0.85s ease-in-out infinite;
+ transform-origin: 20% 85%;
+}
+@keyframes emoji-wrench {
+ 0%, 100% { transform: rotate(16deg); }
+ 50% { transform: rotate(-28deg); }
+}
+
+.thinking__emoji--keys {
+ animation: emoji-keys 0.45s steps(2, end) infinite;
+}
+@keyframes emoji-keys {
+ 0%, 100% { transform: translateY(0); }
+ 50% { transform: translateY(2px); }
+}
+
+.thinking__emoji--puzzle {
+ animation: emoji-puzzle 1.35s ease-in-out infinite;
+}
+@keyframes emoji-puzzle {
+ 0%, 100% { transform: translate(0, 0) rotate(0deg); }
+ 40% { transform: translate(-2px, 1px) rotate(-8deg); }
+ 70% { transform: translate(2px, -1px) rotate(7deg); }
+}
+
+.thinking__emoji--wand {
+ animation: emoji-wand 1.05s ease-in-out infinite;
+ transform-origin: 30% 80%;
+}
+@keyframes emoji-wand {
+ 0%, 100% { transform: rotate(-8deg); }
+ 45% { transform: rotate(22deg); }
+}
+
+.thinking__emoji--coffee {
+ animation: emoji-coffee 1.7s ease-in-out infinite;
+}
+@keyframes emoji-coffee {
+ 0%, 100% { transform: translateY(0); }
+ 50% { transform: translateY(-3px); }
+}
+
+.thinking__emoji--rocket {
+ animation: emoji-rocket 1.25s ease-in infinite;
+}
+@keyframes emoji-rocket {
+ 0%, 100% { transform: translateY(1px) rotate(0deg); }
+ 55% { transform: translateY(2px) rotate(-6deg); }
+ 80% { transform: translateY(-6px) rotate(-16deg); }
+}
+
+.thinking__emoji--eyes {
+ animation: emoji-eyes 1.5s ease-in-out infinite;
+}
+@keyframes emoji-eyes {
+ 0%, 100% { transform: translateX(0); }
+ 25% { transform: translateX(-3px); }
+ 75% { transform: translateX(3px); }
+}
+
+.thinking__emoji--coder {
+ animation: emoji-coder 0.4s ease-in-out infinite;
+}
+@keyframes emoji-coder {
+ 0%, 100% { transform: translateY(0); }
+ 50% { transform: translateY(1.5px); }
+}
+
+.thinking__emoji--ponder {
+ animation: emoji-ponder 2.5s ease-in-out infinite;
+ transform-origin: 50% 80%;
+}
+@keyframes emoji-ponder {
+ 0%, 100% { transform: rotate(-4deg); }
+ 50% { transform: rotate(12deg); }
+}
+
+.thinking__emoji--spy {
+ animation: emoji-spy 1.6s ease-in-out infinite;
+}
+@keyframes emoji-spy {
+ 0%, 20% { transform: translateX(0); }
+ 55%, 75% { transform: translateX(4px); }
+ 100% { transform: translateX(0); }
+}
+
+.thinking__emoji--wizard {
+ animation: emoji-wizard 2s ease-in-out infinite;
+}
+@keyframes emoji-wizard {
+ 0%, 100% { transform: translateY(0) rotate(-4deg); }
+ 50% { transform: translateY(-4px) rotate(6deg); }
+}
+
+.thinking__emoji--hammer {
+ animation: emoji-hammer 0.7s ease-in infinite;
+ transform-origin: 15% 80%;
+}
+@keyframes emoji-hammer {
+ 0%, 100% { transform: rotate(8deg); }
+ 35% { transform: rotate(-32deg); }
+ 55% { transform: rotate(10deg); }
+}
+
+.thinking__emoji--bug {
+ animation: emoji-bug 1.15s linear infinite;
+}
+@keyframes emoji-bug {
+ 0% { transform: translateX(-2px) rotate(-8deg); }
+ 50% { transform: translateX(3px) rotate(8deg); }
+ 100% { transform: translateX(-2px) rotate(-8deg); }
+}
+
+.thinking__emoji--bulb {
+ animation: emoji-bulb 0.95s ease-in-out infinite;
+}
+@keyframes emoji-bulb {
+ 0%, 100% { transform: scale(1); }
+ 20% { transform: scale(1.22); }
+ 40% { transform: scale(0.96); }
+ 60% { transform: scale(1.12); }
+}
+
+.thinking__emoji--thread {
+ animation: emoji-thread 1.45s ease-in-out infinite;
+}
+@keyframes emoji-thread {
+ 0%, 100% { transform: scaleX(1); }
+ 50% { transform: scaleX(1.28); }
+}
+
+.thinking__emoji--glass {
+ animation: emoji-glass 1.4s ease-in-out infinite;
+ transform-origin: 30% 70%;
+}
+@keyframes emoji-glass {
+ 0%, 100% { transform: translateX(0) rotate(0deg); }
+ 40% { transform: translateX(-2px) rotate(-18deg); }
+ 75% { transform: translateX(3px) rotate(22deg); }
+}
+
+.thinking__emoji--ruler {
+ animation: emoji-ruler 1.55s ease-in-out infinite;
+ transform-origin: 0% 50%;
+}
+@keyframes emoji-ruler {
+ 0%, 100% { transform: rotate(-8deg); }
+ 50% { transform: rotate(10deg); }
+}
+
+.thinking__emoji--flask {
+ animation: emoji-flask 1.2s ease-in-out infinite;
+ transform-origin: 50% 90%;
+}
+@keyframes emoji-flask {
+ 0%, 100% { transform: rotate(0deg); }
+ 25% { transform: rotate(-16deg); }
+ 75% { transform: rotate(16deg); }
+}
+
+.thinking__emoji--compass {
+ animation: emoji-compass 2.6s ease-in-out infinite;
+}
+@keyframes emoji-compass {
+ 0%, 100% { transform: rotate(-36deg); }
+ 50% { transform: rotate(36deg); }
+}
+
+.thinking__emoji--target {
+ animation: emoji-target 1.15s ease-out infinite;
+}
+@keyframes emoji-target {
+ 0%, 100% { transform: scale(1); }
+ 35% { transform: scale(0.82); }
+ 60% { transform: scale(1.16); }
+}
+
+.thinking__emoji--fox {
+ animation: emoji-fox 1.65s ease-in-out infinite;
+}
+@keyframes emoji-fox {
+ 0%, 100% { transform: translateX(0) rotate(0deg); }
+ 40% { transform: translateX(-1px) rotate(0deg); }
+ 70% { transform: translateX(3px) rotate(-6deg); }
+}
+
+.thinking__emoji--dish {
+ animation: emoji-dish 1s ease-in-out infinite;
+ transform-origin: 50% 80%;
+}
+@keyframes emoji-dish {
+ 0%, 100% { transform: scaleY(1); }
+ 50% { transform: scaleY(1.2); }
+}
+
+.thinking__emoji--brick {
+ animation: emoji-brick 1.05s cubic-bezier(0.2, 0.8, 0.3, 1.4) infinite;
+}
+@keyframes emoji-brick {
+ 0%, 100% { transform: translateY(0); }
+ 40% { transform: translateY(-6px); }
+ 70% { transform: translateY(0); }
+}
+
+.thinking__emoji--scope {
+ animation: emoji-scope 1.8s ease-in-out infinite;
+}
+@keyframes emoji-scope {
+ 0%, 100% { transform: translateY(0) rotate(0deg); }
+ 30% { transform: translateY(-2px) rotate(-7deg); }
+ 65% { transform: translateY(1px) rotate(5deg); }
+}
+
+.thinking__emoji--map {
+ animation: emoji-map 1.55s ease-in-out infinite;
+ transform-origin: 0% 50%;
+}
+@keyframes emoji-map {
+ 0%, 100% { transform: scaleX(1) rotate(0deg); }
+ 45% { transform: scaleX(0.82) rotate(-6deg); }
+}
+
+.thinking__emoji--broom {
+ animation: emoji-broom 0.95s ease-in-out infinite;
+ transform-origin: 50% 85%;
+}
+@keyframes emoji-broom {
+ 0%, 100% { transform: rotate(-20deg); }
+ 50% { transform: rotate(22deg); }
+}
+
+.thinking__emoji--magnet {
+ animation: emoji-magnet 1.15s ease-in-out infinite;
+}
+@keyframes emoji-magnet {
+ 0%, 100% { transform: translateX(0); }
+ 60% { transform: translateX(4px); }
+}
+
+.thinking__emoji--crystal {
+ animation: emoji-crystal 2s ease-in-out infinite;
+}
+@keyframes emoji-crystal {
+ 0%, 100% { transform: translateY(0) scale(1); }
+ 50% { transform: translateY(-4px) scale(1.12); }
+}
+
+.thinking__emoji--salt {
+ animation: emoji-salt 0.32s linear infinite;
+}
+@keyframes emoji-salt {
+ 0%, 100% { transform: rotate(0deg); }
+ 25% { transform: rotate(-16deg); }
+ 75% { transform: rotate(16deg); }
+}
+
+.thinking__emoji--coaster {
+ animation: emoji-coaster 1.35s ease-in-out infinite;
+}
+@keyframes emoji-coaster {
+ 0% { transform: translate(0, 1px) rotate(0deg); }
+ 25% { transform: translate(1px, -4px) rotate(-8deg); }
+ 50% { transform: translate(2px, 2px) rotate(6deg); }
+ 75% { transform: translate(1px, -3px) rotate(-4deg); }
+ 100% { transform: translate(0, 1px) rotate(0deg); }
+}
+
+.thinking__emoji--plant {
+ animation: emoji-plant 1.75s ease-in-out infinite;
+ transform-origin: 50% 100%;
+}
+@keyframes emoji-plant {
+ 0%, 100% { transform: scaleY(0.9) rotate(-2deg); }
+ 50% { transform: scaleY(1.1) rotate(2deg); }
+}
+
+.thinking__emoji--box {
+ animation: emoji-box 1.25s ease-in-out infinite;
+}
+@keyframes emoji-box {
+ 0%, 100% { transform: translateY(0) rotate(0deg); }
+ 40% { transform: translateY(-2px) rotate(-8deg); }
+ 70% { transform: translateY(1px) rotate(6deg); }
+}
+
+.thinking__emoji--pin {
+ animation: emoji-pin 0.9s cubic-bezier(0.3, 0.7, 0.3, 1.5) infinite;
+}
+@keyframes emoji-pin {
+ 0%, 100% { transform: translateY(0); }
+ 35% { transform: translateY(-7px); }
+ 65% { transform: translateY(0); }
+}
+
+.thinking__emoji--storm {
+ animation: emoji-storm 0.75s linear infinite;
+}
+@keyframes emoji-storm {
+ to { transform: rotate(-360deg); }
+}
+
+.thinking__emoji--moon {
+ animation: emoji-moon 3s ease-in-out infinite;
+}
+@keyframes emoji-moon {
+ 0%, 100% { transform: translate(0, 0); }
+ 50% { transform: translate(3px, -2px); }
+}
+
+.thinking__emoji--bee {
+ animation: emoji-bee 0.38s linear infinite;
+}
+@keyframes emoji-bee {
+ 0% { transform: translate(0, 0) rotate(-10deg); }
+ 25% { transform: translate(2px, -2px) rotate(8deg); }
+ 50% { transform: translate(1px, 1px) rotate(-6deg); }
+ 75% { transform: translate(-2px, -1px) rotate(12deg); }
+ 100% { transform: translate(0, 0) rotate(-10deg); }
+}
+
+.thinking__emoji--knobs {
+ animation: emoji-knobs 1.45s ease-in-out infinite;
+}
+@keyframes emoji-knobs {
+ 0%, 100% { transform: rotate(-22deg); }
+ 50% { transform: rotate(28deg); }
+}
+
+.thinking__emoji--clip {
+ animation: emoji-clip 0.8s ease-in-out infinite;
+ transform-origin: 50% 0%;
+}
+@keyframes emoji-clip {
+ 0%, 100% { transform: rotate(6deg); }
+ 40% { transform: rotate(-16deg) translateY(1px); }
+}
+
+.thinking__emoji--train {
+ animation: emoji-train 0.55s steps(2, end) infinite;
+}
+@keyframes emoji-train {
+ 0%, 100% { transform: translateX(0); }
+ 50% { transform: translateX(3px); }
+}
+
+.thinking__emoji--feather {
+ animation: emoji-feather 2.4s ease-in-out infinite;
+}
+@keyframes emoji-feather {
+ 0%, 100% { transform: translateY(0) rotate(-6deg); }
+ 50% { transform: translateY(-4px) rotate(10deg); }
+}
+
+.thinking__emoji--steps {
+ animation: emoji-steps 1.15s steps(3, end) infinite;
+}
+@keyframes emoji-steps {
+ 0% { transform: translateY(2px); }
+ 100% { transform: translateY(-3px); }
+}
+
+.thinking__emoji--sat {
+ animation: emoji-sat 2.8s ease-in-out infinite;
+}
+@keyframes emoji-sat {
+ 0% { transform: translate(0, 0) rotate(-12deg); }
+ 25% { transform: translate(3px, -2px) rotate(0deg); }
+ 50% { transform: translate(0, -4px) rotate(12deg); }
+ 75% { transform: translate(-3px, -1px) rotate(0deg); }
+ 100% { transform: translate(0, 0) rotate(-12deg); }
+}
+
+.thinking__emoji--gift {
+ animation: emoji-gift 1.05s cubic-bezier(0.3, 0.7, 0.3, 1.6) infinite;
+}
+@keyframes emoji-gift {
+ 0%, 100% { transform: scale(1) rotate(0deg); }
+ 40% { transform: scale(1.18) rotate(-6deg); }
+ 70% { transform: scale(0.94) rotate(4deg); }
+}
+
+.thinking__emoji--book {
+ animation: emoji-book 1.35s ease-in-out infinite;
+ transform-origin: 0% 50%;
+}
+@keyframes emoji-book {
+ 0%, 100% { transform: rotate(0deg); }
+ 45% { transform: rotate(-16deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+ .thinking__emoji[class] {
+  animation: none;
+ }
+}

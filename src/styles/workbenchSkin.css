@@ -1,0 +1,2847 @@
+/* Composer & diff skins. Glass keeps the backdrop already on screen.
+   Black, White, Cream and Aurora replace the surface tokens. New chrome
+   (composer chips, edit wells, the review dock) reads --fg* / --ink / --acc. */
+
+body {
+  --fg0: #f6f5fa;
+  --fg: #eceaf1;
+  --fg2: #d2d0da;
+  --fg3: #a6a4b1;
+  --fg4: #7f7d89;
+  --ink: 255 255 255;
+  --sink: 0 0 0;
+  --wellA: 0.22;
+  --panel: rgb(12 13 17 / 0.58);
+  --side: rgb(12 13 17 / 0.58);
+  --blur: 22px;
+  --pop: rgba(26, 27, 34, 0.94);
+  --popsh: 0 24px 60px rgba(0, 0, 0, 0.55), 0 2px 8px rgba(0, 0, 0, 0.35);
+  --ts: 0 1px 2px rgba(0, 0, 0, 0.45);
+  --acc: #b69cff;
+  --accRing: rgba(182, 156, 255, 0.45);
+  --accHalo: rgba(182, 156, 255, 0.1);
+  --add: #5fd49a;
+  --addBg: rgba(95, 212, 154, 0.13);
+  --del: #ff7a8a;
+  --delBg: rgba(255, 122, 138, 0.13);
+  --hunk: #8fb4ff;
+  --kw: #ff85c0;
+  --sto: #b99cff;
+  --typ: #6fd6e6;
+  --fn: #82aaff;
+  --prop: #f7c08a;
+  --vr: #e4dcf5;
+  --str: #e3d67a;
+  --num: #ff9d7a;
+  --cst: #ff9d7a;
+  --op: #89ddff;
+  --pun: #8d8b9c;
+  --com: #8c8a99;
+  --tag: #6fd6e6;
+  --attr: #f7c08a;
+  --sel: #ff85c0;
+  --send: #e8906a;
+  --sendFg: #1b0f0a;
+  --glyph-pi: #5fd49a;
+  --glyph-claude: #d97757;
+  --glyph-grok: #ececf1;
+  --glyph-codex: #ececf1;
+  --mono: "JetBrains Mono", "SF Mono", ui-monospace, Menlo, monospace;
+}
+
+body[data-bg="black"] {
+  --fg0: #f6f5fa;
+  --fg: #eceaf1;
+  --fg2: #d2d0da;
+  --fg3: #a6a4b1;
+  --fg4: #7f7d89;
+  --ink: 255 255 255;
+  --sink: 0 0 0;
+  --wellA: 0.5;
+  --panel: #0b0b0d;
+  --side: #101013;
+  --blur: 0px;
+  --pop: #17171b;
+  --popsh: 0 24px 60px rgba(0, 0, 0, 0.7);
+  --ts: none;
+  --pw-panel: #0b0b0d;
+  --pw-rail: #101013;
+  --pw-card: #141418;
+  --pw-card-strong: #1c1c22;
+  --pw-pop: #17171b;
+  --pw-sunken: #0b0b0d;
+  --dsw-alias-bg-base: #0b0b0d;
+  --dsw-alias-bg-layer-1: #141418;
+  --dsw-alias-bg-layer-2: #1c1c22;
+  --dsw-specific-sidebar-fill: #101013;
+  background: #0b0b0d;
+  text-shadow: none;
+}
+
+body[data-bg="white"] {
+  color-scheme: light;
+  --fg0: #111114;
+  --fg: #1f1f24;
+  --fg2: #3a3a42;
+  --fg3: #63636d;
+  --fg4: #8b8b95;
+  --ink: 0 0 0;
+  --sink: 0 0 0;
+  --wellA: 0.03;
+  --panel: #ffffff;
+  --side: #f6f6f5;
+  --blur: 0px;
+  --pop: rgba(255, 255, 255, 0.97);
+  --popsh: 0 24px 60px rgba(20, 20, 30, 0.16), 0 2px 8px rgba(20, 20, 30, 0.08);
+  --ts: none;
+  --acc: #6b4fd8;
+  --accRing: rgba(107, 79, 216, 0.4);
+  --accHalo: rgba(107, 79, 216, 0.09);
+  --add: #1a8f55;
+  --addBg: rgba(26, 160, 90, 0.1);
+  --del: #c93349;
+  --delBg: rgba(220, 50, 70, 0.08);
+  --hunk: #3a6fd8;
+  --kw: #c2185b;
+  --sto: #6d3fd6;
+  --typ: #00788a;
+  --fn: #1e55d0;
+  --prop: #a0521a;
+  --vr: #34304a;
+  --str: #8a6d00;
+  --num: #c44a1c;
+  --cst: #c44a1c;
+  --op: #0b7285;
+  --pun: #8a8a99;
+  --com: #8a8894;
+  --tag: #00788a;
+  --attr: #a0521a;
+  --sel: #c2185b;
+  --send: #1c1c20;
+  --sendFg: #ffffff;
+  --glyph-pi: #1f9d63;
+  --glyph-claude: #d97757;
+  --glyph-grok: #0d0d0d;
+  --glyph-codex: #0d0d0d;
+  --pw-panel: #ffffff;
+  --pw-rail: #f6f6f5;
+  --pw-card: #ffffff;
+  --pw-card-strong: #f6f6f5;
+  --pw-fg-strong: #111114;
+  --pw-fg: #1f1f24;
+  --pw-fg-2: #3a3a42;
+  --pw-fg-3: #63636d;
+  --pw-fg-4: #8b8b95;
+  --pw-fg-5: #8b8b95;
+  --pw-accent: #6b4fd8;
+  --pw-pop: #ffffff;
+  --pw-sunken: #f3f3f2;
+  --dsw-alias-bg-base: #ffffff;
+  --dsw-alias-bg-layer-1: #ffffff;
+  --dsw-alias-bg-layer-2: #f6f6f5;
+  --dsw-alias-label-primary: #1f1f24;
+  --dsw-alias-label-secondary: #63636d;
+  --dsw-alias-label-tertiary: #8b8b95;
+  --dsw-alias-label-dimmed: #8b8b95;
+  --dsw-specific-sidebar-fill: #f6f6f5;
+  --dsw-alias-border-l1: rgba(0, 0, 0, 0.08);
+  --dsw-alias-border-l2: rgba(0, 0, 0, 0.1);
+  background: #ffffff;
+  text-shadow: none;
+}
+
+body[data-bg="cream"] {
+  color-scheme: light;
+  --fg0: #231c12;
+  --fg: #2e2618;
+  --fg2: #4a3f2e;
+  --fg3: #716550;
+  --fg4: #978a72;
+  --ink: 70 50 20;
+  --sink: 70 50 20;
+  --wellA: 0.05;
+  --panel: #f4f1e9;
+  --side: #efede6;
+  --blur: 0px;
+  --pop: rgba(251, 248, 241, 0.97);
+  --popsh: 0 24px 60px rgba(60, 40, 10, 0.16), 0 2px 8px rgba(60, 40, 10, 0.08);
+  --ts: none;
+  --acc: #a8552e;
+  --accRing: rgba(168, 85, 46, 0.42);
+  --accHalo: rgba(168, 85, 46, 0.09);
+  --add: #3d8a4f;
+  --addBg: rgba(70, 140, 80, 0.12);
+  --del: #b8433a;
+  --delBg: rgba(190, 70, 55, 0.1);
+  --hunk: #4a6fa8;
+  --kw: #a8356b;
+  --sto: #6040a8;
+  --typ: #1c6b73;
+  --fn: #2a57a0;
+  --prop: #8e4a14;
+  --vr: #3d3326;
+  --str: #76600a;
+  --num: #b04a1c;
+  --cst: #b04a1c;
+  --op: #2a6b78;
+  --pun: #9d8f76;
+  --com: #968a73;
+  --tag: #1c6b73;
+  --attr: #8e4a14;
+  --sel: #a8356b;
+  --send: #a8552e;
+  --sendFg: #fff8ee;
+  --glyph-pi: #1f9d63;
+  --glyph-claude: #d97757;
+  --glyph-grok: #0d0d0d;
+  --glyph-codex: #0d0d0d;
+  --pw-panel: #f4f1e9;
+  --pw-rail: #efede6;
+  --pw-card: #f7f2e7;
+  --pw-card-strong: #fffdf7;
+  --pw-fg-strong: #231c12;
+  --pw-fg: #2e2618;
+  --pw-fg-2: #4a3f2e;
+  --pw-fg-3: #716550;
+  --pw-fg-4: #978a72;
+  --pw-fg-5: #978a72;
+  --pw-accent: #a8552e;
+  --pw-pop: #fbf8f1;
+  --pw-sunken: #efe8d9;
+  --dsw-alias-bg-base: #f4f1e9;
+  --dsw-alias-bg-layer-1: #f7f2e7;
+  --dsw-alias-bg-layer-2: #fffdf7;
+  --dsw-alias-label-primary: #2e2618;
+  --dsw-alias-label-secondary: #716550;
+  --dsw-alias-label-tertiary: #978a72;
+  --dsw-alias-label-dimmed: #978a72;
+  --dsw-specific-sidebar-fill: #efede6;
+  --dsw-alias-border-l1: rgba(70, 50, 20, 0.08);
+  --dsw-alias-border-l2: rgba(70, 50, 20, 0.12);
+  background: #f4f1e9;
+  text-shadow: none;
+}
+
+/* Solid surfaces wear the glass skin (App.tsx sets data-glass + an opaque
+   --g-tint-a) — only its palette changes. [data-glass][data-bg] outranks
+   both glass token blocks in backdrop.css (vite injects it after this file). */
+html body[data-glass][data-bg="black"] {
+  background: rgb(var(--g-tint));
+  /* Dark glass minus the scene: same text ramp, near-black pane. */
+  --g-tint: 11 11 13;
+  --g-pop: rgb(23 23 27 / 0.98);
+  --g-raised: rgb(255 255 255 / 0.08);
+}
+
+html body[data-glass][data-bg="white"] {
+  background: rgb(var(--g-tint));
+  --g-fg: #1f1f24;
+  --g-fg0: #111114;
+  --g-fg2: #3a3a42;
+  --g-fg3: #63636d;
+  --g-fg4: #8b8b95;
+  --g-ink: 20 20 28;
+  --g-sink: 20 20 30;
+  --g-tint: 255 255 255;
+  --g-pop: rgb(255 255 255 / 0.98);
+  /* Nothing is lighter than the page, so raised cards step down to grey. */
+  --g-raised: #f3f3f2;
+  --pw-sunken: #f3f3f2;
+  --ds-status-success: #1a8f55;
+  --ds-status-error: #c93349;
+  --dsw-alias-state-error-primary: #c93349;
+  --pw-green: #1a8f55;
+  --pw-red: #c93349;
+  --pw-add-fg: #1a8f55;
+  --pw-add-sign: #1a8f55;
+  --pw-del-fg: #c93349;
+  --pw-del-sign: #c93349;
+  --pw-del-line: #c93349;
+}
+
+html body[data-glass][data-bg="cream"] {
+  background: rgb(var(--g-tint));
+  --g-fg: #2e2618;
+  --g-fg0: #231c12;
+  --g-fg2: #4a3f2e;
+  --g-fg3: #716550;
+  --g-fg4: #978a72;
+  --g-ink: 70 50 20;
+  --g-sink: 70 50 20;
+  --g-tint: 244 241 233;
+  --g-pop: rgb(251 248 241 / 0.98);
+  /* Paper on paper: raised cards are a brighter sheet, like light glass. */
+  --g-raised: #fffcf5;
+  --pw-sunken: #efe8d9;
+  --ds-status-success: #3d8a4f;
+  --ds-status-error: #b8433a;
+  --dsw-alias-state-error-primary: #b8433a;
+  --pw-green: #3d8a4f;
+  --pw-red: #b8433a;
+  --pw-add-fg: #3d8a4f;
+  --pw-add-sign: #3d8a4f;
+  --pw-del-fg: #b8433a;
+  --pw-del-sign: #b8433a;
+  --pw-del-line: #b8433a;
+}
+
+/* Light paper can't carry a pale highlight (default amber is ~2:1 on
+   white): pull highlighted words and chips toward the ink. */
+body[data-glass]:is([data-bg="white"], [data-bg="cream"])
+  :is(.conversation-stage, .subagent-panel)
+  :is(.rich-text strong, .md-heading, .md-list li::before) {
+  color: color-mix(in oklab, var(--hl-text, var(--g-fg)) 60%, var(--g-fg0));
+}
+body[data-glass]:is([data-bg="white"], [data-bg="cream"])
+  :is(.conversation-stage, .subagent-panel)
+  .rich-text
+  :not(pre)
+  > code {
+  color: color-mix(
+    in oklab,
+    var(--hl-chip-color, var(--g-fg)) 60%,
+    var(--g-fg0)
+  );
+}
+
+/* Output prose reads like the reference near-black (#1f1f1f on #f9f9f9);
+   the glass default paints it with the secondary --g-fg2 mid-gray, which
+   looks washed out on the light surfaces. */
+body[data-glass]:is([data-bg="white"], [data-bg="cream"])
+  :is(.conversation-stage, .subagent-panel)
+  .rich-text {
+  color: var(--g-fg);
+}
+
+body[data-bg="aurora"] {
+  --panel: rgb(8 10 20 / 0.42);
+  --side: rgb(8 10 20 / 0.42);
+  --blur: 30px;
+  --pop: rgba(16, 18, 32, 0.94);
+  --popsh: 0 24px 60px rgba(0, 0, 0, 0.55), 0 2px 8px rgba(0, 0, 0, 0.3);
+  --acc: #8fe3c8;
+  --accRing: rgba(143, 227, 200, 0.42);
+  --accHalo: rgba(143, 227, 200, 0.09);
+  --send: #8fe3c8;
+  --sendFg: #06211a;
+  background: #04050b;
+}
+
+body[data-bg="aurora"]::before {
+  content: "";
+  position: fixed;
+  inset: -20%;
+  z-index: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(
+      circle at 20% 20%,
+      oklch(0.62 0.16 170 / 0.75),
+      transparent 42%
+    ),
+    radial-gradient(
+      circle at 80% 10%,
+      oklch(0.52 0.2 295 / 0.7),
+      transparent 46%
+    ),
+    radial-gradient(
+      circle at 40% 90%,
+      oklch(0.5 0.14 230 / 0.65),
+      transparent 42%
+    );
+  filter: blur(30px);
+  animation: aur-drift 26s ease-in-out infinite alternate;
+}
+
+@keyframes aur-drift {
+  from {
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+  to {
+    transform: translate3d(4%, -3%, 0) scale(1.08);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  body[data-bg="aurora"]::before {
+    animation: none;
+  }
+}
+
+body[data-bg="black"] .app-frame,
+body[data-bg="white"] .app-frame,
+body[data-bg="cream"] .app-frame,
+body[data-bg="black"] .sidebar,
+body[data-bg="white"] .sidebar,
+body[data-bg="cream"] .sidebar,
+body[data-bg="black"] .center,
+body[data-bg="white"] .center,
+body[data-bg="cream"] .center,
+body[data-bg="black"] .app-footer,
+body[data-bg="white"] .app-footer,
+body[data-bg="cream"] .app-footer {
+  background: var(--panel);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+body[data-bg="black"] .sidebar,
+body[data-bg="white"] .sidebar,
+body[data-bg="cream"] .sidebar {
+  background: var(--side);
+}
+
+/* The coding panes (review dock, docked workspace explorer) live inside
+   .center, which already paints the surface — solid, glass, or a custom
+   wallpaper. Any fill of their own stacks a second layer and reads as a
+   darker panel, so they paint none, exactly like the session panes. */
+.review-dock,
+.workspace-explorer.is-side,
+.workspace-explorer.is-side
+  :is(
+    .workspace-explorer__tree,
+    .workspace-explorer__head,
+    .workspace-explorer__editor
+  ) {
+  background: transparent;
+}
+.review-dock,
+.workspace-explorer {
+  --pw-code-bg: transparent;
+}
+
+/* Popovers stay opaque enough that the transcript cannot show through. */
+.composer__mode-menu,
+.composer__model-menu,
+.slash-menu,
+.mention-menu,
+.session-header__menu,
+.update-tray {
+  background: var(--pop);
+  backdrop-filter: blur(28px) saturate(160%);
+  -webkit-backdrop-filter: blur(28px) saturate(160%);
+  box-shadow:
+    inset 0 0 0 1px rgb(var(--ink) / 0.1),
+    inset 0 1px 0 rgb(var(--ink) / 0.06),
+    var(--popsh);
+  border: 0;
+  border-radius: 14px;
+  text-shadow: none;
+}
+
+.composer__card .composer__primary:not(.is-stop) {
+  width: 28px;
+  height: 28px;
+  background: var(--send);
+  color: var(--sendFg);
+}
+
+.composer__card .composer__primary.is-stop {
+  width: 28px;
+  height: 28px;
+}
+
+.native-model-controls::before {
+  display: none;
+}
+
+.composer__card {
+  border-radius: 14px;
+}
+
+.composer__top .composer__textarea {
+  min-height: 44px;
+  height: 44px;
+  padding: 4px 0 0;
+}
+
+.composer__model-menu,
+.composer--tight .composer__model-menu {
+  left: 0;
+  bottom: calc(100% + 10px);
+  width: min(380px, calc(100vw - 24px));
+  max-width: min(380px, calc(100vw - 24px));
+  padding: 0;
+  overflow: hidden;
+  border-radius: 14px;
+}
+
+.composer__top {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  min-height: 44px;
+  padding: 5px 5px 0 7px;
+}
+
+.composer__top .composer__scroll {
+  flex: 1;
+  min-width: 0;
+}
+
+.composer__chip {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  height: 26px;
+  padding: 0 8px 0 5px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--fg2);
+  font:
+    12px / 1 -apple-system,
+    BlinkMacSystemFont,
+    "SF Pro Text",
+    sans-serif;
+  cursor: pointer;
+  min-width: 0;
+}
+
+.composer__chip:hover,
+.composer__chip.is-open {
+  background: rgb(var(--ink) / 0.08);
+}
+
+.composer__chip-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg0);
+  font-weight: 500;
+}
+
+.composer__chip.is-amber,
+.composer__chip.is-amber .composer__chip-name {
+  color: var(--g-highlight, #e0a040);
+}
+
+/* Model chip hugs its content (logo, name, effort, chevron) — a fixed width
+   with a flex:1 name left centered text floating in empty space. max-width
+   keeps long catalog names ("glm 5.3 flash (cloud)") from stretching the row. */
+.native-model-controls .composer__chip {
+  max-width: min(260px, 100%);
+}
+
+.native-model-controls .composer__chip .composer__chip-name {
+  min-width: 0;
+}
+
+.composer__chip-effort {
+  flex: none;
+  color: var(--fg2);
+  font-size: 11px;
+}
+
+.composer__usage {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  height: 26px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--fg4);
+  font: 11px / 1 var(--mono);
+  cursor: pointer;
+  flex: none;
+}
+
+.composer__usage:hover,
+.composer__usage.is-open {
+  background: rgb(var(--ink) / 0.08);
+}
+
+.composer__usage .is-low {
+  color: #e0a040;
+}
+.composer__usage .is-critical,
+.usage-pop .is-critical {
+  color: var(--del);
+}
+.usage-pop .is-low {
+  color: #e0a040;
+}
+
+.composer__rule {
+  flex: none;
+  width: 1px;
+  height: 16px;
+  margin: 0 4px;
+  background: rgb(var(--ink) / 0.12);
+}
+
+.composer__tools {
+  gap: 4px;
+  flex: 1;
+}
+
+/* Model picker matches the composer mock: search row, agent column,
+   model grid, and a thinking track whose thumb shares the stop centers. */
+.composer__model-menu .composer__model-search {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  height: 36px;
+  margin: 0;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 0;
+  color: var(--fg4);
+}
+
+.composer__model-menu .composer__model-search input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  background: none;
+  outline: none;
+  color: var(--fg0);
+  font-size: 13px;
+  font-weight: 400;
+}
+
+.composer__model-menu .composer__model-search-kbd {
+  height: 18px;
+  padding: 0 5px;
+  display: grid;
+  place-items: center;
+  border-radius: 4px;
+  background: rgb(var(--ink) / 0.05);
+  box-shadow: inset 0 0 0 1px rgb(var(--ink) / 0.14);
+  font: 10.5px var(--mono);
+  color: var(--fg3);
+}
+
+.composer__model-menu .composer__model-search-hint {
+  font-size: 11.5px;
+  color: var(--fg4);
+}
+
+.composer__model-menu .composer__model-columns {
+  display: flex;
+  gap: 0;
+  min-height: 0;
+  border-top: 1px solid rgb(var(--ink) / 0.08);
+}
+
+.composer__model-menu .composer__model-backends {
+  width: 104px;
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  flex-wrap: nowrap;
+  gap: 2px;
+  margin: 0;
+  padding: 6px;
+  overflow: hidden;
+  border-right: 1px solid rgb(var(--ink) / 0.07);
+  border-bottom: 0;
+}
+
+.composer__model-menu .composer__model-colhead {
+  padding: 2px 8px 6px;
+  color: var(--fg4);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.09em;
+}
+
+.composer__model-menu .composer__model-backends button {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 8px;
+  width: 100%;
+  height: 27px;
+  margin: 0;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  box-shadow: none;
+  color: var(--fg2);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1;
+  text-align: left;
+  cursor: pointer;
+}
+
+.composer__model-menu .composer__model-backends button:hover {
+  background: rgb(var(--ink) / 0.07);
+}
+
+.composer__model-menu .composer__model-backends button.is-active,
+.composer__model-menu .composer__model-backends button.is-active:hover {
+  /* Settings>highlight drives the picked row, like the focused input edge. */
+  background: color-mix(in srgb, var(--g-accent, var(--acc)) 13%, transparent);
+  box-shadow: inset 0 0 0 1px
+    color-mix(in srgb, var(--g-accent, var(--acc)) 26%, transparent);
+  color: var(--fg0);
+  font-weight: 600;
+}
+
+.composer__model-menu button span {
+  display: block;
+  flex: none;
+  min-width: 0;
+  flex-direction: row;
+  gap: 0;
+}
+
+.composer__model-menu .composer__model-glyph {
+  width: 16px;
+  display: grid;
+  place-items: center;
+  flex: none;
+  font-size: 14px;
+  line-height: 1;
+}
+
+.composer__model-menu .composer__model-models {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.composer__model-menu .composer__model-list {
+  max-height: 208px;
+  overflow: auto;
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+}
+
+.composer__model-menu .composer__model-group {
+  display: flex;
+  align-items: center;
+  padding: 4px 8px 5px;
+  color: var(--fg4);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+}
+
+.composer__model-menu .composer__model-group span:first-child {
+  flex: 1;
+}
+
+.composer__model-menu .composer__model-group span:last-child {
+  font-weight: 500;
+  letter-spacing: 0.04em;
+}
+
+.composer__model-menu .composer__model-group-block {
+  display: flex;
+  flex-direction: column;
+  margin-bottom: 6px;
+}
+
+.composer__model-menu .composer__model-list button {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto 18px;
+  column-gap: 8px;
+  align-items: center;
+  justify-content: stretch;
+  width: 100%;
+  height: 27px;
+  margin: 0;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  box-shadow: none;
+  color: var(--fg2);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1;
+  text-align: left;
+  cursor: pointer;
+}
+
+.composer__model-menu .composer__model-list button:hover,
+.composer__model-menu .composer__model-list button.is-highlighted {
+  background: rgb(var(--ink) / 0.09);
+  color: var(--fg0);
+}
+
+.composer__model-menu .composer__model-list button.is-active.is-highlighted,
+.composer__model-menu .composer__model-list button.is-active:hover {
+  background: color-mix(in srgb, var(--g-accent, var(--acc)) 19%, transparent);
+  color: var(--fg0);
+}
+
+.composer__model-menu .composer__model-list button.is-active {
+  /* Selection tint follows Settings>highlight, as the focused input does. */
+  background: color-mix(in srgb, var(--g-accent, var(--acc)) 12%, transparent);
+  color: var(--fg0);
+}
+
+.composer__model-menu button .composer__model-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+}
+
+.composer__model-menu button .composer__model-context {
+  margin: 0;
+  color: var(--fg4);
+  font: 10.5px var(--mono);
+}
+
+.composer__model-menu .composer__model-list button .composer__model-check {
+  width: auto;
+  color: var(--g-accent, var(--acc));
+  text-align: center;
+}
+
+.composer__model-menu .composer__model-empty {
+  display: block;
+  padding: 10px 8px;
+  color: var(--fg4);
+  font-size: 13px;
+  font-style: normal;
+}
+
+.composer__model-menu .think-track {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 12px 8px;
+  border-top: 1px solid rgb(var(--ink) / 0.07);
+}
+
+.composer__model-menu .think-track__label {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 11.5px;
+  color: var(--fg4);
+  white-space: nowrap;
+}
+
+.composer__model-menu .think-track__est {
+  margin-left: auto;
+  color: var(--fg0);
+  font: 500 11.5px var(--mono);
+}
+
+.composer__model-menu .think-track__rail {
+  position: relative;
+  height: 20px;
+  /* Track spans the models list column exactly. */
+  width: 100%;
+}
+
+.composer__model-menu .think-track__base,
+.composer__model-menu .think-track__fill {
+  position: absolute;
+  left: 7px;
+  top: 10px;
+  height: 2px;
+  border-radius: 1px;
+}
+
+.composer__model-menu .think-track__base {
+  right: 7px;
+  background: rgb(var(--ink) / 0.12);
+}
+
+.composer__model-menu .think-track__fill {
+  height: 4px;
+  top: 9px;
+  background: linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--g-accent, var(--acc)) 35%, transparent),
+    var(--g-accent, var(--acc))
+  );
+  transition: width 0.22s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.composer__model-menu .think-track__stops {
+  position: absolute;
+  inset: 0;
+}
+
+.composer__model-menu .think-track__names {
+  position: relative;
+  height: 14px;
+  width: 100%;
+}
+
+.composer__model-menu .think-track__stop,
+.composer__model-menu .think-track__name {
+  position: absolute;
+  top: 0;
+  box-sizing: border-box;
+  width: 14px;
+  min-width: 14px;
+  max-width: 14px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  appearance: none;
+  background: none;
+  box-shadow: none;
+  gap: 0;
+  cursor: pointer;
+  color: var(--fg4);
+  font:
+    10px -apple-system,
+    BlinkMacSystemFont,
+    sans-serif;
+  font-weight: 400;
+  line-height: 14px;
+  overflow: visible;
+  white-space: nowrap;
+}
+
+.composer__model-menu .think-track__stop {
+  height: 20px;
+  display: grid;
+  place-items: center;
+  align-items: center;
+}
+
+.composer__model-menu .think-track__name {
+  display: flex;
+  justify-content: center;
+  height: 14px;
+}
+
+.composer__model-menu .think-track__name.is-first {
+  justify-content: flex-start;
+}
+
+.composer__model-menu .think-track__name.is-last {
+  justify-content: flex-end;
+}
+
+.composer__model-menu .think-track__name:hover {
+  color: var(--fg2);
+}
+
+.composer__model-menu .think-track__name.is-current,
+.composer__model-menu .think-track__name.is-current:hover {
+  color: var(--fg0);
+  font-weight: 600;
+}
+
+.composer__model-menu .think-track__stop i {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: rgb(var(--ink) / 0.28);
+  transition: all 0.2s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.composer__model-menu .think-track__stop.is-on i {
+  background: var(--g-accent, var(--acc));
+}
+
+.composer__model-menu .think-track__stop:hover:not(.is-current) i {
+  width: 10px;
+  height: 10px;
+  background: rgb(var(--ink) / 0.5);
+}
+
+.composer__model-menu .think-track__stop.is-current i,
+.composer__model-menu .think-track__stop.is-current:hover i {
+  width: 14px;
+  height: 14px;
+  background: var(--g-accent, var(--acc));
+  box-shadow:
+    0 0 0 4px color-mix(in srgb, var(--g-accent, var(--acc)) 14%, transparent),
+    0 0 12px color-mix(in srgb, var(--g-accent, var(--acc)) 40%, transparent);
+}
+
+.composer__handoff-note {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 36px;
+  padding: 0 14px;
+  border-top: 1px solid rgb(var(--ink) / 0.08);
+  color: var(--fg3);
+  font-size: 11.5px;
+}
+
+.usage-pop {
+  position: absolute;
+  z-index: 6;
+  right: 8px;
+  bottom: calc(100% + 10px);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px;
+  width: 340px;
+  border-radius: 14px;
+  background: var(--pop);
+  backdrop-filter: blur(28px) saturate(160%);
+  -webkit-backdrop-filter: blur(28px) saturate(160%);
+  box-shadow:
+    inset 0 0 0 1px rgb(var(--ink) / 0.1),
+    var(--popsh);
+  text-shadow: none;
+  color: var(--fg);
+}
+
+.usage-pop__card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: rgb(var(--sink) / var(--wellA));
+  box-shadow: inset 0 0 0 1px rgb(var(--ink) / 0.06);
+}
+
+.usage-pop__stack {
+  display: flex;
+  height: 6px;
+  gap: 2px;
+  overflow: hidden;
+  border-radius: 3px;
+  background: rgb(var(--ink) / 0.1);
+}
+
+.usage-pop__legend,
+.usage-pop__row-head {
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+  font-size: 11px;
+  color: var(--fg4);
+}
+
+.usage-pop__row {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr);
+  column-gap: 10px;
+  padding: 7px 8px;
+  border-radius: 9px;
+}
+
+.usage-pop__row.is-current {
+  background: rgb(var(--ink) / 0.06);
+}
+
+.usage-pop__meter {
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr) 34px;
+  column-gap: 8px;
+  align-items: center;
+  font: 10.5px var(--mono);
+  color: var(--fg4);
+}
+
+.usage-pop__meter b {
+  position: relative;
+  height: 4px;
+  border-radius: 2px;
+  background: rgb(var(--ink) / 0.1);
+  overflow: hidden;
+}
+
+.usage-pop__meter b i {
+  position: absolute;
+  inset: 0 auto 0 0;
+  border-radius: 2px;
+  background: rgb(var(--ink) / 0.45);
+}
+
+.composer__mode-menu .composer__mode-heading {
+  padding: 6px 10px;
+  color: var(--fg4);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.09em;
+}
+
+.composer__mode-menu button {
+  text-align: left;
+}
+
+.edit-well {
+  display: flex;
+  flex-direction: column;
+  margin: 4px 8px 8px 0;
+  border-radius: 9px;
+  overflow: hidden;
+  background: rgb(var(--sink) / var(--wellA));
+  box-shadow: inset 0 0 0 1px rgb(var(--ink) / 0.16);
+}
+
+.edit-well.is-open {
+  box-shadow: inset 0 0 0 1px var(--accRing);
+}
+
+.edit-well__head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 34px;
+  /* 8px left keeps the verb on the same line as the .trow verbs
+     (.trow__grid padding-left is 8px); extra inset read as indent. */
+  padding: 0 6px 0 8px;
+  font: 12px var(--mono);
+  white-space: nowrap;
+}
+
+.edit-well__verb {
+  flex: none;
+  width: 38px;
+  color: var(--fg0);
+  font-weight: 500;
+}
+
+.edit-well__path {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.edit-well__path span {
+  color: var(--fg4);
+}
+.edit-well__path strong {
+  color: var(--fg0);
+  font-weight: 500;
+}
+
+.edit-well__stat {
+  display: flex;
+  gap: 6px;
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.edit-well__stat .is-add {
+  color: var(--add);
+}
+.edit-well__stat .is-del {
+  color: var(--del);
+}
+
+.edit-well__open {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  height: 24px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 6px;
+  background: rgb(var(--ink) / 0.06);
+  color: var(--fg2);
+  font:
+    500 11.5px -apple-system,
+    BlinkMacSystemFont,
+    sans-serif;
+  cursor: pointer;
+}
+
+.edit-well.is-open .edit-well__open {
+  background: var(--accHalo);
+  color: var(--acc);
+}
+
+.edit-well__body {
+  border-top: 1px solid rgb(var(--ink) / 0.06);
+  padding: 3px 0;
+}
+
+.edit-well__body.is-fade {
+  overflow: hidden;
+}
+
+body[data-bg="glass"] .edit-well__body.is-fade,
+body[data-bg="black"] .edit-well__body.is-fade {
+  -webkit-mask-image: linear-gradient(#000 calc(100% - 42px), transparent);
+  mask-image: linear-gradient(#000 calc(100% - 42px), transparent);
+}
+
+.edit-well__line,
+.rdiff__line {
+  display: grid;
+  grid-template-columns: 44px 16px minmax(0, 1fr);
+  height: 21px;
+  font: 12px / 21px var(--mono);
+  white-space: pre;
+  color: var(--fg0);
+}
+
+.edit-well__line.is-add,
+.rdiff__line.is-add {
+  background: var(--addBg);
+  box-shadow: inset 2px 0 0 var(--add);
+}
+
+.edit-well__line.is-remove,
+.rdiff__line.is-remove {
+  background: var(--delBg);
+  box-shadow: inset 2px 0 0 var(--del);
+}
+
+.edit-well__line.is-add > span:nth-child(2),
+.rdiff__side.is-add > span:nth-child(2),
+.rdiff__unified.is-add > span:nth-child(2) {
+  color: var(--add);
+}
+
+.edit-well__line.is-remove > span:nth-child(2),
+.rdiff__side.is-remove > span:nth-child(2),
+.rdiff__unified.is-remove > span:nth-child(2) {
+  color: var(--del);
+}
+
+.syn--kw {
+  --role: var(--kw);
+}
+.syn--sto {
+  --role: var(--sto);
+}
+.syn--typ {
+  --role: var(--typ);
+}
+.syn--fn {
+  --role: var(--fn);
+}
+.syn--prop {
+  --role: var(--prop);
+}
+.syn--vr {
+  --role: var(--vr);
+}
+.syn--str {
+  --role: var(--str);
+}
+.syn--num {
+  --role: var(--num);
+}
+.syn--cst {
+  --role: var(--cst);
+}
+.syn--op {
+  --role: var(--op);
+}
+.syn--pun {
+  --role: var(--pun);
+}
+.syn--com {
+  --role: var(--com);
+  font-style: italic;
+}
+.syn--tag {
+  --role: var(--tag);
+}
+.syn--attr {
+  --role: var(--attr);
+}
+.syn--sel {
+  --role: var(--sel);
+}
+.syn--hunk {
+  --role: var(--hunk);
+}
+.syn--file {
+  --role: var(--fg4);
+}
+
+.edit-well__line .syn,
+.rdiff__line .syn,
+.rdiff__side .syn {
+  color: var(--role);
+}
+
+.edit-well__line.is-context .syn,
+.rdiff__line.is-context .syn,
+.rdiff__side.is-context .syn {
+  /* Output text in the card: full-strength syntax colors — the 66%/88%
+     dimming read as washed out on white, per design feedback. */
+  color: var(--role);
+}
+
+.edit-well__line.is-context .syn--pun,
+.rdiff__line.is-context .syn--pun,
+.rdiff__side.is-context .syn--pun {
+  color: var(--role);
+}
+
+.edit-well__line > span:first-child,
+.rdiff__line > span:first-child,
+.rdiff__side > span:first-child {
+  text-align: right;
+  padding-right: 8px;
+  color: var(--fg4);
+  font-size: 11px;
+}
+
+.edit-well__more {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 26px;
+  padding: 0 10px 0 60px;
+  border: 0;
+  border-top: 1px solid rgb(var(--ink) / 0.05);
+  background: transparent;
+  color: var(--fg3);
+  font-size: 11.5px;
+  cursor: pointer;
+}
+
+.edit-well__more:hover {
+  color: var(--fg0);
+  background: rgb(var(--ink) / 0.03);
+}
+
+/* ---------- Edit card on white paper ----------
+   A grey well on white reads as a disabled box, and grey delete rows read
+   as "selected". Instead: a white sheet with a hairline + soft lift, a
+   faint header band, and real green/red row washes with gutters tinted
+   to match, so the +/- story reads before the code does. */
+body[data-bg="white"] .edit-well {
+  background: #ffffff;
+  box-shadow:
+    0 0 0 1px rgb(0 0 0 / 0.08),
+    0 1px 3px rgb(0 0 0 / 0.04);
+}
+body[data-bg="white"] .edit-well.is-open {
+  box-shadow:
+    0 0 0 1px var(--accRing),
+    0 0 0 4px var(--accHalo);
+}
+body[data-bg="white"] .edit-well__head {
+  background: #fafaf9;
+}
+body[data-bg="white"] .edit-well__path strong {
+  font-weight: 600;
+}
+body[data-bg="white"] .edit-well__body,
+body[data-bg="white"] .edit-well__more {
+  border-top-color: rgb(0 0 0 / 0.07);
+}
+body[data-bg="white"] .edit-well__open {
+  background: #ffffff;
+  box-shadow: inset 0 0 0 1px rgb(0 0 0 / 0.1);
+  color: var(--fg2);
+}
+body[data-bg="white"] .edit-well__open:hover {
+  background: #f6f6f5;
+  color: var(--fg0);
+}
+body[data-bg="white"] .edit-well__line > span:first-child {
+  color: #a6a6b0;
+}
+body[data-bg="white"] .edit-well__more:hover {
+  background: #fafaf9;
+}
+
+.workbench-split {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+}
+
+.workbench-split__row {
+  display: flex;
+  flex: 1;
+  position: relative;
+  z-index: 1;
+  min-width: 0;
+  min-height: 0;
+}
+
+.session-toolbar {
+  position: relative;
+  z-index: 30;
+  flex: none;
+  min-height: 44px;
+}
+
+.workbench-split.is-docked .session-grid {
+  flex: 1 1 54%;
+  width: auto;
+  transition: flex-basis 280ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.review-dock {
+  flex: 1 1 46%;
+  min-width: 420px;
+  max-width: 720px;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border-left: 1px solid rgb(var(--ink) / 0.08);
+  color: var(--fg);
+  text-shadow: var(--ts);
+}
+
+.review-dock__tabs,
+.dview__bar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  border-bottom: 1px solid rgb(var(--ink) / 0.07);
+  white-space: nowrap;
+}
+
+.review-dock__tabs {
+  height: 36px;
+  padding: 0 6px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.review-dock__tab {
+  flex: none;
+}
+/* Many tabs scroll sideways; the close button stays pinned at the end. */
+.review-dock__tabs .review-dock__x {
+  position: sticky;
+  right: 0;
+  flex: none;
+}
+/* Narrow panes: the folder part of the path gives way first, then the
+   controls wrap to a second row rather than falling off the edge. */
+.dview__bar {
+  flex-wrap: wrap;
+  min-height: 38px;
+  row-gap: 4px;
+  padding: 6px 8px 6px 14px;
+  box-sizing: border-box;
+  font: 12px var(--mono);
+}
+.review-dock__path {
+  flex: 1 1 140px;
+  min-width: 0;
+  display: flex;
+}
+.review-dock__dir {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--fg4);
+  text-overflow: ellipsis;
+}
+.review-dock__file {
+  flex: none;
+}
+.review-dock__from {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--fg4);
+  text-overflow: ellipsis;
+}
+
+.review-dock__tab {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  height: 26px;
+  padding: 0 4px 0 9px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--fg3);
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.review-dock__tab.is-active {
+  background: rgb(var(--ink) / 0.08);
+  color: var(--fg0);
+}
+
+.review-dock__badge {
+  height: 16px;
+  padding: 0 5px;
+  border-radius: 4px;
+  background: var(--accHalo);
+  box-shadow: inset 0 0 0 1px var(--accRing);
+  color: var(--acc);
+  font: 500 10px var(--mono);
+}
+
+.review-dock__x,
+.review-dock__nav {
+  width: 22px;
+  height: 22px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--fg4);
+  cursor: pointer;
+}
+
+.review-dock__x {
+  margin-left: auto;
+  width: 26px;
+  height: 26px;
+}
+
+.review-dock__hunk {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  color: var(--fg3);
+  font:
+    11.5px -apple-system,
+    BlinkMacSystemFont,
+    sans-serif;
+}
+
+.review-dock__layouts {
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  border-radius: 7px;
+  background: rgb(var(--sink) / var(--wellA));
+  box-shadow: inset 0 0 0 1px rgb(var(--ink) / 0.06);
+}
+
+.review-dock__layouts button {
+  height: 20px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--fg3);
+  font:
+    11.5px -apple-system,
+    BlinkMacSystemFont,
+    sans-serif;
+  cursor: pointer;
+}
+
+.review-dock__layouts button.is-on {
+  background: rgb(var(--ink) / 0.12);
+  color: var(--fg0);
+}
+
+.dview {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Code colors (Settings › Appearance › Code colors, or the palette button
+   on a diff): --dv-* are set on body by App.tsx and mapped onto all three
+   highlighters — SynText roles (diffs, edit wells), --pw-code-* (chat code
+   blocks) and --cc-* (CodeMirror). `html:root body[data-bg]` outranks the
+   surface skins and the legacy body[data-code-theme][data-ds-dark-theme]. */
+html:root body[data-bg] {
+  --add: var(--dv-add);
+  --addBg: color-mix(in srgb, var(--dv-add) 10%, transparent);
+  --del: var(--dv-del);
+  --delBg: color-mix(in srgb, var(--dv-del) 9%, transparent);
+  --kw: var(--dv-kw);
+  --sto: var(--dv-cmd);
+  --typ: var(--dv-var);
+  --fn: var(--dv-fn);
+  --prop: var(--dv-flag);
+  --vr: var(--dv-var);
+  --str: var(--dv-str);
+  --num: var(--dv-cst);
+  --cst: var(--dv-cst);
+  --op: var(--dv-pun);
+  --pun: var(--dv-pun);
+  --com: var(--dv-com);
+  --tag: var(--dv-fn);
+  --attr: var(--dv-cmd);
+  --sel: var(--dv-kw);
+  --pw-code-keyword: var(--dv-kw);
+  --pw-code-string: var(--dv-str);
+  --pw-code-comment: var(--dv-com);
+  --pw-code-number: var(--dv-cst);
+  --pw-code-func: var(--dv-fn);
+  --pw-code-type: var(--dv-var);
+  --pw-code-decorator: var(--dv-flag);
+  --pw-add-bg: var(--addBg);
+  --pw-del-bg: var(--delBg);
+  --pw-add-sign: var(--dv-add);
+  --pw-del-sign: var(--dv-del);
+  --pw-add-line: var(--dv-add);
+  --pw-del-line: var(--dv-del);
+}
+html:root body[data-bg] .workspace-code-editor {
+  --cc-kw: var(--dv-kw);
+  --cc-str: var(--dv-str);
+  --cc-num: var(--dv-cst);
+  --cc-fn: var(--dv-fn);
+  --cc-type: var(--dv-var);
+  --cc-tag: var(--dv-cmd);
+  --cc-attr: var(--dv-flag);
+  --cc-com: var(--dv-com);
+}
+.syn--kw,
+.syn--sto,
+.syn--fn {
+  font-weight: 500;
+}
+.dview__frame {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+.dview__body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 4px 0 16px;
+  font: 12.5px var(--mono);
+}
+/* Overview strip: where the changes sit in the whole file. */
+.dview__ruler {
+  position: relative;
+  flex: none;
+  width: 8px;
+  margin: 4px 2px;
+  border-radius: 3px;
+  background: rgb(var(--ink) / 0.04);
+}
+.dview__ruler > span {
+  position: absolute;
+  left: 1px;
+  right: 1px;
+  border-radius: 1px;
+  cursor: pointer;
+}
+.dview__ruler > .is-add {
+  background: var(--add);
+}
+.dview__ruler > .is-remove {
+  background: var(--del);
+}
+
+/* Code wraps to the pane width instead of scrolling sideways; the gutter
+   number stays on the first visual line of a wrapped row. */
+.dview__body .rdiff__line,
+.dview__body .rdiff__split {
+  height: auto;
+  min-height: 21px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.dview__body .rdiff__line.is-hunk,
+.dview__body .rdiff__line.is-gap {
+  min-height: 30px;
+}
+
+.rdiff__line.is-hunk,
+.rdiff__line.is-gap {
+  height: 30px;
+  line-height: 30px;
+  background: rgb(var(--ink) / 0.04);
+  color: var(--fg4);
+}
+
+.rdiff__line.is-gap {
+  background: rgb(var(--ink) / 0.025);
+  color: var(--fg4);
+}
+
+/* One gutter: the new line number, or the old one on removed lines (their
+   red wash already says which side they belong to). */
+.rdiff__unified {
+  grid-template-columns: 48px 20px minmax(0, 1fr);
+}
+
+.rdiff__split {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  min-height: 21px;
+  font: 12px / 21px var(--mono);
+  white-space: pre;
+}
+
+.rdiff__side {
+  display: grid;
+  grid-template-columns: 40px 16px minmax(0, 1fr);
+  min-width: 0;
+}
+
+.rdiff__side + .rdiff__side {
+  border-left: 1px solid rgb(var(--ink) / 0.07);
+}
+
+.rdiff__side.is-add {
+  background: var(--addBg);
+  box-shadow: inset 2px 0 0 var(--add);
+}
+
+.rdiff__side.is-remove {
+  background: var(--delBg);
+  box-shadow: inset 2px 0 0 var(--del);
+}
+
+.rdiff__side.is-blank {
+  background: rgb(var(--ink) / 0.025);
+}
+
+.rdiff__plain {
+  grid-template-columns: 48px minmax(0, 1fr);
+}
+
+.rdiff__plain.is-add > span:first-child {
+  box-shadow: inset -3px 0 0 var(--add);
+}
+
+.session-pane.is-reviewing {
+  box-shadow: inset 0 0 0 1px var(--accRing);
+}
+
+.session-pane.is-reviewing .conversation-header {
+  background: var(--accHalo);
+}
+
+.changes__review {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 22px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 6px;
+  background: rgb(var(--ink) / 0.08);
+  color: var(--fg0);
+  font:
+    500 12px -apple-system,
+    BlinkMacSystemFont,
+    sans-serif;
+  cursor: pointer;
+}
+
+.changes__review span {
+  color: var(--fg4);
+  font-weight: 400;
+}
+
+@media (max-width: 899px) {
+  .review-dock {
+    display: none;
+  }
+  .workbench-split.is-docked .session-grid {
+    flex: 1 1 auto;
+    width: auto;
+  }
+}
+
+@media (max-width: 1099px) {
+  .app-frame {
+    grid-template-columns: minmax(0, 1fr) !important;
+  }
+  /* One column here: a footer left in column 2 opens an empty track. */
+  .app-footer {
+    grid-column: 1;
+  }
+  .sidebar-resizer {
+    display: none;
+  }
+  .sidebar {
+    position: fixed;
+    inset: 0 auto 0 0;
+    z-index: 60;
+    width: min(310px, 84vw) !important;
+    transform: translateX(-102%);
+    transition: transform 220ms ease;
+  }
+  .app-frame.is-nav-open .sidebar {
+    transform: translateX(0);
+  }
+  .nav-toggle {
+    display: grid;
+    place-items: center;
+    position: fixed;
+    z-index: 61;
+    top: max(10px, env(safe-area-inset-top));
+    left: 10px;
+    width: 38px;
+    height: 38px;
+    border-radius: 10px;
+    border: 1px solid var(--dsw-alias-border-l2);
+    background: var(--dsw-alias-bg-layer-1);
+    color: var(--dsw-alias-label-primary);
+    cursor: pointer;
+  }
+}
+
+/* Color wheel: HSV picker card. The floating variant keeps the hub toggle
+   over the conversation; the inline variant sits in Settings → Color where
+   the static swatch row used to be. Hex pill copies the code, Save stores the
+   color as a preference, and the Saved dropdown lists everything kept. */
+.color-wheel {
+  position: relative;
+}
+
+.color-wheel--floating {
+  position: absolute;
+  z-index: 60;
+  top: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+}
+
+.color-wheel--floating .color-wheel__panel {
+  position: absolute;
+  top: 34px;
+  left: 50%;
+  translate: -50% 0;
+}
+
+.color-wheel__hub {
+  position: relative;
+  display: block;
+  width: 22px;
+  height: 22px;
+  margin: 0 auto;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: var(--cw-color, #e8a765);
+  cursor: pointer;
+  box-shadow:
+    0 0 0 3px rgb(0 0 0 / 0.28),
+    0 1px 4px rgb(0 0 0 / 0.35);
+}
+
+.color-wheel__hub:hover {
+  scale: 1.12;
+}
+
+.color-wheel--inline .color-wheel__panel {
+  margin: 0 auto;
+}
+
+/* Glass card the wheel lives in. */
+.color-wheel__panel {
+  position: relative;
+  width: fit-content;
+  padding: 16px;
+  border-radius: 18px;
+  background: var(--pop, rgba(26, 27, 34, 0.9));
+  backdrop-filter: blur(14px) saturate(1.2);
+  -webkit-backdrop-filter: blur(14px) saturate(1.2);
+  border: 1px solid rgb(255 255 255 / 0.08);
+  box-shadow:
+    0 18px 48px rgb(0 0 0 / 0.45),
+    inset 0 1px 0 rgb(255 255 255 / 0.06);
+}
+
+.color-wheel__ring,
+.color-wheel__square {
+  touch-action: none;
+  user-select: none;
+}
+
+.color-wheel__ring {
+  position: relative;
+  width: var(--cw-size, 148px);
+  height: var(--cw-size, 148px);
+  margin: 0 auto;
+  border-radius: 50%;
+  background: conic-gradient(
+    #ff6666,
+    #ffcc66 60deg,
+    #66dd66 120deg,
+    #66dddd 180deg,
+    #6688ff 240deg,
+    #dd66dd 300deg,
+    #ff6666
+  );
+  -webkit-mask: radial-gradient(
+    circle,
+    transparent calc(var(--cw-size, 148px) / 2 - var(--cw-ring, 22px) - 1px),
+    #000 calc(var(--cw-size, 148px) / 2 - var(--cw-ring, 22px))
+  );
+  mask: radial-gradient(
+    circle,
+    transparent calc(var(--cw-size, 148px) / 2 - var(--cw-ring, 22px) - 1px),
+    #000 calc(var(--cw-size, 148px) / 2 - var(--cw-ring, 22px))
+  );
+  cursor: crosshair;
+  filter: drop-shadow(0 2px 8px rgb(0 0 0 / 0.3));
+}
+
+.color-wheel__square {
+  position: absolute;
+  left: 50%;
+  top: 47px;
+  translate: -50% 0;
+  width: 86px;
+  height: 86px;
+  border-radius: 10px;
+  background:
+    linear-gradient(to top, #000, rgb(0 0 0 / 0)),
+    linear-gradient(to right, #fff, rgb(255 255 255 / 0));
+  background-color: var(--cw-hue, #f00);
+  cursor: crosshair;
+  box-shadow:
+    0 0 0 1px rgb(0 0 0 / 0.25),
+    0 2px 10px rgb(0 0 0 / 0.25);
+}
+
+.color-wheel__thumb {
+  position: absolute;
+  left: 0;
+  top: 0;
+  translate: calc(var(--cw-x, 0px) - 50%) calc(var(--cw-y, 0px) - 50%);
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  background: transparent;
+  border: 2.5px solid #fff;
+  box-shadow:
+    inset 0 0 3px rgb(0 0 0 / 0.5),
+    0 1px 5px rgb(0 0 0 / 0.45);
+  pointer-events: none;
+}
+
+.color-wheel__thumb--square {
+  width: 11px;
+  height: 11px;
+  border-width: 2.5px;
+}
+
+/* Hex code + Save + Saved dropdown row. */
+.color-wheel__bar {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 14px;
+}
+
+.color-wheel__hex,
+.color-wheel__save,
+.color-wheel__saved-toggle,
+.color-wheel__saved-remove {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  border: 1px solid rgb(255 255 255 / 0.1);
+  border-radius: 999px;
+  background: rgb(255 255 255 / 0.06);
+  color: var(--fg0, #f6f5fa);
+  font: 11px / 1.2 var(--mono, monospace);
+  cursor: pointer;
+  transition: background 0.12s ease;
+}
+
+.color-wheel__hex:hover,
+.color-wheel__save:hover,
+.color-wheel__saved-toggle:hover,
+.color-wheel__saved-remove:hover {
+  background: rgb(255 255 255 / 0.12);
+}
+
+.color-wheel__hex b,
+.color-wheel__save,
+.color-wheel__saved-toggle {
+  font: 11px / 1.2 var(--mono, monospace);
+  letter-spacing: 0.02em;
+}
+
+.color-wheel__hex em {
+  color: var(--g-highlight, #e8a765);
+  font-style: normal;
+}
+
+.color-wheel__save {
+  border-color: color-mix(
+    in srgb,
+    var(--g-highlight, #e8a765) 45%,
+    transparent
+  );
+  color: var(--g-highlight, #e8a765);
+}
+
+.color-wheel__hex-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  box-shadow: inset 0 0 0 1px rgb(0 0 0 / 0.25);
+}
+
+.color-wheel__saved {
+  position: relative;
+}
+
+.color-wheel__saved-toggle {
+  gap: 0;
+}
+
+.color-wheel__saved-list {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 3;
+  min-width: 150px;
+  max-height: 170px;
+  overflow: auto;
+  padding: 4px;
+  border-radius: 12px;
+  background: var(--pop, rgba(26, 27, 34, 0.96));
+  border: 1px solid rgb(255 255 255 / 0.1);
+  box-shadow: 0 12px 32px rgb(0 0 0 / 0.45);
+}
+
+.color-wheel__saved-row {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.color-wheel__saved-row--empty {
+  padding: 8px 10px;
+  color: var(--fg4, #7f7d89);
+  font: 11px / 1.2 var(--mono, monospace);
+}
+
+.color-wheel__saved-pick {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 6px 8px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--fg0, #f6f5fa);
+  font: 11px / 1.2 var(--mono, monospace);
+  cursor: pointer;
+  text-align: left;
+}
+
+.color-wheel__saved-pick:hover {
+  background: rgb(255 255 255 / 0.08);
+}
+
+.color-wheel__saved-remove {
+  padding: 2px 7px;
+  border: none;
+  background: transparent;
+  color: var(--fg4, #7f7d89);
+  font-size: 13px;
+  line-height: 1;
+}
+
+.color-wheel__saved-remove:hover {
+  color: #ff7a8a;
+  background: transparent;
+}
+
+/* ---------- Light solid surfaces (white / cream) ----------
+   Several glass pieces hardcode dark-glass colors (frosted menus, the
+   sessions tab well, the Changes bar). On paper those read washed out, so
+   they re-skin from the surface's --g-* palette. `html` prefix: backdrop.css
+   lands after this file in dev, see above. */
+html body[data-glass][data-bg="white"] {
+  /* Selected segment: a white chip lifted off the grey well. */
+  --g-seg-on: #ffffff;
+}
+html body[data-glass][data-bg="cream"] {
+  /* Raised wells are the bright sheet here, so the chip steps darker. */
+  --g-seg-on: rgb(70 50 20 / 0.08);
+}
+
+/* Popup menus: paper card, ink text, soft drop shadow. */
+html
+  body[data-glass]:is([data-bg="white"], [data-bg="cream"])
+  :is(
+    .composer__mode-menu,
+    .conversation-header__overflow-menu,
+    .sidebar__session-popover,
+    .sidebar__filters,
+    .changes__menu,
+    .workspace-picker__menu,
+    .workspace-menu,
+    .route-picker,
+    .route-setup__add-menu,
+    .turn-complete__menu,
+    .slash-menu,
+    .app-footer__motion,
+    .editor-palette
+  ) {
+  --dsw-alias-label-primary: var(--g-fg0);
+  --dsw-alias-label-secondary: var(--g-fg2);
+  --dsw-alias-label-tertiary: var(--g-fg3);
+  --dsw-alias-label-caption: var(--g-fg4);
+  --dsw-alias-label-dimmed: var(--g-fg4);
+  --dsw-alias-border-l1: rgb(var(--g-ink) / 0.07);
+  --dsw-alias-border-l2: rgb(var(--g-ink) / 0.1);
+  --dsw-alias-border-l3: rgb(var(--g-ink) / 0.1);
+  --dsw-alias-interactive-bg-hover: rgb(var(--g-ink) / 0.05);
+  --dsw-alias-bg-layer-2: rgb(var(--g-ink) / 0.04);
+  --pw-fg: var(--g-fg2);
+  --pw-fg-strong: var(--g-fg0);
+  --pw-fg-2: var(--g-fg2);
+  --pw-fg-3: var(--g-fg3);
+  --pw-fg-4: var(--g-fg4);
+  --pw-accent-tint: rgb(var(--g-ink) / 0.05);
+  --pw-accent-tint-2: rgb(var(--g-ink) / 0.07);
+  background: var(--g-pop);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  box-shadow:
+    inset 0 0 0 1px rgb(var(--g-ink) / 0.09),
+    0 12px 32px rgb(var(--g-sink) / 0.14),
+    0 2px 6px rgb(var(--g-sink) / 0.06);
+  color: var(--g-fg2);
+}
+
+/* New session, Sessions/Fleet tabs, Changes bar: the composer's own well. */
+html
+  body[data-glass]:is([data-bg="white"], [data-bg="cream"])
+  :is(
+    .sidebar__new-session,
+    .composer__turn-bar:has(.changes--collapsed)
+  ) {
+  background: var(--g-raised);
+  box-shadow: inset 0 0 0 1px rgb(var(--g-ink) / 0.08);
+}
+html
+  body[data-glass]:is([data-bg="white"], [data-bg="cream"])
+  .composer__turn-bar:has(.changes--collapsed)
+  .turn-complete__review {
+  background: transparent;
+  border-color: transparent;
+}
+
+/* Deploy: ink button with paper text — a pale highlight fill (olive,
+   amber) reads muddy on paper. The pending dot keeps the highlight and
+   cuts a ring in the surface color. */
+html
+  body[data-glass]:is([data-bg="white"], [data-bg="cream"])
+  .conversation-header__deploy {
+  background: var(--g-fg0);
+  color: rgb(var(--g-tint));
+}
+html
+  body[data-glass]:is([data-bg="white"], [data-bg="cream"])
+  .conversation-header__deploy.is-failed {
+  background: var(--pw-red);
+  color: #fff;
+}
+html
+  body[data-glass]:is([data-bg="white"], [data-bg="cream"])
+  .conversation-header__deploy-dot {
+  background: var(--g-highlight, var(--g-accent));
+  box-shadow: 0 0 0 2px rgb(var(--g-tint));
+}
+
+/* Compact composer: one-line prompt, no dead band under the text. */
+.composer__top {
+  min-height: 0;
+  padding-top: 2px;
+}
+.composer__top .composer__textarea {
+  min-height: 26px;
+  height: 26px;
+  padding: 2px 0 0;
+}
+/* Reset time sits under the 5h/wk numbers, tiny. */
+.composer__usage {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  row-gap: 0;
+}
+.composer__usage-reset {
+  flex-basis: 100%;
+  text-align: right;
+  font-size: 9px;
+  line-height: 1.1;
+  color: var(--dsw-alias-label-dimmed);
+}
+
+/* Sessions / Fleet / Battle: plain text tabs with an underline, tools to
+   the right. No pill: three tabs + two icons in one capsule felt cramped. */
+.sidebar__saved-head {
+  margin: 10px 10px 6px 12px;
+  padding: 0;
+  gap: 6px;
+  border-radius: 0;
+  background: none;
+  box-shadow: none;
+}
+.sidebar__saved-tabs {
+  flex: 0 1 auto;
+  gap: 14px;
+}
+.sidebar__saved-tabs > button {
+  flex: none;
+  position: relative;
+  height: 24px;
+  padding: 0;
+  border-radius: 0;
+  background: none;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--dsw-alias-label-dimmed);
+}
+.sidebar__saved-tabs > button:hover {
+  color: var(--dsw-alias-label-primary);
+}
+.sidebar__saved-tabs > button.is-active {
+  background: none;
+  box-shadow: none;
+  color: var(--dsw-alias-label-primary);
+  font-weight: 600;
+}
+.sidebar__saved-tabs > button.is-active::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--pw-accent);
+}
+.sidebar__saved-head {
+  min-width: 0;
+}
+.sidebar__saved-tabs {
+  min-width: 0;
+  overflow: hidden;
+}
+.sidebar__saved-tools {
+  flex: none;
+  margin-left: auto;
+}
+.sidebar__saved-head .sidebar__tool-btn {
+  width: 24px;
+  height: 24px;
+}
+
+/* Filter popover: solid, compact. */
+.sidebar__filters {
+  gap: 6px;
+  padding: 6px;
+  border-color: var(--dsw-alias-border-l2);
+  border-radius: 10px;
+  /* !important: glass-theme popover rules (backdrop.css, above) are more
+     specific and paint this translucent, letting the list bleed through. */
+  background: var(--pw-pop, #fff) !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+  box-shadow: 0 8px 24px rgb(0 0 0 / 0.14);
+}
+.sidebar__filter-sorts {
+  padding: 2px;
+}
+.sidebar__filter-sorts button {
+  padding: 3px 0;
+}
+.sidebar__filter-search {
+  padding: 4px 8px;
+  gap: 6px;
+}
+.sidebar__filter-agent-row {
+  gap: 7px;
+  padding: 3px 6px;
+}
+.sidebar__filter-model {
+  padding: 3px 6px;
+}
+.sidebar__filter-foot {
+  gap: 8px;
+  padding: 6px 2px 0;
+}
+.sidebar__filter-foot span {
+  white-space: nowrap;
+}
+.sidebar__filter-apply {
+  padding: 3px 10px !important;
+}
+
+/* Model line well below the session title. */
+.sidebar__item--saved .sidebar__item-sub {
+  font-size: 10.5px;
+}
+.sidebar__item--saved .sidebar__item-sub .sidebar__agent-mark {
+  width: 10px;
+  height: 10px;
+}
+
+/* Model picker: the inner chip owns the hover; the wrapper painting too
+   drew two nested boxes. */
+.composer__card .native-model-controls:hover {
+  background: transparent;
+}
+
+/* ---------- Changes dock + per-turn change card ----------
+   Reads only the surface tokens (--fg*, --ink, --add, --del, --mono), so
+   glass, black, white and cream all come from the blocks at the top. */
+
+.fbadge {
+  --k: var(--fg3);
+  flex: none;
+  box-sizing: border-box;
+  min-width: 28px;
+  padding: 1px 4px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--k) 15%, transparent);
+  color: color-mix(in oklab, var(--k) 72%, var(--fg0));
+  font: 600 9px/14px var(--mono);
+  letter-spacing: 0.02em;
+  text-align: center;
+  text-transform: uppercase;
+}
+.fbadge:is([data-kind="tsx"], [data-kind="jsx"]) { --k: #3fb8d4; }
+.fbadge[data-kind="ts"] { --k: #4f8ff0; }
+.fbadge:is([data-kind="js"], [data-kind="mjs"], [data-kind="cjs"]) { --k: #d4a72c; }
+.fbadge:is([data-kind="css"], [data-kind="scss"]) { --k: #9a7cf0; }
+.fbadge[data-kind="test"] { --k: var(--add); }
+.fbadge:is([data-kind="json"], [data-kind="yml"], [data-kind="yaml"], [data-kind="toml"]) { --k: #e08a3c; }
+.fbadge:is([data-kind="md"], [data-kind="html"]) { --k: #d9667a; }
+
+/* Dock header */
+.cdock .cdock__head {
+  gap: 10px;
+  min-height: 38px;
+  padding: 4px 8px 4px 10px;
+}
+.changes--collapsed .cdock__head { min-height: 0; }
+.cdock__title {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--fg0);
+  font: inherit;
+  cursor: pointer;
+}
+.cdock__title strong { font-size: 12.5px; font-weight: 600; }
+.cdock__count,
+.cdock__dim {
+  color: var(--fg4);
+  font-size: 11.5px;
+}
+.cdock__spacer { flex: 1; min-width: 0; }
+.cdock__mono { font-family: var(--mono); }
+.cdock .changes__diffstat b,
+.cdock__stat b { color: var(--add); font-weight: 500; }
+.cdock .changes__diffstat i,
+.cdock__stat i { color: var(--del); font-style: normal; }
+.cdock .changes__diffstat { font-family: var(--mono); font-size: 11.5px; }
+
+.cdock__seg {
+  flex: none;
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  border-radius: 8px;
+  background: rgb(var(--ink) / 0.06);
+}
+.cdock__seg button {
+  padding: 3px 9px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--fg3);
+  font: inherit;
+  font-size: 11.5px;
+  cursor: pointer;
+}
+.cdock__seg button span { margin-left: 3px; color: var(--fg4); }
+.cdock__seg button[aria-selected="true"] {
+  background: rgb(var(--ink) / 0.1);
+  color: var(--fg0);
+}
+.cdock__seg button[aria-selected="true"] span { color: var(--fg3); }
+
+.cdock__branch {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  box-shadow: inset 0 0 0 1px rgb(var(--ink) / 0.12);
+  color: var(--fg2);
+  font: inherit;
+  font-size: 11.5px;
+  cursor: pointer;
+}
+.cdock__branch:hover:not(:disabled),
+.cdock__branch[aria-expanded="true"] {
+  background: rgb(var(--ink) / 0.06);
+  color: var(--fg0);
+}
+.cdock__branch-name {
+  max-width: 160px;
+  overflow: hidden;
+  font-family: var(--mono);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cdock__wt {
+  padding: 0 5px;
+  border-radius: 4px;
+  background: var(--accHalo);
+  color: var(--acc);
+  font-size: 10px;
+}
+.cdock__drift {
+  color: var(--fg4);
+  font-family: var(--mono);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+/* File list */
+.cdock__files,
+.cdock__files ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.cdock__files {
+  max-height: min(46vh, 420px);
+  overflow-y: auto;
+  padding: 4px 6px 6px;
+  border-top: 1px solid rgb(var(--ink) / 0.07);
+}
+.cdock__dir {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  height: 26px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 7px;
+  background: none;
+  color: var(--fg3);
+  font: inherit;
+  font-size: 11.5px;
+  text-align: left;
+  cursor: pointer;
+}
+.cdock__dir:hover { background: rgb(var(--ink) / 0.05); }
+.cdock__dir .cdock__stat { font-size: 11px; }
+.cdock__group ul { padding-left: 14px; }
+
+.cdock__row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  border-radius: 7px;
+}
+.cdock__row:hover { background: rgb(var(--ink) / 0.06); }
+.cdock__row.is-loading { opacity: 0.6; }
+.cdock__row.is-excluded .cdock__file { opacity: 0.5; }
+.cdock__check {
+  flex: none;
+  width: 13px;
+  height: 13px;
+  margin: 0 0 0 8px;
+  accent-color: var(--acc);
+  opacity: 0;
+  cursor: pointer;
+}
+.cdock__row:hover .cdock__check,
+.cdock__check:focus-visible,
+.cdock__check:not(:checked) {
+  opacity: 1;
+}
+.cdock__file {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  height: 30px;
+  padding: 0 8px;
+  border: 0;
+  background: none;
+  color: var(--fg);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.cdock__name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  font-family: var(--mono);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cdock__tag {
+  flex: none;
+  padding: 0 5px;
+  border-radius: 4px;
+  font-size: 10px;
+  line-height: 16px;
+}
+.cdock__tag.is-added { background: var(--addBg); color: var(--add); }
+.cdock__tag.is-deleted,
+.cdock__tag.is-conflicted { background: var(--delBg); color: var(--del); }
+/* Recorded-change hints: shared/mixed warn in the accent, the rest stay quiet. */
+.cdock__tag.is-shared { box-shadow: inset 0 0 0 1px var(--accRing); color: var(--acc); }
+.cdock__tag.is-command,
+.cdock__tag.is-drift { box-shadow: inset 0 0 0 1px var(--fg4); color: var(--fg3); }
+.cdock__stat {
+  flex: none;
+  display: inline-flex;
+  gap: 6px;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+}
+.cdock__bar {
+  flex: none;
+  display: flex;
+  width: 44px;
+  height: 4px;
+  overflow: hidden;
+  border-radius: 2px;
+  background: rgb(var(--ink) / 0.07);
+}
+.cdock__bar span:first-child { background: var(--add); }
+.cdock__bar span:last-child { background: var(--del); }
+/* Hover swaps the change bar for the row's own action. */
+.cdock__row:is(:hover, :focus-within) .cdock__bar { visibility: hidden; }
+
+.cdock__icon {
+  flex: none;
+  display: inline-grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--fg3);
+  cursor: pointer;
+}
+.cdock__icon:hover:not(:disabled) {
+  background: rgb(var(--ink) / 0.08);
+  color: var(--fg0);
+}
+.cdock__icon:disabled { opacity: 0.4; cursor: default; }
+.cdock__discard {
+  position: absolute;
+  right: 8px;
+  opacity: 0;
+}
+.cdock__row:is(:hover, :focus-within) .cdock__discard { opacity: 1; }
+
+/* Footer: message + Commit split button */
+.cdock .cdock__foot {
+  flex-wrap: nowrap;
+  align-items: center;
+  padding: 8px;
+  border-top: 1px solid rgb(var(--ink) / 0.07);
+}
+.cdock .changes__commit-input {
+  min-height: 32px;
+  border: 0;
+  border-radius: 8px;
+  background: rgb(var(--sink) / var(--wellA));
+  box-shadow: inset 0 0 0 1px rgb(var(--ink) / 0.1);
+  color: var(--fg);
+  font-size: 12px;
+}
+.cdock .changes__commit-input:focus-visible {
+  outline: none;
+  box-shadow: inset 0 0 0 1px var(--accRing);
+}
+.cdock__split { display: flex; }
+.cdock__split > .changes__push {
+  min-height: 32px;
+  font-size: 12px;
+}
+.cdock__split > .changes__push:first-child { border-radius: 8px 0 0 8px; }
+.cdock__split > .cdock__caret {
+  display: inline-grid;
+  place-items: center;
+  width: 28px;
+  padding: 0;
+  border-left-color: rgb(0 0 0 / 0.18);
+  border-radius: 0 8px 8px 0;
+}
+.cdock__text-btn {
+  width: auto;
+  padding: 0 8px;
+  font: inherit;
+  font-size: 11.5px;
+}
+
+/* Popovers (branch chip, commit caret). Material comes from .changes__menu. */
+.changes__menu.cdock__pop {
+  width: 320px;
+  max-height: min(60vh, 480px);
+  padding: 6px;
+}
+.changes__menu.cdock__pop.is-up {
+  top: auto;
+  bottom: calc(100% + 6px);
+  width: 220px;
+}
+.changes__menu.cdock__pop > button { font-size: 12px; padding: 6px 8px; }
+.cdock__search {
+  box-sizing: border-box;
+  width: 100%;
+  height: 30px;
+  margin-bottom: 6px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 8px;
+  background: rgb(var(--sink) / var(--wellA));
+  box-shadow: inset 0 0 0 1px rgb(var(--ink) / 0.1);
+  color: var(--fg);
+  font: inherit;
+  font-size: 12px;
+}
+.cdock__search:focus-visible {
+  outline: none;
+  box-shadow: inset 0 0 0 1px var(--accRing);
+}
+.cdock__search::placeholder { color: var(--fg4); }
+.changes__menu > .cdock__workspace b { color: var(--fg0); font-weight: 600; }
+.cdock__sync {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 4px;
+  padding: 10px;
+  border-radius: 9px;
+  background: rgb(var(--ink) / 0.05);
+}
+.cdock__sync-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11.5px;
+  color: var(--fg4);
+}
+.cdock__sync-row strong {
+  color: var(--fg0);
+  font-family: var(--mono);
+  font-size: 12px;
+  font-weight: 500;
+}
+.cdock__sync-row .cdock__drift { margin-left: auto; }
+.cdock__sync-go { flex: 1; min-height: 28px; font-size: 12px; }
+.cdock__icon:not(:hover) { box-shadow: inset 0 0 0 1px rgb(var(--ink) / 0.1); }
+.cdock__files .cdock__icon:not(:hover) { box-shadow: none; }
+.cdock__link {
+  align-self: flex-start;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--fg3);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+.cdock__link:hover { color: var(--fg0); }
+.cdock__pop-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 6px -6px -6px;
+  padding: 8px 10px;
+  border-top: 1px solid rgb(var(--ink) / 0.08);
+  color: var(--fg4);
+  font-size: 11px;
+}
+.cdock__pop-foot span { flex: 1; }
+.cdock__pop-foot button {
+  padding: 3px 9px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  box-shadow: inset 0 0 0 1px rgb(var(--ink) / 0.14);
+  color: var(--fg);
+  font: inherit;
+  font-size: 11.5px;
+  cursor: pointer;
+}
+.cdock__pop-foot button:hover:not(:disabled) { background: rgb(var(--ink) / 0.07); }
+
+/* While the Changes dock shows the turn scope (its default) it replaces the
+   newest turn's receipt, so one pill shows. Dock dismissed / not git / on
+   Session or Working tree → the receipt stays, so per-turn is never lost. */
+.conversation:has(.cdock[data-scope="turn"]) .turn-files--latest { display: none; }
+
+/* Per-turn change card */
+.turn-files {
+  box-sizing: border-box;
+  width: 100%;
+  max-width: calc(var(--pw-chat-content-width) - 48px);
+  margin: 8px auto 4px;
+  overflow: hidden;
+  border-radius: 12px;
+  background: rgb(var(--sink) / var(--wellA));
+  box-shadow: inset 0 0 0 1px rgb(var(--ink) / 0.12);
+  color: var(--fg);
+}
+.turn-files__head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 10px 10px 14px;
+}
+.turn-files__title {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+}
+.turn-files__label { color: var(--fg0); font-size: 12.5px; font-weight: 600; }
+.turn-files__sum,
+.turn-files__stat {
+  display: inline-flex;
+  gap: 6px;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+}
+.turn-files__add { color: var(--add); }
+.turn-files__del { color: var(--del); }
+.turn-files__bar {
+  display: flex;
+  gap: 2px;
+  width: 120px;
+  height: 4px;
+}
+.turn-files__bar-add,
+.turn-files__bar-del { border-radius: 2px; }
+.turn-files__bar-add { background: var(--add); }
+.turn-files__bar-del { background: var(--del); }
+.turn-files__open {
+  flex: none;
+  height: 26px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 7px;
+  background: rgb(var(--ink) / 0.09);
+  color: var(--fg0);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+}
+.turn-files__open:hover { background: rgb(var(--ink) / 0.14); }
+.turn-files__list {
+  margin: 0;
+  padding: 4px;
+  list-style: none;
+  border-top: 1px solid rgb(var(--ink) / 0.07);
+}
+.turn-files__row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  height: 30px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 7px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.turn-files__row:hover:not(:disabled) { background: rgb(var(--ink) / 0.06); }
+.turn-files__row:disabled { cursor: default; }
+.turn-files__path {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  font-family: var(--mono);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.turn-files__dir { color: var(--fg4); }
+.turn-files__name { color: var(--fg); }
+.turn-files__go {
+  display: none;
+  padding: 2px 8px;
+  border-radius: 5px;
+  background: rgb(var(--ink) / 0.1);
+  color: var(--fg0);
+  font-size: 11px;
+}
+.turn-files__row:is(:hover, :focus-visible):not(:disabled) .turn-files__stat { display: none; }
+.turn-files__row:is(:hover, :focus-visible):not(:disabled) .turn-files__go { display: inline-block; }
+.changes__menu.cdock__pop > button .cdock__mono {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Narrow panes: the chip gives way before the header overflows. */
+.cdock__head > .changes__menu-wrap {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+.cdock__branch {
+  max-width: 100%;
+  min-width: 0;
+}
+.cdock__branch-name { min-width: 0; }
+.changes--dense .cdock__branch .cdock__drift,
+.changes--dense .cdock__head > .changes__diffstat { display: none; }
+
+/* Split panes (~300px): the scope switch takes its own row, rows drop the
+   change bar, and the commit button sits under the message. */
+.cdock__branch { min-width: 52px; }
+.changes--dense:not(.changes--collapsed) .cdock__head {
+  flex-wrap: wrap;
+  row-gap: 6px;
+}
+.changes--dense .cdock__seg {
+  order: 10;
+  flex: 1 1 100%;
+}
+.changes--dense .cdock__seg button { flex: 1; }
+.changes--dense .cdock__group ul { padding-left: 4px; }
+.changes--dense .cdock__dir .cdock__stat,
+.changes--dense .cdock__dir .cdock__dim,
+.changes--dense .cdock__bar { display: none; }
+.changes--dense .cdock__file { gap: 7px; padding: 0 6px; }
+.changes--dense .cdock__foot { flex-wrap: wrap; }
+.changes--dense .cdock__foot .changes__commit-input { flex: 1 1 100%; }
+.changes--dense .cdock__split { flex: 1; }
+.changes--dense .cdock__split > .changes__push:first-child { flex: 1; }
+.changes--dense .cdock__files { max-height: 28vh; }
+

@@ -3,6 +3,7 @@ import { test } from "node:test";
 import type { TimelineItem } from "./timeline.ts";
 import {
   formatWorkedAt,
+  isSessionPath,
   isTurnComplete,
   isTurnLogOpen,
   splitFilePath,
@@ -198,4 +199,12 @@ test("splitFilePath keeps the parent folder and the basename", () => {
     name: "turnFold.ts",
   });
   assert.deepEqual(splitFilePath("README.md"), { dir: "", name: "README.md" });
+});
+
+test("isSessionPath matches absolute and relative tool paths to git's paths", () => {
+  const cwd = "/repo/app/";
+  assert.equal(isSessionPath("src/a.ts", ["/repo/app/src/a.ts"], cwd), true);
+  assert.equal(isSessionPath("src/a.ts", ["./src/a.ts"], cwd), true);
+  assert.equal(isSessionPath("lib/a.ts", ["/repo/app/otherlib/a.ts"], cwd), false);
+  assert.equal(isSessionPath("src/a.ts", ["/repo/application/src/a.ts"], cwd), false);
 });

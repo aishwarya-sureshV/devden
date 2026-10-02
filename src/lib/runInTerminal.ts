@@ -26,7 +26,12 @@ export function stripPromptPrefixes(command: string): string {
 }
 
 /** Paste into a login PTY: each line as Enter, then an exit-code marker. */
-export function commandToPtyInput(command: string): string {
+export function commandToPtyInput(command: string, interactive = false): string {
+  if (interactive) {
+    // One shell statement: the exit marker must not become input to a login prompt.
+    const quoted = command.replaceAll("'", "'\\''").replace(/\r?\n/g, " ");
+    return `eval '${quoted}'; echo ${EXIT_MARKER}$?\r`;
+  }
   const lines = stripPromptPrefixes(command)
     .replace(/\s+$/g, "")
     .split("\n");

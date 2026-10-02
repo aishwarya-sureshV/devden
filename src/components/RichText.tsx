@@ -17,10 +17,12 @@ export const RichText = memo(function RichText({
   text,
   live = false,
   onAnswer,
+  skillBackend = "pi",
 }: {
   text: string;
   live?: boolean;
   onAnswer?: (text: string) => void;
+  skillBackend?: "pi" | "codex";
 }) {
   // An ask turn is the card: hide format-talk, closing reports, and a
   // second fence the model echoed in the same message. messageAsk also
@@ -56,6 +58,7 @@ export const RichText = memo(function RichText({
             language={segment.language}
             live={live}
             onAnswer={onAnswer}
+            skillBackend={skillBackend}
           />
         ) : (
           <MarkdownBlocks key={index} text={segment.text} />
@@ -71,16 +74,18 @@ function MaybeAskBlock({
   language,
   live,
   onAnswer,
+  skillBackend = "pi",
 }: {
   code: string;
   language?: string;
   live?: boolean;
   onAnswer?: (text: string) => void;
+  skillBackend?: "pi" | "codex";
 }) {
   const questions = language === "ask" ? parseAsk(code) : null;
   if (questions) return <AskCard questions={questions} onAnswer={onAnswer} />;
   const skillDraft = language === "skilldraft" ? parseSkillDraft(code) : null;
-  if (skillDraft) return <SkillDraftCard draft={skillDraft} />;
+  if (skillDraft) return <SkillDraftCard draft={{ ...skillDraft, backend: skillBackend }} />;
   return <CodeBlock code={code} language={language} live={live} />;
 }
 
@@ -225,21 +230,38 @@ const MarkdownBlocks = memo(function MarkdownBlocks({
       continue;
     }
 
-    if (/^[-*•]\s+/.test(trimmed)) {
+    const listMarker = /^[-*•]\s+/.test(trimmed)
+      ? /^[-*•]\s+/
+      : /^\d+[.)]\s+/.test(trimmed)
+        ? /^\d+[.)]\s+/
+        : null;
+    if (listMarker) {
+      const ordered = listMarker.source.startsWith("^\\d");
+      const start = ordered ? parseInt(trimmed, 10) : undefined;
       const items: string[] = [];
       while (
         index < lines.length &&
-        /^[-*•]\s+/.test((lines[index] ?? "").trim())
+        listMarker.test((lines[index] ?? "").trim())
       ) {
-        items.push((lines[index] ?? "").trim().replace(/^[-*•]\s+/, ""));
+        items.push((lines[index] ?? "").trim().replace(listMarker, ""));
         index += 1;
       }
+      const ListTag = ordered ? "ol" : "ul";
       nodes.push(
-        <ul key={`list-${index}`} className="md-list">
+        <ListTag
+          key={`list-${index}`}
+          className={`md-list${ordered ? " md-list--ordered" : ""}`}
+          start={start}
+        >
           {items.map((item, itemIndex) => (
-            <li key={`${itemIndex}-${item}`}>{inline(item)}</li>
+            <li
+              key={`${itemIndex}-${item}`}
+              data-n={start === undefined ? undefined : start + itemIndex}
+            >
+              {inline(item)}
+            </li>
           ))}
-        </ul>,
+        </ListTag>,
       );
       continue;
     }
@@ -250,7 +272,7 @@ const MarkdownBlocks = memo(function MarkdownBlocks({
       index < lines.length &&
       (lines[index] ?? "").trim() &&
       !/^(#{1,4})\s+/.test((lines[index] ?? "").trim()) &&
-      !/^[-*•]\s+/.test((lines[index] ?? "").trim()) &&
+      !/^([-*•]|\d+[.)])\s+/.test((lines[index] ?? "").trim()) &&
       !isTableStart(lines, index)
     ) {
       paragraph.push(lines[index] ?? "");

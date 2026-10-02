@@ -10,7 +10,8 @@ const OLLAMA_HOST = process.env.OLLAMA_HOST || "http://127.0.0.1:11434";
 const MODELS_JSON = join(homedir(), ".pi", "agent", "models.json");
 
 function prettyName(id) {
-  return id.replace(/:cloud$/, " (cloud)").replace(/[:/-]/g, " ");
+  // Cloud models get a ☁ suffix instead of the old "(cloud)" word.
+  return id.replace(/:cloud$/, " ☁").replace(/[:/-]/g, " ");
 }
 
 // Ollama's OpenAI-compatible endpoint accepts reasoning_effort of
@@ -56,6 +57,7 @@ export async function listOllamaModels() {
       ? entry.capabilities
       : [];
     const contextWindow = Number(entry?.details?.context_length);
+    const reasoning = capabilities.includes("thinking");
     return [
       {
         id,
@@ -71,7 +73,12 @@ export async function listOllamaModels() {
         // field on both the blocking and streaming paths (verified against
         // the daemon: 58 `delta.reasoning` chunks, clean content), so the
         // capability flag is trusted for cloud models too.
-        reasoning: capabilities.includes("thinking"),
+        reasoning,
+        // The daemon model object carries no thinkingLevelMap; without one,
+        // supportedThinkingLevels caps reasoning models at "high" even
+        // though Ollama accepts the full ladder through "max". Carry the
+        // 1:1 map so the picker shows every level the model supports.
+        ...(reasoning ? { thinkingLevelMap: OLLAMA_THINKING_LEVEL_MAP } : {}),
         vision: capabilities.includes("vision"),
       },
     ];

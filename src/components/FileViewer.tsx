@@ -1,6 +1,6 @@
 import { useEffect } from "react";
 import type { ToolFileView } from "../lib/toolCards";
-import { DiffPreview } from "./ToolCard";
+import { DiffView } from "./DiffView";
 import { NumberedCode } from "../lib/highlight";
 
 export function FileViewer({
@@ -48,7 +48,7 @@ export function FileViewer({
             />
           ) : view.content === undefined ? (
             view.diff ? (
-              <DiffPreview diff={view.diff} />
+              <DiffView diff={view.diff} path={view.title} />
             ) : null
           ) : (
             <NumberedCode code={view.content} language={view.language} />

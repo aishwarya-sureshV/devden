@@ -5,6 +5,7 @@ import {
   type CSSProperties,
 } from "react";
 import { BACKDROP_FRAGMENT_SHADER } from "../lib/backdropShader";
+import { samplePhotoTone, sampleSurfaceTone } from "../lib/backdropTone";
 import {
   canvasFilter,
   activePhoto,
@@ -36,6 +37,13 @@ import {
  */
 export function Backdrop() {
   const settings = useSyncExternalStore(subscribeAppearance, getAppearance);
+  useEffect(() => {
+    if ((settings.background ?? "glass") !== "glass")
+      document.body.style.removeProperty("--composer-tone");
+  }, [settings.background]);
+  // Black, White, Cream and Aurora paint their own field. Glass keeps the
+  // photo or shader that is already selected.
+  if ((settings.background ?? "glass") !== "glass") return null;
   const photo = activePhoto(settings);
   if (photo) return <PhotoBackdrop url={photo} settings={settings} />;
   return <SceneCanvas settings={settings} />;
@@ -59,6 +67,23 @@ function PhotoBackdrop({
   const animate = !reduce && settings.wallpaperMotion !== "still" && mi > 0;
   // The loop lengthens as intensity drops, floor 0.4× speed.
   const duration = `${Math.round(36 / Math.max(0.4, mi))}s`;
+
+  useEffect(() => {
+    let cancel = false;
+    const filter = photoFilter(settings);
+    samplePhotoTone(url, filter).then((tone) => {
+      if (!cancel) document.body.style.setProperty("--composer-tone", tone);
+    });
+    return () => {
+      cancel = true;
+    };
+  }, [
+    url,
+    settings.hue,
+    settings.saturation,
+    settings.brightness,
+    settings.contrast,
+  ]);
 
   useEffect(() => {
     if (reduce || settings.wallpaperMotion !== "drift-parallax") return;
@@ -174,6 +199,8 @@ function SceneCanvas({ settings }: { settings: AppearanceSettings }) {
     let saved = 0;
     let dead = false;
     let raf = 0;
+    let nextTone = 0;
+    let lastTone = "";
 
     const loop = (now: number) => {
       if (dead) return;
@@ -232,6 +259,14 @@ function SceneCanvas({ settings }: { settings: AppearanceSettings }) {
       }
       gl.uniform1f(u.Lm, s.mode === "light" ? 1 : 0);
       gl.drawArrays(gl.TRIANGLES, 0, 3);
+      if (now >= nextTone && activePhoto(s) === null && sceneIndex() >= 0) {
+        nextTone = now + 1200;
+        const tone = sampleSurfaceTone(canvas, photoFilter(s));
+        if (tone && tone !== lastTone) {
+          lastTone = tone;
+          document.body.style.setProperty("--composer-tone", tone);
+        }
+      }
     };
     raf = requestAnimationFrame(loop);
     return () => {

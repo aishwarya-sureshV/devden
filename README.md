@@ -4,7 +4,7 @@ A local web workbench for the coding agents already on your machine: **pi**, **C
 
 ## Install
 
-macOS or Linux, with [Node.js](https://nodejs.org) 20 or newer. Windows is not supported. You also want at least one of **pi**, **Claude Code**, **Grok**, or **Codex** on your `PATH` and signed in. The first screen shows which ones are ready.
+macOS or Linux, with [Node.js](https://nodejs.org) 22.13 or newer. Windows is not supported. The first screen detects your existing agent logins. Choose **Install & connect** for a missing agent or **Connect** to sign in with your subscription. DevDen handles installation without sudo and opens the provider's sign-in link; you approve access in your browser. The same flow is available in Settings → Agents. Pi's subscription chooser requires the current official Pi release (Node.js 22.19 or newer).
 
 ```bash
 npx devden
@@ -37,6 +37,13 @@ If an older install of this repo replaced your Homebrew `pi` binary, put the sto
 ```bash
 ln -sfn ../lib/node_modules/@earendil-works/pi-coding-agent/dist/cli.js /opt/homebrew/bin/pi
 ```
+
+## Self-hosted cloud work
+
+Run DevDen and your agents on your own Linux VM so tasks can continue while
+your laptop sleeps. Follow the [self-hosting guide](SELF_HOSTING.md) for a
+systemd service, agent login, repositories, and the existing `/remote` HTTPS
+tunnel. This initial setup uses a temporary tunnel URL.
 
 ## Homebrew
 
