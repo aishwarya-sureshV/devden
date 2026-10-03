@@ -11,3 +11,4 @@ dist
 .env
 electron/node_modules/
 electron/release/
+/redesign-*.png

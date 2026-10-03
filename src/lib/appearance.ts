@@ -93,7 +93,7 @@ export const WALLPAPERS: Wallpaper[] = (
   ] as const
 ).map(([name, file]) => ({
   name,
-  image: `/wallpapers/${file}.jpg`,
+  image: `/wallpapers/${file}.webp`,
   thumb: `/wallpapers/${file}-thumb.jpg`,
 }));
 
