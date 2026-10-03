@@ -5,10 +5,22 @@
 - Development server: `npm run dev` (runs server + vite concurrently)
 - Check ports before starting another server.
 - Prefer reusing an existing healthy development server.
-- Main conversation UI: `src/components/Conversation.tsx` (state + handlers).
-  The view pieces live beside it: `ConversationComposer.tsx` (composer,
-  menus, queue, asks), `ConversationRows.tsx` (timeline rows),
-  `conversationHelpers.ts` (pure helpers, mode types).
+- Main conversation UI: `src/components/Conversation.tsx` is the wiring
+  (~760 lines): it calls the hooks below in order and lays out the JSX.
+  Find a concern by file name instead of reading Conversation.tsx:
+  - state: `useConversationState.ts` (every useState/useRef), derived values
+    `useSessionView.ts`, header/status `useSessionStatus.ts` + `useSessionChrome.tsx`
+  - composer: `useComposerMenus.ts`, `useModelPicker.ts`, `useModelMetadata.ts`,
+    `useComposerOverlays.tsx`, `useFileDrop.ts`
+  - timeline: `useTimelineRows.tsx`, `ConversationPane.tsx`, `ConversationRows.tsx`
+  - other effects: `useUsageRefresh.ts`, `useSessionSync.ts`,
+    `useWorkspacePane.ts`, `useConversationPanels.tsx`
+  - handlers (plain functions taking a typed `ctx`): `conversationSend.ts`
+    (send/resend/versions), `conversationModel.ts`, `conversationInput.ts`,
+    `conversationReview.ts`, `conversationSession.ts`
+  - view: `ConversationComposer.tsx`; pure helpers + mode types: `conversationHelpers.ts`
+  Hook calls are order-sensitive (effects run in call order): add a new hook
+  at the point its inputs exist; don't reorder existing calls.
 - Conversation styling: `src/styles/conversation/*.css`, one file per
   feature (composer, timeline, tool-cards, explorer, ...). `conversation.css`
   only imports them in cascade order -- append new files, never reorder.

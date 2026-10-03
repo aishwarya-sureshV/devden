@@ -1,0 +1,23 @@
+/* Narrow panes (split sessions, explorer at its 280px minimum): everything
+   fits without clipping. */
+
+/* Turn changes card: drop the tile and the undo label before the title truncates. */
+.turn-files { container-type: inline-size; }
+@container (max-width: 360px) {
+  .turn-files__tile, .turn-files__undo-label, .turn-files__cells { display: none; }
+  .turn-files__head { gap: 6px; }
+}
+
+/* Explorer header: Files/Changes tabs shrink instead of being cut off. */
+body .workspace-explorer__search .workspace-explorer__tabs { flex: 1 1 auto; overflow: visible; }
+body .workspace-explorer__search .workspace-explorer__tab { flex: 1 1 auto; min-width: 0; padding: 0 7px; display: inline-flex; align-items: center; justify-content: center; }
+body .workspace-explorer__search .workspace-explorer__tab-count { flex: none; }
+
+/* Commit row: buttons share the width and wrap rather than spill off the pane. */
+.egit-commit__actions { flex-wrap: wrap; }
+.egit-commit__actions > button { flex: 1 1 auto; min-width: 0; padding: 0 8px; }
+.egit-commit__actions > .egit-primary { flex-basis: 100%; }
+
+/* File viewer: tighter gutter so code gets the room. */
+.dview__body .rdiff__unified { grid-template-columns: 4ch 14px minmax(0, 1fr); }
+.dview__body .rdiff__line > span:first-child { padding-right: 4px; }

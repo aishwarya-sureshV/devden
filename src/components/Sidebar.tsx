@@ -1,3 +1,5 @@
+import { SESSION_DRAG_TYPE, startSessionDrag } from "../lib/dockLayout";
+import { AppUpdateFooter } from "./AppUpdateFooter";
 import {
   useEffect,
   useMemo,
@@ -46,16 +48,17 @@ import {
   IconNewChat,
   IconOpenTab,
   IconPanel,
+  IconKanban,
   IconPencil,
   IconRestore,
   IconSearch,
   IconSettings,
   IconSun,
   IconTrash,
-  IconColumns,
   IconPlus,
   IconTerminal,
   BackendLogo,
+  ModelName,
 } from "./icons";
 
 function workspaceLabel(cwd: string): string {
@@ -152,11 +155,11 @@ export function Sidebar({
   onSessionSplit,
   onPaneLimit,
   openTabKeys,
+  paneCount = openTabKeys.length,
   terminalOpen = false,
   onTerminalToggle,
   onResizePointerDown,
   onResizeKeyDown,
-  onOpenSettings,
 }: {
   collapsed: boolean;
   onToggle: () => void;
@@ -171,6 +174,7 @@ export function Sidebar({
   /** A split button was used with the grid already full. */
   onPaneLimit: () => void;
   openTabKeys: string[];
+  paneCount?: number;
   terminalOpen?: boolean;
   onTerminalToggle?: () => void;
   onResizePointerDown: (event: ReactPointerEvent<HTMLButtonElement>) => void;
@@ -390,7 +394,7 @@ export function Sidebar({
 
   // A full split grid: every open-beside button reads disabled and, if
   // clicked anyway, explains why instead of spawning a hidden session.
-  const splitFull = splitSessions && openTabKeys.length >= MAX_SPLIT_PANES;
+  const splitFull = splitSessions && paneCount >= MAX_SPLIT_PANES;
   const guardSplit = (run: () => void) => () =>
     splitFull ? onPaneLimit() : run();
 
@@ -434,14 +438,6 @@ export function Sidebar({
     onViewChange("sessions");
   };
 
-  // The + on an open row: another session on THAT row's agent and folder.
-  // The picker's + only offers the other agents, so this is the way to get a
-  // second pi session once pi is already the current one.
-  const openBesideTab = (tab: ConversationTab) => {
-    const key = openConversation(tab.cwd, undefined, tab.backend);
-    onSessionSplit(key);
-    onViewChange("sessions");
-  };
 
   const handleArchive = async (session: (typeof savedSessions)[number]) => {
     setOpenSessionMenu(null);
@@ -592,18 +588,6 @@ export function Sidebar({
     onViewChange(next);
     setOpenSessionMenu(null);
     setOpenWorkspaceMenu(null);
-  };
-
-  const focusOpenSession = (key: string) => {
-    setActiveKey(key);
-    onSessionFocus(key);
-    chooseView("sessions");
-  };
-
-  const splitOpenSession = (key: string) => {
-    onSessionSplit(key);
-    setActiveKey(key);
-    chooseView("sessions");
   };
 
   const openSearchHit = (hit: SessionSearchResult) => {
@@ -796,6 +780,16 @@ export function Sidebar({
         )}
         <SidebarNavButton
           collapsed={collapsed}
+          active={false}
+          label="Board"
+          onClick={() => {
+            chooseView("sessions");
+            window.dispatchEvent(new Event("devden:toggle-board"));
+          }}
+          icon={<IconKanban size={collapsed ? 18 : 15} />}
+        />
+        <SidebarNavButton
+          collapsed={collapsed}
           active={view === "notes"}
           label="Notes"
           onClick={() => chooseView("notes")}
@@ -826,96 +820,6 @@ export function Sidebar({
 
       {!collapsed && (
         <div className="sidebar__section">
-          {openTabs.length > 0 && (
-            <div className="sidebar__open-card">
-              <div className="sidebar__open-head">
-                <div className="sidebar__heading">Open</div>
-                <span className="sidebar__open-rule" aria-hidden />
-              </div>
-              {openTabs.map((tab) => (
-                <div className="sidebar__item-row" key={tab.key}>
-                  <button
-                    type="button"
-                    className={`sidebar__item sidebar__item--open${tab.key === activeKey && view === "sessions" ? " is-active" : ""}${workingKeys.has(tab.key) ? " is-running" : ""}${awaitingKeys.has(tab.key) ? " is-awaiting" : ""}`}
-                    aria-label={
-                      workingKeys.has(tab.key)
-                        ? `${tab.label}, running`
-                        : awaitingKeys.has(tab.key)
-                          ? `${tab.label}, waiting for your answer`
-                          : undefined
-                    }
-                    onClick={() => focusOpenSession(tab.key)}
-                    title={tab.cwd}
-                  >
-                    <span
-                      className="sidebar__open-rail"
-                      style={{
-                        background: "var(--pw-accent)",
-                      }}
-                      aria-hidden
-                    />
-                    <span className="sidebar__item-label">{tab.label}</span>
-                    <span className="sidebar__open-agent">
-                      {backendLabel(tab.backend).toLowerCase()}
-                      {workingKeys.has(tab.key) ? " · running" : ""}
-                      {!workingKeys.has(tab.key) && awaitingKeys.has(tab.key)
-                        ? " · waiting"
-                        : ""}
-                    </span>
-                  </button>
-                  {/* Another session on this row's own agent + folder. */}
-                  <button
-                    type="button"
-                    className="sidebar__item-new"
-                    aria-label={`Open another ${backendLabel(tab.backend)} session`}
-                    title={`Open another ${backendLabel(tab.backend)} session`}
-                    aria-disabled={splitFull || undefined}
-                    data-limit={splitFull ? "" : undefined}
-                    onClick={guardSplit(() => openBesideTab(tab))}
-                  >
-                    <IconPlus size={14} />
-                  </button>
-                  {/* Splitting a pane with itself is a no-op, and on the single
-                      visible row (focus mode) this button and its tooltip
-                      landed right on the session title. Offer it only where it
-                      can actually pair the pane with another one. */}
-                  {tab.key !== activeKey && (
-                    <button
-                      type="button"
-                      className="sidebar__item-split"
-                      aria-label={`Split with ${tab.label}`}
-                      title="Open in split view"
-                      aria-disabled={
-                        (splitFull && !openTabKeys.includes(tab.key)) ||
-                        undefined
-                      }
-                      data-limit={
-                        splitFull && !openTabKeys.includes(tab.key)
-                          ? ""
-                          : undefined
-                      }
-                      onClick={
-                        openTabKeys.includes(tab.key)
-                          ? () => splitOpenSession(tab.key)
-                          : guardSplit(() => splitOpenSession(tab.key))
-                      }
-                    >
-                      <IconColumns size={14} />
-                    </button>
-                  )}
-                  <button
-                    type="button"
-                    className="sidebar__item-close"
-                    aria-label={`Close ${tab.label}`}
-                    onClick={() => closeConversation(tab.key)}
-                  >
-                    ×
-                  </button>
-                </div>
-              ))}
-            </div>
-          )}
-
           <div className="sidebar__saved-head">
             <div
               className="sidebar__saved-tabs"
@@ -1095,7 +999,15 @@ export function Sidebar({
                                     >
                                       {selected ? "✓" : ""}
                                     </span>
-                                    <span>{model.label}</span>
+                                    <span>
+                                      <ModelName
+                                        name={
+                                          /:cloud$/i.test(model.id)
+                                            ? `${model.label} ☁`
+                                            : model.label
+                                        }
+                                      />
+                                    </span>
                                     <em>{model.count}</em>
                                   </button>
                                 );
@@ -1380,6 +1292,12 @@ export function Sidebar({
                                   : undefined
                             }
                             title={session.path}
+                            draggable
+                            onPointerDown={event => startSessionDrag(event, { path: session.path })}
+                            onDragStart={event => {
+                              event.dataTransfer.effectAllowed = "move";
+                              event.dataTransfer.setData(SESSION_DRAG_TYPE, JSON.stringify({ path: session.path }));
+                            }}
                             onClick={() => focusSavedSession(session)}
                           >
                             <span className="sidebar__status" aria-hidden>
@@ -1535,19 +1453,7 @@ export function Sidebar({
         />
       )}
       <div className="sidebar__footer-row">
-        {!collapsed && (
-          <button
-            type="button"
-            className="sidebar__footer"
-            onClick={() =>
-              onOpenSettings ? onOpenSettings() : chooseView("settings")
-            }
-          >
-            <IconSettings size={15} />
-            <span>Settings</span>
-            <span className="sidebar__footer-kbd">⌘,</span>
-          </button>
-        )}
+        <AppUpdateFooter collapsed={collapsed} />
         <button
           type="button"
           className="sidebar__footer sidebar__footer--icon"

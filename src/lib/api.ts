@@ -218,6 +218,8 @@ export interface GitChangesResponse {
   branches?: string[];
   /** Remote-tracking branches with no local counterpart, prefix stripped. */
   remoteBranches?: string[];
+  /** Latest commits on HEAD, newest first. */
+  log?: { hash: string; subject: string; age: string }[];
   /** A half-finished operation the repo is sitting in, if any. */
   state?: "clean" | "merging" | "rebasing" | "cherry-picking" | "reverting";
   /** Paths git still reports as unmerged. */
@@ -1127,7 +1129,7 @@ export const api = {
       error?: string;
     }>(`/api/${key}/set-model`, { provider, modelId }),
   setThinking: (key: string, level: string) =>
-    post<{ ok: boolean; error?: string }>(`/api/${key}/set-thinking`, {
+    post<{ ok: boolean; state?: SessionState; error?: string }>(`/api/${key}/set-thinking`, {
       level,
     }),
   getRoute: (key: string, sessionFile?: string) => {
@@ -1252,6 +1254,8 @@ export const api = {
         pkg: string;
         installed: string | null;
         latest: string | null;
+        /** devden only: commits on upstream that HEAD lacks. */
+        behind?: number;
       }[];
     }>("/api/harness-updates"),
   runHarnessUpdate: (id: string) =>
@@ -1267,7 +1271,10 @@ export const api = {
       "/api/harness-updates/run",
       { id },
       5 * 60_000,
-    ),
+    ).then((result) => {
+      if (result.ok) window.dispatchEvent(new Event("devden:models-updated"));
+      return result;
+    }),
   onboarding: () =>
     get<{
       ok: boolean;

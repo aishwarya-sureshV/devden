@@ -45,6 +45,7 @@ import {
 
 export interface ConversationTab {
   key: string;
+  layoutId?: string;
   label: string;
   cwd: string;
   sessionPath?: string;
@@ -194,6 +195,7 @@ const pageSessionId = crypto.randomUUID();
 let counter = 1;
 
 interface PersistedOpenSession {
+  layoutId?: string;
   cwd: string;
   label: string;
   backend: AgentBackend;
@@ -283,6 +285,12 @@ function dedupeOpenSessions(
 /** A tab whose conversation has not started: no session file, no messages,
  *  no guest review. Backend switches in the picker may retarget these to the
  *  newly chosen agent — a started session keeps the agent it began with. */
+/** Every backend's session file carries its UUID (claude <id>.jsonl, pi
+ *  <time>_<id>.jsonl, codex rollout-…-<id>.jsonl, grok <id>/chat_history.jsonl). */
+function sessionIdFromPath(path: string): string {
+  return path.match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi)?.pop() ?? "";
+}
+
 export function isUnstartedTab(tab: ConversationTab): boolean {
   return (
     tab.isFresh &&
@@ -875,8 +883,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         }
       }
       const key = `conv-${pageSessionId}-${counter++}`;
+      const restoredLayout = persistedOpenSessions.current.find(entry =>
+        sessionPath ? entry.sessionPath === sessionPath : !entry.sessionPath && entry.cwd === cwd && entry.backend === backend);
       const tab: ConversationTab = {
         key,
+        layoutId: typeof restoredLayout?.layoutId === "string" && restoredLayout.layoutId ? restoredLayout.layoutId : crypto.randomUUID(),
         label: label ?? cwd.split("/").filter(Boolean).at(-1) ?? cwd,
         cwd,
         sessionPath,
@@ -904,7 +915,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       backend = defaultBackendRef.current,
       options?: OpenConversationOptions,
     ): string => {
-      const freshTab = options?.guest
+      const freshTab = options?.guest || options?.forceNew
         ? undefined
         : tabsRef.current.find(
             (candidate) =>
@@ -1103,7 +1114,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         thinkingLevel:
           session.lastEffort || BACKEND_DEFAULT_EFFORT[tab.backend],
         isStreaming: false,
-        sessionId: "",
+        // Shown in session details before the agent's first state event.
+        sessionId: sessionIdFromPath(session.path),
         sessionFile: session.path,
         messageCount: 0,
         pendingMessageCount: 0,
@@ -1501,6 +1513,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           cwd: tab.cwd,
           label: tab.label,
           backend: tab.backend,
+          layoutId: tab.layoutId,
           sessionPath: tab.sessionPath ?? tab.timeline.state?.sessionFile,
           model: tab.timeline.state?.model,
           thinkingLevel: tab.timeline.state?.thinkingLevel,

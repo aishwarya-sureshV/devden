@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { api, type DeployStatusResponse } from "../lib/api";
-import { IconLaptop } from "./icons";
+import { WorkbenchIcon } from "./WorkbenchIcon";
 
 /**
  * One-click local deploy for the project this conversation is working in —
@@ -252,6 +252,9 @@ export function DeployButton({ cwd }: { cwd: string }) {
         Boolean(lastSuccessful?.signature) &&
         status?.signature !== lastSuccessful?.signature));
 
+  const progress = deploying ? Math.min(95, Math.round((status?.last?.steps?.filter(step => step.ok).length ?? 0) / (variant === "cloud" ? 3 : 1) * 100)) : null;
+  const live = phase === "idle" && !!lastSuccessful && !hasPending;
+
   const projectName =
     status?.projectName || cwd.split("/").filter(Boolean).at(-1) || cwd;
   const primaryTitle = [
@@ -266,17 +269,18 @@ export function DeployButton({ cwd }: { cwd: string }) {
         type="button"
         className={`conversation-header__deploy${busyOnPrimary ? " is-busy" : ""}${
           failedOnPrimary ? " is-failed" : ""
-        }${hasPending && phase === "idle" ? " has-pending" : ""}`}
+        }${hasPending && phase === "idle" ? " has-pending" : ""}${live ? " is-live" : ""}`}
+        style={{ "--deploy-progress": progress === null ? "35%" : `${progress}%` } as React.CSSProperties}
         onClick={() => void startDeploy(primaryVariant)}
         disabled={deploying}
         title={primaryTitle}
         aria-label={label}
       >
         <span className="conversation-header__deploy-icon">
-          <IconLaptop size={14} />
+          {live ? <i className="deploy-live-dot" /> : <WorkbenchIcon kind="ui" name="deploy" />}
         </span>
         <span className="conversation-header__deploy-label">
-          {busyOnPrimary ? (phase === "restarting" ? "Restarting…" : "Deploying…") : failedOnPrimary ? "Retry" : "Deploy"}
+          {busyOnPrimary ? (phase === "restarting" ? "Restarting…" : `Deploying${progress === null ? "…" : ` ${progress}%`}`) : failedOnPrimary ? "Retry" : live ? "Live" : "Deploy"}
         </span>
         {hasPending && phase === "idle" && (
           <span

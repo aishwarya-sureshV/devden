@@ -19,3 +19,8 @@
 @import "./conversation/tool-rows.css";
 @import "./conversation/header-final.css";
 @import "./conversation/split-panes.css";
+@import "./conversation/fluid-pane.css";
+@import "./conversation/density.css";
+@import "./conversation/dock-chrome.css";
+@import "./conversation/pane-chrome.css";
+@import "./conversation/split-fit.css";

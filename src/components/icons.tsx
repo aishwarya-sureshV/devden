@@ -70,6 +70,44 @@ export function IconFile({ size = 16 }: { size?: number }) {
   );
 }
 
+/** Glyph drawn inside the page, per `fileKind()`; color comes from CSS `--k`. */
+const FILE_KIND_GLYPH: Record<string, string> = {
+  tsx: "m6.4 8.6-1.6 1.7 1.6 1.7M9.6 8.6l1.6 1.7-1.6 1.7",
+  jsx: "m6.4 8.6-1.6 1.7 1.6 1.7M9.6 8.6l1.6 1.7-1.6 1.7",
+  ts: "M5.2 8.6h3M6.7 8.6v3.6M11 8.9c-.4-.4-1.8-.5-1.8.4 0 1 1.9.7 1.9 1.8 0 .9-1.5 1-2 .5",
+  js: "M7.4 8.6v2.6c0 1-1.4 1.1-1.8.5M11 8.9c-.4-.4-1.8-.5-1.8.4 0 1 1.9.7 1.9 1.8 0 .9-1.5 1-2 .5",
+  css: "M6.6 8.4 6 12.4M9.4 8.4 8.8 12.4M5.3 9.6h5.4M5 11.2h5.4",
+  test: "m5.4 10.4 1.6 1.6 3.4-3.4",
+  json: "M6.6 8.4c-.9 0-.9.4-.9 1v.4l-.5.5.5.5v.4c0 .6 0 1 .9 1M9.4 8.4c.9 0 .9.4.9 1v.4l.5.5-.5.5v.4c0 .6 0 1-.9 1",
+  md: "M5.2 8.8h5.6M5.2 10.4h5.6M5.2 12h3.4",
+};
+FILE_KIND_GLYPH.mjs = FILE_KIND_GLYPH.cjs = FILE_KIND_GLYPH.js;
+FILE_KIND_GLYPH.scss = FILE_KIND_GLYPH.css;
+FILE_KIND_GLYPH.yml = FILE_KIND_GLYPH.yaml = FILE_KIND_GLYPH.toml = FILE_KIND_GLYPH.json;
+FILE_KIND_GLYPH.html = FILE_KIND_GLYPH.md;
+
+/** Tinted page with a per-type glyph (tsx `<>`, css `#`, json `{}`, …). */
+export function IconFileKind({ kind, size = 16 }: { kind: string; size?: number }) {
+  const glyph = FILE_KIND_GLYPH[kind];
+  return (
+    <svg
+      viewBox="0 0 16 16"
+      width={size}
+      height={size}
+      aria-hidden
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d="M3.5 1.6h5.6l3.4 3.4v9.4h-9z" fill="currentColor" fillOpacity="0.16" />
+      <path d="M9.1 1.6V5h3.4" />
+      {glyph && <path d={glyph} />}
+    </svg>
+  );
+}
+
 export function IconFolder({ size = 16 }: { size?: number }) {
   return (
     <svg
@@ -779,6 +817,47 @@ export function IconLaptop({ size = 16 }: { size?: number }) {
   );
 }
 
+/** Hosted-model mark: a filled blue cloud, colored like the backend logos. */
+export function IconCloudModel({ size = 13 }: { size?: number }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      width={size}
+      height={size}
+      aria-hidden
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinejoin="round"
+    >
+      <path d="M7 18h10.5a4 4 0 0 0 .4-7.98A6 6 0 0 0 6.3 9.6 4.2 4.2 0 0 0 7 18z" />
+    </svg>
+  );
+}
+
+/** Hosted-model markers: the server's " ☁", ids ending ":cloud", "(cloud)". */
+const CLOUD_SUFFIX = /\s*(?:☁|\(cloud\)|:cloud)$/i;
+
+/**
+ * A model name with any cloud marker drawn as the cloud glyph, and the
+ * family word before the version in caps ("glm 5.3 flash" → "GLM 5.3 flash").
+ */
+export function ModelName({ name }: { name: string }) {
+  const cloud = CLOUD_SUFFIX.test(name);
+  const base = name
+    .replace(CLOUD_SUFFIX, "")
+    .replace(/^\S+(?= \d)/, (family) => family.toUpperCase());
+  if (!cloud) return <>{base}</>;
+  return (
+    <>
+      {base}
+      <span className="model-cloud" title="Cloud model">
+        <IconCloudModel />
+      </span>
+    </>
+  );
+}
+
 /** Cloud: deploy cloud (git pull + build + restart). */
 export function IconCloud({ size = 16 }: { size?: number }) {
   return (
@@ -799,16 +878,12 @@ export function IconCloud({ size = 16 }: { size?: number }) {
 }
 
 function LogoPi({ size }: { size: number }) {
+  // Official pi mark (pi.dev), in its own three brand colors.
   return (
-    <svg viewBox="0 0 24 24" width={size} height={size} aria-hidden>
-      <path
-        d="M3.8 6.4h16.4M8.4 6.4v12.4M16.6 6.4c-.2 5.4-1.9 10.2-5.6 12.4"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="2.4"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
+    <svg viewBox="115 115 570 570" width={size} height={size} aria-hidden>
+      <path fill="#F09082" d="M165.29 165.29H517.36V400H400V282.65H165.29Z" />
+      <path fill="#4D9ABF" d="M165.29 282.65H282.65V400H400V517.36H282.65V634.72H165.29Z" />
+      <path fill="#F1BE58" d="M517.36 400H634.72V634.72H517.36Z" />
     </svg>
   );
 }

@@ -67,7 +67,7 @@ test("recovers the thread id from a rollout path", () => {
 
 
 test("concurrent Codex listings share pagination and keep sidebar reply tails small", async (t) => {
-  const { mkdtemp, writeFile, readFile, rm } = await import("node:fs/promises");
+  const { mkdtemp, mkdir, writeFile, readFile, rm } = await import("node:fs/promises");
   const { tmpdir } = await import("node:os");
   const { join } = await import("node:path");
   const { closeSharedCodex } = await import("./codex-app-server.js");
@@ -75,15 +75,35 @@ test("concurrent Codex listings share pagination and keep sidebar reply tails sm
   const executable = join(dir, "codex");
   const calls = join(dir, "calls");
   const path = join(dir, "rollout.jsonl");
+  const legacyPaths = ["devden", "pi_web", "exported"].map((name) => join(dir, `${name}.jsonl`));
   const originalBin = process.env.DEVDEN_CODEX_BIN;
+  const originalHome = process.env.DEVDEN_HOME;
+  process.env.DEVDEN_HOME = dir;
+  const { db, docSet } = await import("./db.js");
+  // The earlier transcript fallback polluted the allowlist; ignore it too.
+  docSet("devden-sessions", legacyPaths[2], true);
+  // A previous DevDen turn proves ownership; a matching cwd does not.
+  db().prepare(`INSERT INTO turns (session_key, session_path, repo, started_at, ended_at)
+    VALUES ('fixture', ?, ?, 1, 2)`).run(path, dir);
   closeSharedCodex();
   t.after(async () => {
     closeSharedCodex();
     if (originalBin === undefined) delete process.env.DEVDEN_CODEX_BIN;
     else process.env.DEVDEN_CODEX_BIN = originalBin;
+    if (originalHome === undefined) delete process.env.DEVDEN_HOME;
+    else process.env.DEVDEN_HOME = originalHome;
     await rm(dir, { recursive: true, force: true });
   });
   await writeFile(path, line({ type: "message", role: "assistant", content: [{ text: "x".repeat(4000) + "Which one?" }] }));
+  for (const [index, legacyPath] of legacyPaths.entries()) {
+    await writeFile(legacyPath, [
+      line({ originator: ["devden", "pi_web", "Codex Desktop"][index] }, "session_meta"),
+      line({ type: "message", role: "user", content: [{ text: "legacy fixture" }] }),
+    ].join("\n"));
+  }
+  const transcriptId = legacyPaths[2].replace(/[^a-zA-Z0-9]+/g, "").slice(-12);
+  await mkdir(join(dir, "transcripts"));
+  await writeFile(join(dir, "transcripts", `legacy-${transcriptId}.md`), "# legacy fixture");
   await writeFile(executable, `#!${process.execPath}
 import { createInterface } from "node:readline";
 import { appendFileSync } from "node:fs";
@@ -94,7 +114,11 @@ createInterface({ input: process.stdin }).on("line", (line) => {
   if (req.method === "thread/list") {
     appendFileSync(${JSON.stringify(calls)}, "list\\n");
     result = req.params.cursor ? { data: [] } : {
-      data: [{ path: ${JSON.stringify(path)}, preview: "fixture", cwd: ${JSON.stringify(dir)}, createdAt: 1 }], nextCursor: "page2"
+      data: [
+        { path: ${JSON.stringify(path)}, preview: "fixture", cwd: ${JSON.stringify(dir)}, createdAt: 1 },
+        ...${JSON.stringify(legacyPaths)}.map(path => ({ path, preview: "legacy fixture", cwd: ${JSON.stringify(dir)}, createdAt: 1 })),
+        { path: ${JSON.stringify(join(dir, "external.jsonl"))}, preview: "external", cwd: ${JSON.stringify(dir)}, createdAt: 2 }
+      ], nextCursor: "page2"
     };
   }
   setTimeout(() => process.stdout.write(JSON.stringify({ id: req.id, result }) + "\\n"), 10);
@@ -107,12 +131,16 @@ createInterface({ input: process.stdin }).on("line", (line) => {
     listSessions({ backend: "codex", archived: true }),
   ]);
   assert.equal(recent.ok, true, recent.error);
+  assert.deepEqual(recent.sessions.map((session) => session.path), [path, ...legacyPaths.slice(0, 2)]);
   assert.deepEqual(recent, duplicate);
   assert.equal(archived.sessions.length, 0);
   assert.equal((await readFile(calls, "utf8")).trim().split("\n").length, 2);
   assert.equal(recent.sessions[0].lastAssistantText.length, 800);
   assert.ok(recent.sessions[0].lastAssistantText.endsWith("Which one?"));
+  db().prepare("DELETE FROM turns").run();
+  await rm(join(dir, "transcripts"), { recursive: true });
   await writeFile(path, line({ type: "message", role: "assistant", content: [{ text: "updated" }] }));
   const refreshed = await listSessions({ backend: "codex" });
+  assert.deepEqual(refreshed.sessions.map((session) => session.path), [path, ...legacyPaths.slice(0, 2)]);
   assert.equal(refreshed.sessions[0].lastAssistantText, "updated");
 });

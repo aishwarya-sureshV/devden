@@ -1,3 +1,4 @@
+import { createPortal } from "react-dom";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   api,
@@ -16,6 +17,7 @@ import {
   IconRestore,
 } from "./icons";
 import type { DiffLine, ToolDiff, ToolFileView } from "../lib/toolCards";
+import { fmtCount } from "../lib/workbenchLook";
 import { fileKind, isSessionPath } from "../lib/turnFold";
 
 /** Cap rendered diff lines so a huge generated file can't freeze the tab. */
@@ -143,20 +145,6 @@ const sumDel = (list: GitChange[]) =>
 
 type Scope = "turn" | "session" | "tree";
 
-const WIDENING: Scope[] = ["turn", "session", "tree"];
-
-/**
- * Which scope to show when the one the user picked has nothing in it: widen
- * turn → session → tree, never narrow, so the pill never goes blank while
- * something is still changed.
- */
-function pickScope(wanted: Scope, lists: Record<Scope, GitChange[]>): Scope {
-  return (
-    WIDENING.slice(WIDENING.indexOf(wanted)).find((s) => lists[s].length > 0) ??
-    "tree"
-  );
-}
-
 /**
  * Changes dock above the composer. One line at rest; open, it lists changes
  * grouped by folder, scoped to the latest turn by default (Session and
@@ -205,6 +193,10 @@ export function ChangesPanel({
    *  parent has to move the tab back to the main checkout. */
   onLeaveWorktree?: (mainPath: string) => void;
 }) {
+  const [restoreHost, setRestoreHost] = useState<Element | null>(null);
+  useEffect(() => {
+    setRestoreHost(document.getElementById(`dock-${sessionKey}`)?.querySelector(".composer__tools") ?? null);
+  }, [sessionKey]);
   const [data, setData] = useState<GitChangesResponse | null>(
     () => lastSnapshot.get(cwd || "") ?? null,
   );
@@ -222,7 +214,7 @@ export function ChangesPanel({
       return next;
     });
   }, []);
-  const [scope, setScope] = useState<Scope>("turn");
+  const [scope, setScope] = useState<Scope>("tree");
   // Recorded per-turn / per-session views (server/changes.js).
   const [recorded, setRecorded] = useState<{
     turn?: ChangesResponse;
@@ -585,9 +577,11 @@ export function ChangesPanel({
     session: recordedSession.length ? recordedSession : sessionChanges,
     tree: changes,
   };
-  const activeScope = pickScope(scope, lists);
+  const activeScope = scope;
   const shown = lists[activeScope];
-  const hasScopes = lists.turn.length > 0 || lists.session.length > 0;
+  const sessionFiles = new Set(lists.session.map(file => file.path));
+  const extraFileCount = changes.filter(change => !sessionFiles.has(change.path)).length;
+
   // Commit and discard act on the working tree, so a recorded row that has
   // since been committed (or reverted) is listed but not selectable.
   const dirty = new Set(changes.map((change) => change.path));
@@ -959,12 +953,13 @@ export function ChangesPanel({
     return (
       <>
         {failure}
+        {dismissed && restoreHost && createPortal(<button type="button" className="delta-restore" onClick={() => setDismissed(false)}>Delta +{fmtCount(totalAdd)} −{fmtCount(totalDel)}</button>, restoreHost)}
         {actions}
       </>
     );
 
   // Dense panes already show the folder in the header, so a clean tree stays quiet.
-  if (changes.length === 0 && compact && !pushed && !inProgress)
+  if (changes.length === 0 && lists.session.length === 0 && compact && !pushed && !inProgress)
     return (
       <>
         {failure}
@@ -974,7 +969,7 @@ export function ChangesPanel({
 
   // Nothing to commit: a one-line repo bar keeps the branch menu reachable,
   // and local-only commits get the one button that matters next — Push.
-  if (changes.length === 0) {
+  if (changes.length === 0 && lists.session.length === 0) {
     return (
       <section
         className={`changes cdock changes--clean${pushed ? " changes--pushed" : ""}${
@@ -1045,12 +1040,11 @@ export function ChangesPanel({
     toggleCollapsed();
   };
   const groups = groupByDir(shown);
-  const grouped = groups.length > 1;
+  const grouped = false;
 
   const row = (change: GitChange) => {
-    const name = grouped
-      ? change.path.slice(change.path.lastIndexOf("/") + 1)
-      : change.path;
+    const name = change.path.split("/").at(-1);
+    const dir = change.path.slice(0, change.path.lastIndexOf("/") + 1);
     const total = change.additions + change.deletions || 1;
     const isExcluded = excluded.has(change.path);
     const entry = "diff" in change ? (change as RecordedChange) : null;
@@ -1086,7 +1080,7 @@ export function ChangesPanel({
           <span className="fbadge" data-kind={fileKind(change.path)}>
             {fileKind(change.path)}
           </span>
-          <span className="cdock__name">{name}</span>
+          <span className={`delta-status is-${change.status}`}>{change.status === "added" ? "A" : change.status === "deleted" ? "D" : "M"}</span><span className="cdock__name">{name}</span><small className="delta-dir">{dir}</small>
           {change.status !== "modified" && (
             <span className={`cdock__tag is-${change.status}`}>
               {change.status === "added"
@@ -1129,8 +1123,8 @@ export function ChangesPanel({
             </span>
           )}
           <span className="cdock__stat">
-            <b>+{change.additions}</b>
-            <i>−{change.deletions}</i>
+            <b title={change.additions.toLocaleString()}>+{fmtCount(change.additions)}</b>
+            <i title={change.deletions.toLocaleString()}>−{fmtCount(change.deletions)}</i>
           </span>
           <span className="cdock__bar" aria-hidden>
             <span style={{ flexGrow: change.additions / total }} />
@@ -1174,52 +1168,29 @@ export function ChangesPanel({
           >
             <IconChevronDown size={13} />
           </span>
-          <strong>Changes</strong>
-          {(collapsed || compact || !hasScopes) && (
-            <span className="cdock__count">{plural(shown.length, "file")}</span>
-          )}
+          <strong>Delta</strong>
+          <span className="cdock__count">{plural(shown.length, "file")}</span>
         </button>
-        {!collapsed && hasScopes && (
+        {(
           <div className="cdock__seg" role="tablist" aria-label="Scope">
-            {lists.turn.length > 0 && (
-              <button
-                type="button"
-                role="tab"
-                aria-selected={activeScope === "turn"}
-                title={recorded.turn?.turn?.label || "The latest turn that changed files"}
-                onClick={() => setScope("turn")}
-              >
-                {compact ? "Turn" : "Last turn"} <span>{lists.turn.length}</span>
-              </button>
-            )}
-            {lists.session.length > 0 && (
-              <button
-                type="button"
-                role="tab"
-                aria-selected={activeScope === "session"}
-                onClick={() => setScope("session")}
-              >
-                {compact ? "Session" : "This session"}{" "}
-                <span>{lists.session.length}</span>
-              </button>
-            )}
+            <button type="button" role="tab" aria-selected={activeScope === "session"} onClick={() => setScope("session")}><span className="delta-session-label">Session</span><span className="delta-this-label">This</span> <span>{lists.session.length}</span></button>
             <button
               type="button"
               role="tab"
               aria-selected={activeScope === "tree"}
               onClick={() => setScope("tree")}
             >
-              {compact ? "All" : "Working tree"} <span>{changes.length}</span>
+              All <span>{changes.length}</span>
             </button>
           </div>
         )}
+        <span className="delta-ratio" aria-hidden="true"><i style={{ flex: totalAdd || 0 }} /><i style={{ flex: totalDel || 0 }} /></span>
         <span className="changes__diffstat">
-          <b>+{totalAdd.toLocaleString()}</b>
-          <i>−{totalDel.toLocaleString()}</i>
+          <b title={totalAdd.toLocaleString()}>+{fmtCount(totalAdd)}</b>
+          <i title={totalDel.toLocaleString()}>−{fmtCount(totalDel)}</i>
         </span>
         <span className="cdock__spacer" />
-        {(!compact || !collapsed) && branchChip}
-        {actions}
+
         {onOpenChanges && (
           <button
             type="button"
@@ -1275,11 +1246,14 @@ export function ChangesPanel({
                 );
               })
             : shown.map(row)}
+          {activeScope === "tree" && extraFileCount > 0 && <li className="delta-more">{extraFileCount} more files in {folderName(cwd || "workspace")}</li>}
         </ul>
       )}
       {!collapsed && conflictBar}
       {!collapsed && !inProgress && (
         <footer className="changes__foot cdock__foot">
+          {branchChip}
+          {actions}
           <input
             type="text"
             className="changes__commit-input"

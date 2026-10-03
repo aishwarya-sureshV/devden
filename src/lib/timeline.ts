@@ -487,6 +487,8 @@ export class Timeline {
     detail?: string,
   ) {
     if (!text) return;
+    if (tone === "error") text = readableAgentError(text) || text;
+    if (tone === "error" && this.errorAlreadyReported(false, text)) return;
     this.updateItems((current) => {
       const last = current.at(-1);
       if (last?.kind === "notice" && last.text === text && last.tone === tone)
@@ -1206,6 +1208,9 @@ export class Timeline {
     }
     if (event.type === "stderr") {
       const raw = String(event.message ?? "");
+      // Already retained by appendBackendEvent; unsupported plugin hooks
+      // are CLI diagnostics, not a failed conversation.
+      if (/^skipping MCP tool hook in .*: MCP tool hooks are not supported yet\s*$/s.test(raw.trim())) return;
       const clean = readableAgentError(raw);
       if (looksLikeProviderApiLog(raw)) {
         if (clean) this.appendNotice(clean, "error");

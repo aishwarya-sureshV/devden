@@ -136,6 +136,7 @@ export function parseClaudeModelIds(text) {
 }
 
 let CLAUDE_MODELS = toClaudeModels(CLAUDE_MODEL_FALLBACK_IDS);
+let claudeModelsLive = false;
 let CLAUDE_ALIASES = claudeAliasesFor(CLAUDE_MODELS);
 
 // Rescanned only when the resolved `claude` binary's path or mtime changes,
@@ -858,7 +859,31 @@ export function isAsyncAgentLaunch(text, details = {}) {
   return /Async agent launched successfully/i.test(String(text ?? ""));
 }
 
-function normalizeHistoryEntry(entry) {
+/** Anthropic usage → the shared shape the timeline reads ({input, output,
+ *  cacheRead, cacheWrite}); input_tokens already excludes cache. */
+export function claudeUsage(raw) {
+  if (!raw || typeof raw !== "object") return undefined;
+  const num = (key) => (Number.isFinite(Number(raw[key])) ? Number(raw[key]) : 0);
+  const input = num("input_tokens");
+  const output = num("output_tokens");
+  const cacheRead = num("cache_read_input_tokens");
+  const cacheWrite = num("cache_creation_input_tokens");
+  return { input, output, cacheRead, cacheWrite, totalTokens: input + output + cacheRead + cacheWrite };
+}
+
+/** Claude writes one assistant entry per content block, each repeating the
+ *  message's usage: keep it on the first entry of each message id only.
+ *  ponytail: live blocks can carry a partial output count on the first block;
+ *  the turn's result.usage would be exact if that drift ever matters. */
+function withClaudeUsage(message, seen) {
+  if (!message?.usage) return message;
+  const { usage, ...rest } = message;
+  if (message.id && seen.has(message.id)) return rest;
+  if (message.id) seen.add(message.id);
+  return { ...rest, usage: claudeUsage(usage) };
+}
+
+function normalizeHistoryEntry(entry, seen = new Set()) {
   const timestamp = Date.parse(entry?.timestamp ?? "") || Date.now();
   const message = entry?.message;
   if (!message || typeof message !== "object") return [];
@@ -876,7 +901,7 @@ function normalizeHistoryEntry(entry) {
           return part;
         })
       : [];
-    return [{ ...message, role: "assistant", content, timestamp }];
+    return [{ ...withClaudeUsage(message, seen), role: "assistant", content, timestamp }];
   }
   if (entry.type !== "user") return [];
   // isMeta marks everything the harness injected as a user turn -- hook
@@ -963,12 +988,13 @@ function readSubagentTranscripts(sessionPath) {
 }
 
 export function messagesFromClaudeLog(contents, sessionPath) {
+  const seen = new Set();
   const messages = String(contents || "")
     .split("\n")
     .filter(Boolean)
     .flatMap((line) => {
       try {
-        return normalizeHistoryEntry(JSON.parse(line));
+        return normalizeHistoryEntry(JSON.parse(line), seen);
       } catch {
         return [];
       }
@@ -1468,7 +1494,8 @@ export class ClaudeAgentProcess {
 
   async getMessages() {
     const entries = await this.getEntries();
-    return entries.flatMap(normalizeHistoryEntry);
+    const seen = new Set();
+    return entries.flatMap((entry) => normalizeHistoryEntry(entry, seen));
   }
 
   async forkAt(timestamp, context = {}) {
@@ -1499,7 +1526,8 @@ export class ClaudeAgentProcess {
         destDir,
         context.forkCwd,
       );
-      const messages = forked.entries.flatMap(normalizeHistoryEntry);
+      const seen = new Set();
+      const messages = forked.entries.flatMap((entry) => normalizeHistoryEntry(entry, seen));
       const state = await this.getState();
       return {
         ok: true,
@@ -1528,7 +1556,39 @@ export class ClaudeAgentProcess {
     });
   }
   async getAvailableModels() {
-    await refreshClaudeModels();
+    try {
+      const token = await claudeOAuthToken();
+      if (!token) throw new Error("Claude subscription credentials unavailable");
+      const models = [];
+      let cursor;
+      do {
+        const url = new URL("https://api.anthropic.com/v1/models");
+        url.searchParams.set("limit", "1000");
+        if (cursor) url.searchParams.set("after_id", cursor);
+        const response = await fetch(url, {
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "anthropic-version": "2023-06-01",
+            "anthropic-beta": "oauth-2025-04-20",
+          },
+          signal: AbortSignal.timeout(8000),
+        });
+        if (!response.ok) throw new Error(`Claude models returned ${response.status}`);
+        const page = await response.json();
+        models.push(...(page.data ?? []).filter((model) => typeof model.id === "string" && model.id.startsWith("claude-"))
+          .map((model) => ({ provider: "anthropic", id: model.id, name: model.display_name ?? formatClaudeModelName(model.id) })));
+        cursor = page.has_more ? page.last_id : undefined;
+      } while (cursor);
+      if (models.length) {
+        claudeModelsLive = true;
+        CLAUDE_MODELS = models;
+        CLAUDE_ALIASES = claudeAliasesFor(models);
+        return { ok: true, models };
+      }
+    } catch {
+      // Keep discovery usable offline and on older subscription clients.
+    }
+    if (!claudeModelsLive) await refreshClaudeModels();
     return { ok: true, models: [...CLAUDE_MODELS] };
   }
   getThinkingLevels() {
@@ -2131,8 +2191,9 @@ export class ClaudeAgentProcess {
           args: part.input ?? {},
         });
       });
+      this.usageSeen ??= new Set();
       const message = {
-        ...event.message,
+        ...withClaudeUsage(event.message, this.usageSeen),
         content: content.map((part) =>
           part?.type === "tool_use"
             ? {

@@ -10,11 +10,14 @@ import {
   unlink,
   writeFile,
 } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { DatabaseSync } from "node:sqlite";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { AGENT_BACKENDS } from "./agent-registry.js";
 import { isSubagentToolName } from "./agent-subagent.js";
+import { db, docSet } from "./db.js";
 import {
   deadZoneStats,
   entryTimestamp,
@@ -67,23 +70,89 @@ import { threadIdFromPath } from "./codex-agent.js";
 // practice; add an LRU if that ever stops being true.
 const sessionSummaries = new Map();
 
+// The map above died with the process, so the first listing after every
+// restart re-read ~800 logs (3-4s per backend, far worse on a swapping Mac).
+// Persist the settled summaries; same mtime+size key, so a log that changed
+// while the server was down is still re-read. The cache only trusts the exact
+// sessions.js that wrote it -- its readers define the summary shape.
+// ponytail: hashes this file only; a summary-shape change made in another
+// module (claude-agent.js, codex-history.js) needs this file touched or
+// ~/.devden/session-summaries.json deleted.
+const SUMMARY_CACHE_FILE = join(homedir(), ".devden", "session-summaries.json");
+const SUMMARY_CACHE_VERSION = createHash("sha256")
+  .update(readFileSync(new URL(import.meta.url)))
+  .digest("hex")
+  .slice(0, 12);
+let summaryCacheLoad;
+let summaryCacheSave;
+
+function loadSummaryCache() {
+  summaryCacheLoad ??= readFile(SUMMARY_CACHE_FILE, "utf8")
+    .then((text) => {
+      const saved = JSON.parse(text);
+      if (saved?.version !== SUMMARY_CACHE_VERSION) return;
+      for (const [path, { key, value }] of Object.entries(saved.entries ?? {}))
+        if (!sessionSummaries.has(path))
+          sessionSummaries.set(path, {
+            key,
+            session: Promise.resolve(value),
+            settled: true,
+            value,
+          });
+    })
+    // Missing or corrupt: start cold, exactly as before this cache existed.
+    .catch(() => {});
+  return summaryCacheLoad;
+}
+
+function saveSummaryCacheSoon() {
+  if (summaryCacheSave) return;
+  // One write per burst: a listing settles hundreds of summaries at once.
+  summaryCacheSave = setTimeout(async () => {
+    summaryCacheSave = undefined;
+    const entries = {};
+    for (const [path, entry] of sessionSummaries)
+      if (entry.settled) entries[path] = { key: entry.key, value: entry.value };
+    const temporary = `${SUMMARY_CACHE_FILE}.${process.pid}.tmp`;
+    try {
+      await mkdir(dirname(SUMMARY_CACHE_FILE), { recursive: true });
+      await writeFile(
+        temporary,
+        JSON.stringify({ version: SUMMARY_CACHE_VERSION, entries }),
+        "utf8",
+      );
+      await rename(temporary, SUMMARY_CACHE_FILE);
+    } catch {
+      // A lost write only costs the next cold start a re-read.
+    }
+  }, 2000);
+  summaryCacheSave.unref?.();
+}
+
 async function cachedSummary(path, read) {
-  let key;
-  try {
-    const file = await stat(path);
-    key = `${file.mtimeMs}:${file.size}`;
-  } catch {
-    sessionSummaries.delete(path);
+  const [file] = await Promise.all([
+    stat(path).catch(() => undefined),
+    loadSummaryCache(),
+  ]);
+  if (!file) {
+    if (sessionSummaries.delete(path)) saveSummaryCacheSoon();
     return undefined;
   }
+  const key = `${file.mtimeMs}:${file.size}`;
   const hit = sessionSummaries.get(path);
   if (hit && hit.key === key) return hit.session;
   // Share the read itself: simultaneous sidebar refreshes used to parse the
   // same large log repeatedly before either had populated this cache.
   const session = read(path);
-  sessionSummaries.set(path, { key, session });
+  const entry = { key, session, settled: false, value: undefined };
+  sessionSummaries.set(path, entry);
   try {
-    return await session;
+    const value = await session;
+    // null too: an unreadable/internal log is not worth re-reading either.
+    entry.value = value ?? null;
+    entry.settled = true;
+    saveSummaryCacheSoon();
+    return value;
   } catch (error) {
     if (sessionSummaries.get(path)?.session === session)
       sessionSummaries.delete(path);
@@ -108,10 +177,39 @@ export async function listSessions({ archived = false, backend = "pi" } = {}) {
     sessions.sort((a, b) => b.modifiedAt - a.modifiedAt);
     return { ok: true, sessions };
   }
-  if (backend === "claude") return listClaudeSessions({ archived });
-  if (backend === "grok") return listGrokSessions({ archived });
-  if (backend === "codex") return listCodexSessions({ archived });
-  return listPiSessions({ archived });
+  // Keep provenance after change snapshots expire. Older DevDen turns and
+  // compaction overlays are also evidence; a workspace path alone is not.
+  const conn = db();
+  // Renaming .pi-web to .devden left earlier turn records in the old DB.
+  let legacy;
+  try {
+    legacy = new DatabaseSync(join(homedir(), ".pi-web", "devden.db"), { readOnly: true });
+    for (const { path } of legacy.prepare(`SELECT DISTINCT session_path AS path FROM turns
+      WHERE session_path IS NOT NULL
+      UNION SELECT key AS path FROM docs WHERE ns = 'display-history'`).all())
+      docSet("devden-sessions", path, "turn");
+  } catch {
+    // No old database on fresh installs.
+  } finally { legacy?.close(); }
+  conn.prepare(`INSERT OR REPLACE INTO docs (ns, key, value, updated_at)
+    SELECT 'devden-sessions', session_path, '"turn"', ended_at FROM turns
+    WHERE session_path IS NOT NULL
+    UNION SELECT 'devden-sessions', key, '"compaction"', updated_at FROM docs
+    WHERE ns = 'display-history'`).run();
+  // Untagged booleans from the old transcript fallback are not provenance.
+  const paths = new Set(conn.prepare(`SELECT key FROM docs WHERE ns = 'devden-sessions'
+    AND value IN ('"activity"', '"origin"', '"turn"', '"compaction"', '"legacy-export"')`).all().map((row) => row.key));
+  const result = await (backend === "claude" ? listClaudeSessions({ archived })
+    : backend === "grok" ? listGrokSessions({ archived })
+    : backend === "codex" ? listCodexSessions({ archived })
+    : listPiSessions({ archived }));
+  result.sessions = result.sessions.filter((session) => {
+    if (paths.has(session.path)) return true;
+    if (!session.devdenOrigin) return false;
+    docSet("devden-sessions", session.path, "origin");
+    return true;
+  });
+  return result;
 }
 
 async function listPiSessions({ archived = false } = {}) {
@@ -257,6 +355,7 @@ async function readGrokResumeSession(sessionDir) {
     return {
       path: chatPath,
       backend: "grok",
+      ...(await cachedSummary(chatPath, readGrokOrigin)),
       name,
       cwd: summary.info?.cwd || summary.git_root_dir || "",
       createdAt,
@@ -285,6 +384,19 @@ async function readGrokResumeSession(sessionDir) {
   } catch {
     return null;
   }
+}
+
+async function readGrokOrigin(path) {
+  const contents = await readFile(path, "utf8");
+  return { devdenOrigin: contents.split("\n").some((line) => {
+    try {
+      const entry = JSON.parse(line);
+      const text = grokContentText(entry.content).replace(/^\s*<user_query>\s*/, "");
+      return entry.type === "user" && !entry.synthetic_reason &&
+        text.startsWith("[devden harness instruction") &&
+        text.includes("[end devden harness instruction]");
+    } catch { return false; }
+  }) };
 }
 
 // codex owns a thread index that already carries title, preview, cwd and
@@ -924,9 +1036,12 @@ export function messagesFromCodexLog(contents) {
 
 async function readCodexSummary(path) {
   try {
-    const history = readCodexLog(await readFile(path, "utf8"));
+    const contents = await readFile(path, "utf8");
+    const metadata = JSON.parse(contents.split("\n", 1)[0]);
+    const history = readCodexLog(contents);
     const usage = history.tokenUsage?.total;
     return {
+      devdenOrigin: metadata.type === "session_meta" && ["devden", "pi_web"].includes(metadata.payload?.originator),
       messageCount: history.messageCount, lastModel: history.lastModel,
       lastModelProvider: "codex", lastEffort: history.lastEffort, models: history.models,
       ...(usage ? { usage: { input: Number(usage.input_tokens ?? usage.inputTokens ?? 0), output: Number(usage.output_tokens ?? usage.outputTokens ?? 0), total: Number(usage.total_tokens ?? usage.totalTokens ?? 0) } } : {}),
@@ -1165,6 +1280,7 @@ export async function readResumeSession(path) {
     let lastModel;
     let lastModelProvider;
     let lastEffort;
+    let devdenOrigin = false;
     // Cumulative usage across the session's assistant turns — the composer's
     // "USED tokens" chip for sessions whose agent is not running.
     let usage;
@@ -1213,6 +1329,12 @@ export async function readResumeSession(path) {
         if (typeof entry.timestamp === "string")
           modifiedAt = Date.parse(entry.timestamp) || modifiedAt;
         const message = entry.message;
+        // This extension only contacts the workbench when DevDen injected
+        // its bridge environment. "No bridge" results do not qualify.
+        if (message?.role === "toolResult" && message.toolName === "run_in_terminal" &&
+          (message.details?.ok === true && typeof message.details.tabId === "string" ||
+            message.content?.some((part) => part.type === "text" && /^Terminal tab failed: /.test(part.text))))
+          devdenOrigin = true;
         if (message?.role) lastRole = message.role;
         if (message?.role === "assistant") {
           const model = rememberModel(models, message.model);
@@ -1267,6 +1389,7 @@ export async function readResumeSession(path) {
     }
     return {
       path,
+      devdenOrigin,
       name: name || firstPrompt || "Untitled session",
       cwd,
       createdAt,

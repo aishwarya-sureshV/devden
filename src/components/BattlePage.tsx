@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { IconArrowUp, IconFolder, IconPlus } from "./icons";
+import { IconArrowUp, IconFolder, IconPlus, ModelName } from "./icons";
+import { useModelRefresh } from "./useModelRefresh";
 import {
   AGENT_BACKENDS,
   api,
@@ -21,7 +22,8 @@ import { useStore, type Attachment, type ConversationTab } from "../lib/store";
 import { compactTokens, estimateContext } from "../lib/sessionMetrics";
 import { sessionPaneLayout } from "../lib/sessionLayout";
 import { formatRelativeTime } from "../lib/time";
-import { Conversation, fileAsBase64 } from "./Conversation";
+import { Conversation } from "./Conversation";
+import { fileAsBase64 } from "./conversationHelpers";
 
 /** One contender slot: the same backend can appear twice, models independent. */
 interface Slot {
@@ -163,24 +165,27 @@ export function BattlePage({
   };
 
   const listKey = active?.key ?? tabs[0]?.key ?? "race";
-  const loadList = (backend: AgentBackend) => {
-    if (!modelLists[backend])
+  const loadList = (backend: AgentBackend, refresh = false) => {
+    if (refresh || !modelLists[backend])
       void api.models(listKey, backend).then((result) => {
         if (result.ok)
           setModelLists((current) => ({
             ...current,
             [backend]: result.models ?? [],
           }));
-      });
-    if (!effortLists[backend])
+      }).catch(() => {});
+    if (refresh || !effortLists[backend])
       void api.thinkingLevels(listKey, backend).then((result) => {
         if (result.ok)
           setEffortLists((current) => ({
             ...current,
             [backend]: result.levels ?? [],
           }));
-      });
+      }).catch(() => {});
   };
+  useModelRefresh(() => {
+    for (const backend of AGENT_BACKENDS) loadList(backend, true);
+  });
   useEffect(() => {
     for (const backend of AGENT_BACKENDS) loadList(backend);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -943,7 +948,7 @@ function BattleColumn({
         <strong>{backendLabel(candidate.backend)}</strong>
         {modelLabel && (
           <span className="battle-col__model" title={modelLabel}>
-            {modelLabel}
+            <ModelName name={modelLabel} />
           </span>
         )}
         <span className={`battle-col__dot battle-col__dot--${status.tone}`} />

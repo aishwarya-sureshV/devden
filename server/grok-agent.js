@@ -43,6 +43,7 @@ import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { GROK_ACP_ARGS, openAcpClient } from "./acp-agent.js";
 import { AgentPool } from "./agent-pool.js";
+import { MODEL_CATALOG_TTL_MS } from "./model-catalog.js";
 import { ApprovalGate } from "./approval-gate.js";
 import { attachQueue } from "./agent-queue.js";
 import { unsupported } from "./agent-methods.js";
@@ -2025,7 +2026,9 @@ class GrokAgentProcess {
       queuedMessages: this.queueSnapshot(),
       sessionId: this.sessionId,
       cwd: this.cwd,
-      model: this.model,
+      // Unset means grok runs its default; report it so the UI names it
+      // instead of "model…" (resumed sessions never set one explicitly).
+      model: this.model ?? { provider: "grok-sdk", id: "grok-4.6" },
       thinkingLevel: this.thinkingLevel,
       sessionFile: this.sessionFile,
     };
@@ -2044,8 +2047,9 @@ class GrokAgentProcess {
     };
   }
 
-  async fetchModelCatalog() {
-    if (this.modelCatalog) return this.modelCatalog;
+  async fetchModelCatalog(refresh = false) {
+    if (!refresh && this.modelCatalog && Date.now() - this.modelCatalogAt < MODEL_CATALOG_TTL_MS)
+      return this.modelCatalog;
     const token = await readGrokToken();
     if (!token) throw new Error("Not logged into grok-cli");
     const response = await fetch(`${GROK_PROXY_BASE}/models`, {
@@ -2065,18 +2069,21 @@ class GrokAgentProcess {
           (entry) => entry?.info ?? entry,
         );
     this.modelCatalog = raw.filter((m) => m?.id ?? m?.model);
+    this.modelCatalogAt = Date.now();
     return this.modelCatalog;
   }
 
   async getAvailableModels() {
     try {
-      const raw = await this.fetchModelCatalog();
+      const raw = await this.fetchModelCatalog(true);
       const models = raw
         .filter((m) => m.hidden !== true && m.supported_in_api !== false)
         .map((m) => ({
           provider: "grok-sdk",
           id: m.id ?? m.model,
           name: m.name ?? m.id ?? m.model,
+          levels: (m.reasoning_efforts ?? []).map((effort) => effort.id ?? effort.value),
+          contextWindow: m.context_window ?? m.contextWindow,
         }));
       return { ok: true, models };
     } catch (error) {

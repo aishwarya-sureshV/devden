@@ -9,6 +9,21 @@ const event = (payload: Record<string, unknown>): AgentEvent =>
 const grokLog = `2026-09-12T12:31:47.251703Z ERROR responses API error status=402 Payment Required error_message=Grok Build usage balance exhausted body_preview={"error":"Grok Build usage balance exhausted"} model_id=grok-4.6
 2026-09-12T12:31:47.253246Z ERROR error=Internal error: { "message": "API error (status 402 Payment Required): Grok Build usage balance exhausted", "http_status": 402 }`;
 
+test("Codex errors render once and unsupported plugin hooks stay out of chat", () => {
+  const timeline = new Timeline("codex-errors");
+  timeline.appendUser("run it");
+  timeline.handle(event({ type: "stderr", message: "skipping MCP tool hook in /plugins/browser/plugin.json: MCP tool hooks are not supported yet" }));
+  assert.equal(timeline.items.length, 1);
+  const message = "The 'gpt-6-luna' model is not supported when using Codex with a ChatGPT account";
+  timeline.handle(event({ type: "stderr", message: JSON.stringify({ type: "error", status: 400, error: { message } }) }));
+  timeline.handle(event({ type: "message_end", message: { role: "assistant", errorMessage: message } }));
+  timeline.handle(event({ type: "notice", message, tone: "error" }));
+  timeline.appendNotice(JSON.stringify({ type: "error", status: 400, error: { message } }), "error");
+  const errors = timeline.items.filter((item) => item.kind === "notice" && item.tone === "error");
+  assert.equal(errors.length, 1);
+  assert.equal(errors[0]?.kind === "notice" ? errors[0].text : "", message);
+});
+
 test("readableAgentError pulls the sentence out of a Grok API log", () => {
   assert.equal(
     readableAgentError(grokLog),

@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useModelRefresh } from "./useModelRefresh";
 import {
   AGENT_BACKENDS,
   api,
@@ -90,15 +91,19 @@ export function RouteSetup({
     return () => window.removeEventListener("keydown", onKey);
   }, [picking, activeIndex, onPick]);
 
-  const loadModels = (backend: AgentBackend) => {
-    if (models[backend]) return;
+  const loadModels = (backend: AgentBackend, refresh = false) => {
+    if (!refresh && models[backend]) return;
     void api.models(sessionKey, backend).then((result) => {
       if (!result.ok) return;
       setModels((current) => ({ ...current, [backend]: result.models ?? [] }));
-    });
+    }).catch(() => {});
   };
 
   const backendsKey = route.steps.map((step) => step.backend).join(",");
+  useModelRefresh(() => {
+    for (const backend of new Set(backendsKey.split(",")))
+      if (backend) loadModels(backend as AgentBackend, true);
+  });
   useEffect(() => {
     for (const backend of backendsKey.split(",")) {
       if (backend) loadModels(backend as AgentBackend);
@@ -313,5 +318,4 @@ export function RouteSetup({
     </div>
   );
 }
-
 

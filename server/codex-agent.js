@@ -28,6 +28,8 @@ import {
 } from "./agent-subagent.js";
 import { CodexAppServer, codexRequest } from "./codex-app-server.js";
 import { loadCodexUsage } from "./codex-usage.js";
+import { readCodexModels } from "./codex-models.js";
+import { MODEL_CATALOG_TTL_MS } from "./model-catalog.js";
 import {
   repoContext,
   CO_PARTNER_PROMPT,
@@ -73,14 +75,16 @@ function toolCallOf(item) {
     case "enteredReviewMode":
     case "exitedReviewMode":
       return { name: item.type, arguments: item, output: item.result ?? item.review ?? "", failed: item.status === "failed" };
-    case "commandExecution":
+    case "commandExecution": {
+      const action = item.commandActions?.length === 1 ? item.commandActions[0] : undefined;
       return {
-        name: "shell",
+        name: ({ read: "read", search: "grep", listFiles: "ls" })[action?.type] ?? "shell",
         execKind: "execute",
-        arguments: { command: item.command, cwd: item.cwd },
+        arguments: { command: item.command, cwd: item.cwd, ...(action?.path ? { path: action.path } : {}), ...(action?.query ? { pattern: action.query } : {}) },
         output: item.aggregatedOutput ?? "",
-        failed: item.status === "failed" || item.status === "declined",
+        failed: item.status === "failed" || item.status === "declined" || (typeof item.exitCode === "number" && item.exitCode !== 0),
       };
+    }
     case "fileChange":
       return {
         name: "apply_patch",
@@ -288,6 +292,7 @@ class CodexAgentProcess {
     connection.onFailure((error) => this.connectionFailed(error));
     try {
       await connection.start();
+      await this.ensureAvailableModel(true);
       const config = this.threadConfig(effectiveCwd);
       this.tokenUsage = undefined;
       this.historyStats = undefined;
@@ -304,12 +309,13 @@ class CodexAgentProcess {
       this.threadId = opened.thread.id;
       this.sessionFile = opened.thread.path ?? options.sessionPath;
       this.model = { provider: "codex", id: opened.model };
+      await this.ensureAvailableModel();
       // The composer's placeholder effort for a not-yet-started session is
       // "off", which codex has no equivalent for -- and each model advertises
       // its own ladder (gpt-5.6-terra has "max", gpt-5.5 stops at "xhigh"),
       // so anything unsupported falls back to the model's own default.
       this.thinkingLevel = await this.resolveEffort(
-        opened.model,
+        this.model.id,
         options.thinkingLevel && options.thinkingLevel !== "off"
           ? options.thinkingLevel
           : opened.reasoningEffort,
@@ -636,12 +642,8 @@ class CodexAgentProcess {
         // message is stashed on the turn and surfaced when it settles --
         // otherwise a failed turn renders as an empty assistant bubble.
         const text = String(params.error?.message ?? params.message ?? "");
-        this.emit({
-          type: "stderr",
-          sessionKey: this.sessionKey,
-          message: text,
-        });
         if (turn && params.willRetry !== true) turn.error = text;
+        else this.emit({ type: "notice", sessionKey: this.sessionKey, message: text, tone: params.willRetry ? "warning" : "error" });
         return;
       }
       case "warning":
@@ -1075,10 +1077,6 @@ class CodexAgentProcess {
       messages: [turn.userMessage, turn.message].filter(Boolean),
     });
     this.messages.push(...[turn.userMessage, ...(turn.extraUsers ?? []), turn.message, ...(turn.results ?? [])].filter(Boolean));
-    if (turn.error) {
-      turn.message.errorMessage = turn.error;
-      this.emit({ type: "notice", sessionKey: this.sessionKey, message: turn.error, tone: "error" });
-    }
     if (turn.id)
       this.turnRecords.push({
         id: turn.id,
@@ -1326,10 +1324,24 @@ class CodexAgentProcess {
 
   // ---- models and effort ------------------------------------------------
 
-  async fetchModelCatalog() {
-    if (this.modelCatalog) return this.modelCatalog;
-    // The catalog is also needed before a session exists (a fresh tab lists
-    // models), so fall back to the shared connection.
+  async ensureAvailableModel(refresh = false) {
+    if (!this.model?.id) return;
+    const models = await this.fetchModelCatalog(refresh);
+    if (models.some((model) => model.id === this.model.id && !model.hidden)) return;
+    const fallback = models.find((model) => model.isDefault && !model.hidden) ?? models.find((model) => !model.hidden);
+    if (!fallback) throw new Error("Codex returned no available models");
+    this.emit({ type: "notice", sessionKey: this.sessionKey, message: `${this.model.id} is unavailable in this Codex CLI; switched to ${fallback.displayName ?? fallback.id}.`, tone: "warning" });
+    this.model = { provider: "codex", id: fallback.id };
+  }
+
+  async fetchModelCatalog(refresh = false) {
+    if (!refresh && this.modelCatalog && Date.now() - this.modelCatalogAt < MODEL_CATALOG_TTL_MS)
+      return this.modelCatalog;
+    // The running CLI defines which models it understands: its entries keep
+    // their effort ladder and metadata. A newer remote catalog supplies
+    // context sizes and adds new slugs the service accepts even when this
+    // CLI build (custom builds report 0.0.0 and get a legacy list) doesn't
+    // know them yet -- verified: thread/start echoes unknown slugs back.
     const models = [];
     let cursor;
     do {
@@ -1337,13 +1349,23 @@ class CodexAgentProcess {
       models.push(...(response?.data ?? []));
       cursor = response?.nextCursor;
     } while (cursor);
+    try {
+      const remote = await readCodexModels();
+      for (const model of models) {
+        const metadata = remote.find((entry) => entry.id === model.id);
+        if (metadata?.contextWindow) model.contextWindow = metadata.contextWindow;
+      }
+      for (const entry of remote)
+        if (!entry.hidden && !models.some((model) => model.id === entry.id)) models.push(entry);
+    } catch { /* offline or non-file auth: the CLI catalog is sufficient */ }
     this.modelCatalog = models;
+    this.modelCatalogAt = Date.now();
     return this.modelCatalog;
   }
 
   async getAvailableModels() {
     try {
-      const raw = await this.fetchModelCatalog();
+      const raw = await this.fetchModelCatalog(true);
       return {
         ok: true,
         models: raw
@@ -1352,6 +1374,8 @@ class CodexAgentProcess {
             provider: "codex",
             id: model.id,
             name: model.displayName ?? model.id,
+            levels: (model.supportedReasoningEfforts ?? []).map((option) => option.reasoningEffort),
+            contextWindow: model.contextWindow,
           })),
       };
     } catch (error) {
@@ -1395,6 +1419,11 @@ class CodexAgentProcess {
   // Model and effort are turn/start overrides rather than session settings,
   // so switching either is just bookkeeping -- the next turn carries it.
   async setModel(_provider, modelId) {
+    try {
+      const models = await this.fetchModelCatalog();
+      if (!models.some((model) => model.id === modelId && !model.hidden))
+        return { ok: false, error: `${modelId} is unavailable in this Codex CLI. Choose a listed model or update Codex.` };
+    } catch (error) { return { ok: false, error: String(error?.message ?? error) }; }
     this.model = { provider: "codex", id: modelId };
     this.thinkingLevel = await this.resolveEffort(modelId, this.thinkingLevel);
     this.usageCache = { at: 0, result: undefined };

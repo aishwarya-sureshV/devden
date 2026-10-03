@@ -106,8 +106,6 @@ const PI_THINKING_LEVELS = [
   "max",
 ];
 
-const LIST_MODELS_TIMEOUT_MS = 15_000;
-
 // Port of pi's getSupportedThinkingLevels: a reasoning-capable model exposes
 // the extended ladder except levels its thinkingLevelMap marks null
 // (hidden); xhigh/max additionally require the map to define them. This is
@@ -122,47 +120,13 @@ export function supportedThinkingLevels(model) {
   });
 }
 
-/**
- * `pi --list-models` is a one-shot, standalone listing -- no RPC session
- * required -- so a saved session that has not started its process yet (pi
- * only spawns on the first message) can still answer "what models exist"
- * instead of rejecting with "Pi process is not running". Output is a
- * fixed-width table; provider and model id are always its first two
- * whitespace-separated columns, so splitting on any run of whitespace is
- * robust regardless of the column widths.
- */
-function listPiModelsStandalone(cwd) {
-  return new Promise((resolve, reject) => {
-    const child = spawn(resolvePiExecutable(), ["--list-models"], {
-      cwd: cwd || homedir(),
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    let stdout = "";
-    let stderr = "";
-    const timeout = setTimeout(() => {
-      child.kill();
-      reject(new Error("pi --list-models timed out"));
-    }, LIST_MODELS_TIMEOUT_MS);
-    timeout.unref?.();
-    child.stdout.on("data", (chunk) => {
-      stdout += chunk;
-    });
-    child.stderr.on("data", (chunk) => {
-      stderr += chunk;
-    });
-    child.once("error", (error) => {
-      clearTimeout(timeout);
-      reject(error);
-    });
-    child.once("exit", (code) => {
-      clearTimeout(timeout);
-      if (code !== 0) {
-        reject(new Error(stderr.trim() || `pi --list-models exited ${code}`));
-        return;
-      }
-      resolve(stdout);
-    });
-  });
+// Read from a fresh process: an active session's registry predates catalog
+// or CLI updates. Reuse the cold metadata RPC so model capabilities survive.
+// Do not wait on `pi update --models` here. That refresh is a network call
+// and the picker sat on "Loading models…" until it finished. RPC answers
+// from the local snapshot immediately.
+async function listPiModelsStandalone(cwd) {
+  return listPiCommandsStandalone(cwd, "get_available_models");
 }
 
 const LIST_COMMANDS_TIMEOUT_MS = 20_000;
@@ -175,7 +139,7 @@ const LIST_COMMANDS_TIMEOUT_MS = 20_000;
  * ponytail: uncached, so each cold-session menu load pays one pi startup
  * (~seconds); cache per cwd if that ever feels slow.
  */
-function listPiCommandsStandalone(cwd) {
+function listPiCommandsStandalone(cwd, type = "get_commands") {
   return new Promise((resolve, reject) => {
     const child = spawn(resolvePiExecutable(), ["--mode", "rpc", "--approve"], {
       cwd: cwd || homedir(),
@@ -191,7 +155,7 @@ function listPiCommandsStandalone(cwd) {
       fn(value);
     };
     const timer = setTimeout(
-      () => settle(reject, new Error("pi get_commands timed out")),
+      () => settle(reject, new Error(`pi ${type} timed out`)),
       LIST_COMMANDS_TIMEOUT_MS,
     );
     timer.unref?.();
@@ -212,42 +176,21 @@ function listPiCommandsStandalone(cwd) {
           const data = parsed.data;
           return settle(
             resolve,
-            Array.isArray(data) ? data : (data?.commands ?? []),
+            Array.isArray(data) ? data : (data?.[type === "get_commands" ? "commands" : "models"] ?? []),
           );
         }
       }
     });
     child.once("error", (error) => settle(reject, error));
     child.once("exit", () =>
-      settle(reject, new Error("pi exited before answering get_commands")),
+      settle(reject, new Error(`pi exited before answering ${type}`)),
     );
     child.stdin.write(
-      JSON.stringify({ type: "get_commands", id: "cold-commands" }) + "\n",
+      JSON.stringify({ type, id: "cold-commands" }) + "\n",
     );
   });
 }
 
-/** "gpt-5.6-luna" -> "Gpt 5.6 Luna"; good enough for a fallback listing. */
-function titleizeModelId(id) {
-  return String(id ?? "")
-    .replace(/[:_-]+/g, " ")
-    .split(" ")
-    .filter(Boolean)
-    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
-    .join(" ");
-}
-
-function parsePiModelListing(text) {
-  const lines = String(text ?? "")
-    .split("\n")
-    .map((line) => line.trim())
-    .filter(Boolean);
-  // First line is the "provider  model  context  ..." header.
-  return lines.slice(1).map((line) => {
-    const [provider, id] = line.split(/\s+/);
-    return { provider, id, name: titleizeModelId(id) };
-  });
-}
 
 function assistantEntryTime(entry) {
   const direct = Number(entry?.message?.timestamp);
@@ -612,12 +555,6 @@ export class PiAgentProcess {
     // Always on: background tasks + terminal tabs (Claude Code parity for
     // long-running work). Tools no-op gracefully when their bridge is absent.
     args.push("-e", fileURLToPath(BACKGROUND_TASKS_EXTENSION_URL));
-    // Per-project MCP servers: pi natively reads a config file path; when
-    // the workspace ships .mcp.json, wire it so MCP tools work without
-    // anything in the user's global ~/.pi settings.
-    if (existsSync(join(cwd, ".mcp.json"))) {
-      args.push("--mcp-config", join(cwd, ".mcp.json"));
-    }
     if (this.agentMode === "manual" || this.agentMode === "auto-edit") {
       // pi's RPC protocol has no built-in tool approval; the extension
       // provides it by blocking tool_call and asking over ctx.ui.select,
@@ -873,10 +810,10 @@ export class PiAgentProcess {
       provider,
       modelId,
     });
-    // pi's live process can be running with a stale ollama catalog (a model
-    // pulled after it started); restarting reloads ~/.pi/agent/models.json,
-    // which was just re-synced above.
-    if (!result.ok && provider === "ollama" && this.cwd) {
+    // An idle live process may predate a newly discovered model. Resume its
+    // saved session with the current catalog; never interrupt a busy turn.
+    if (!result.ok && this.cwd && !this.isBusy() &&
+        (provider === "ollama" || /model.*not found|unknown model/i.test(result.error ?? ""))) {
       const sessionPath = this.lastState?.sessionFile;
       const thinkingLevel = this.lastState?.thinkingLevel;
       this.stop();
@@ -1087,24 +1024,13 @@ export class PiAgentProcess {
     };
   }
 
-  // A saved session viewed but not yet started has no process (pi only
-  // spawns on the first message), and `this.send` rejects rather than
-  // answers in that case -- the model dropdown 500ed and stayed on
-  // "model…" with nothing to pick, for every session until its first
-  // message. `pi --list-models` answers the same question standalone.
+  // Always read a fresh registry so an active session cannot pin the picker
+  // to models that existed when its process started.
   async getAvailableModels() {
     const [response, ollama] = await Promise.all([
-      this.process
-        ? this.send({ type: "get_available_models" })
-        : listPiModelsStandalone(this.cwd)
-            .then((stdout) => ({
-              success: true,
-              data: parsePiModelListing(stdout),
-            }))
-            .catch((error) => ({
-              success: false,
-              error: String(error?.message ?? error),
-            })),
+      listPiModelsStandalone(this.cwd)
+        .then((models) => ({ success: true, data: models }))
+        .catch((error) => ({ success: false, error: String(error?.message ?? error) })),
       listOllamaModels().catch(() => []),
     ]);
     if (ollama.length) void syncOllamaModelsJson(ollama).catch(() => {});
@@ -1117,8 +1043,7 @@ export class PiAgentProcess {
       // pi registers the grok provider too; this UI drives pi, not grok.
       (model) => !/^grok/i.test(String(model?.provider ?? "")),
     );
-    // Catalog models carry reasoning/thinkingLevelMap (the standalone text
-    // listing does not) -- annotate with the levels the model supports so
+    // Catalog models carry reasoning/thinkingLevelMap; annotate their levels so
     // the composer slider can match each selected model.
     return {
       ok: true,

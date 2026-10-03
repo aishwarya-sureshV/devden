@@ -1,0 +1,45 @@
+.dock-layout { position: relative; flex: 1; width: 100%; min-width: 0; min-height: 0; overflow: hidden; }
+.dock-slot { position: absolute; display: flex; flex-direction: column; min-width: 0; min-height: 0; padding: 2px; box-sizing: border-box; }
+.dock-slot[hidden] { display: none; }
+.dock-handlebar { display: flex; flex: none; height: 24px; align-items: center; background: var(--dsw-alias-bg-base); color: var(--dsw-alias-label-secondary); }
+.dock-handle { display: flex; align-items: center; gap: 6px; min-width: 0; flex: 1; padding: 2px 8px; border: 0; background: transparent; color: inherit; font: inherit; font-size: 11px; text-align: left; cursor: grab; touch-action: none; }
+.dock-handle span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dock-layout.is-dragging { user-select: none; cursor: grabbing; }
+.dock-content { display: flex; flex: 1; min-width: 0; min-height: 0; overflow: hidden; }
+.dock-content > * { flex: 1; min-width: 0; max-width: none; }
+.dock-content > .workspace-explorer, .dock-content > .board-pane { flex: 1 1 auto !important; width: 100% !important; max-width: none !important; flex-basis: auto !important; }
+.dock-content > .workspace-explorer .workspace-explorer__resize { display: none; }
+.dock-content > .review-dock { min-width: 0; max-width: none; }
+.dock-content > .terminal-page { width: 100%; }
+.dock-menu { position: relative; font-size: 12px; }
+.dock-menu summary { cursor: pointer; padding: 2px 8px; }
+.dock-menu__body { position: absolute; z-index: 100; right: 0; top: 100%; width: 240px; max-height: 280px; overflow: auto; padding: 8px; background: var(--dsw-alias-bg-base); border: 1px solid var(--dsw-alias-border-l2); box-shadow: 0 8px 24px #0004; }
+.dock-slot:has(.dock-menu[open]) { z-index: 50; }
+.dock-menu__body > div { display: flex; align-items: center; gap: 4px; margin: 4px 0; }
+.dock-menu__body span { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dock-menu__body button { padding: 4px; color: inherit; background: transparent; border: 1px solid var(--dsw-alias-border-l2); }
+.dock-resizer { position: absolute; z-index: 20; padding: 0; border: 0; background: transparent; touch-action: none; }
+.dock-resizer.is-x { width: 6px; transform: translateX(-50%); cursor: col-resize; }
+.dock-resizer.is-y { height: 6px; transform: translateY(-50%); cursor: row-resize; }
+.dock-resizer:hover, .dock-resizer:focus-visible { background: var(--acc, #e8a765); }
+.dock-preview { position: absolute; z-index: 80; display: grid; place-items: center; pointer-events: none; inset: 2px; background: color-mix(in srgb, var(--acc, #e8a765) 25%, transparent); border: 2px solid var(--acc, #e8a765); color: var(--dsw-alias-label-primary); }
+.dock-preview.is-left { right: 50%; } .dock-preview.is-right { left: 50%; }
+.dock-preview.is-top { bottom: 50%; } .dock-preview.is-bottom { top: 50%; }
+.dock-announcement { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+/* Pane content adapts to its own width after docking. */
+.dock-layout.session-grid { display: block; }
+/* The mobile explorer normally covers the chat; within a dock it fills its slot. */
+.dock-content > .workspace-explorer { position: relative !important; inset: auto !important; height: 100%; }
+.dock-workspace { display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0; }
+.session-tabstrip { display: flex; align-items: center; flex: none; min-height: 32px; gap: 4px; padding: 2px 6px; overflow-x: auto; border-bottom: 1px solid var(--dsw-alias-border-l2); color: var(--dsw-alias-label-secondary); }
+.session-tabstrip.is-drop-target { background: color-mix(in srgb, var(--acc, #e8a765) 25%, transparent); outline: 2px solid var(--acc, #e8a765); outline-offset: -2px; }
+.session-tabstrip__tab { display: flex; flex: none; max-width: 220px; border: 1px solid var(--dsw-alias-border-l2); border-radius: 5px; }
+.session-tabstrip__tab button { border: 0; background: transparent; color: inherit; padding: 5px 8px; cursor: pointer; font: inherit; font-size: 12px; }
+.session-tabstrip__tab [role="tab"] { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; touch-action: none; cursor: grab; }
+.session-tabstrip__tab:has([aria-selected="true"]) { background: color-mix(in srgb, var(--acc, #e8a765) 18%, transparent); color: var(--dsw-alias-label-primary); }
+.session-tabstrip__hint { padding: 4px 8px; font-size: 11px; white-space: nowrap; }
+/* Split sessions: each pane gets a hairline outline; the active one takes the Settings accent
+   only while focus is inside it (the slot is tabIndex -1, so any click in it counts). */
+.dock-slot:focus { outline: none; }
+.dock-slot.is-session > .dock-content { border: 0.5px solid rgb(var(--ink, 255 255 255) / 0.08); border-radius: 12px; transition: border-color .15s; }
+.dock-slot.is-session.is-focused:focus-within > .dock-content { border-color: color-mix(in srgb, var(--g-highlight, #e8a765) 70%, transparent); }

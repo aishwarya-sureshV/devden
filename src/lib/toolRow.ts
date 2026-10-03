@@ -250,8 +250,9 @@ function bashParts(output: string, failed: boolean): ResultPart[] {
       { text: ` · ${size[1]}`, tone: "dim" },
     ];
   if (!output.trim()) return [{ text: "exit 0", tone: "quiet" }];
-  const last = [...linesOf(output)].reverse().find((line) => line.trim());
-  return [{ text: (last ?? "").slice(0, 48), tone: "quiet" }];
+  // A short last line is a result ("ok", "DIFF_CHECK_OK"); a long one is just output.
+  const last = ([...linesOf(output)].reverse().find((line) => line.trim()) ?? "").trim();
+  return [{ text: last.length <= 24 ? last : "done", tone: "quiet" }];
 }
 
 function grepParts(output: string): ResultPart[] {

@@ -4173,6 +4173,8 @@ html.is-electron .settings-nav__lights {
  margin: 0;
  width: 420px;
  max-width: calc(100vw - 16px);
+ max-height: calc(100vh - 24px);
+ overflow: auto;
  padding: 12px 14px;
  border: 1px solid rgb(var(--ink, 255 255 255) / 0.12);
  border-radius: 12px;
@@ -4180,6 +4182,15 @@ html.is-electron .settings-nav__lights {
  color: var(--fg, inherit);
  box-shadow: var(--popsh, 0 20px 50px rgb(0 0 0 / 0.4));
  font-family: var(--font-ui, system-ui, sans-serif);
+}
+/* Own the display state: a parent rule like `.workspace-explorer__file-head > div
+   { display: flex }` otherwise beats the UA's closed-popover display:none and
+   paints the closed editor inline, under the code. */
+.diff-colors-pop:not(:popover-open) {
+ display: none;
+}
+.diff-colors-pop:popover-open {
+ display: block;
 }
 .settings-current {
  display: flex;
@@ -4612,4 +4623,38 @@ html.is-electron .settings-nav__lights {
  .settings-main__column {
   padding: 16px 16px 40px;
  }
+}
+
+/* Slate cloud after a hosted model's name (replaces "☁" / ":cloud"). */
+.model-cloud {
+ color: #8fa6bf;
+ display: inline-flex;
+ vertical-align: -2px;
+ margin-left: 5px;
+}
+
+/* Session pills: each saved session is its own rounded card with a gap,
+   filled when active (monocode-style). */
+.sidebar__saved-row {
+ margin-bottom: 4px;
+}
+.sidebar__saved-row > .sidebar__item.sidebar__item--saved,
+.sidebar__workspace .sidebar__saved-row > .sidebar__item.sidebar__item--saved {
+ padding: 9px 10px 9px 6px;
+ row-gap: 3px;
+ border-radius: 12px;
+ background: transparent;
+ transition: background-color 120ms;
+}
+.sidebar__saved-row:hover > .sidebar__item.sidebar__item--saved {
+ background: rgb(var(--ink) / 0.05);
+}
+.sidebar__saved-row > .sidebar__item.sidebar__item--saved.is-active-session {
+ background: rgb(var(--ink) / 0.09);
+}
+.sidebar__item--saved .sidebar__item-label {
+ font-weight: 600;
+}
+.sidebar__item--saved .sidebar__item-time {
+ background: none;
 }

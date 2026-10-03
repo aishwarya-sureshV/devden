@@ -863,7 +863,22 @@ body[data-bg="cream"] .sidebar {
     color-mix(in srgb, var(--g-accent, var(--acc)) 35%, transparent),
     var(--g-accent, var(--acc))
   );
-  transition: width 0.22s cubic-bezier(0.2, 0.8, 0.2, 1);
+  transition: width 0.18s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.composer__model-menu .think-track__thumb {
+  position: absolute;
+  z-index: 1;
+  top: 3px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  pointer-events: none;
+  background: var(--g-accent, var(--acc));
+  box-shadow:
+    0 0 0 4px color-mix(in srgb, var(--g-accent, var(--acc)) 14%, transparent),
+    0 0 12px color-mix(in srgb, var(--g-accent, var(--acc)) 40%, transparent);
+  transition: left 0.18s cubic-bezier(0.2, 0.8, 0.2, 1);
 }
 
 .composer__model-menu .think-track__stops {
@@ -941,27 +956,35 @@ body[data-bg="cream"] .sidebar {
   height: 6px;
   border-radius: 50%;
   background: rgb(var(--ink) / 0.28);
-  transition: all 0.2s cubic-bezier(0.2, 0.8, 0.2, 1);
+  transition: background 0.18s cubic-bezier(0.2, 0.8, 0.2, 1);
 }
 
-.composer__model-menu .think-track__stop.is-on i {
+.composer__model-menu .think-track__stop.is-on i,
+.composer__model-menu .think-track__stop.is-current i {
   background: var(--g-accent, var(--acc));
 }
 
-.composer__model-menu .think-track__stop:hover:not(.is-current) i {
-  width: 10px;
-  height: 10px;
-  background: rgb(var(--ink) / 0.5);
+.composer__model-menu .think-track__stop.is-unavailable,
+.composer__model-menu .think-track__name.is-unavailable {
+  opacity: 0.35;
+  cursor: default;
 }
 
-.composer__model-menu .think-track__stop.is-current i,
-.composer__model-menu .think-track__stop.is-current:hover i {
-  width: 14px;
-  height: 14px;
-  background: var(--g-accent, var(--acc));
-  box-shadow:
-    0 0 0 4px color-mix(in srgb, var(--g-accent, var(--acc)) 14%, transparent),
-    0 0 12px color-mix(in srgb, var(--g-accent, var(--acc)) 40%, transparent);
+.composer__model-menu .think-track__stop,
+.composer__model-menu .think-track__name {
+  transition:
+    left 0.18s cubic-bezier(0.2, 0.8, 0.2, 1),
+    opacity 0.18s linear;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .composer__model-menu .think-track__fill,
+  .composer__model-menu .think-track__thumb,
+  .composer__model-menu .think-track__stop,
+  .composer__model-menu .think-track__name,
+  .composer__model-menu .think-track__stop i {
+    transition: none;
+  }
 }
 
 .composer__handoff-note {
@@ -1432,14 +1455,10 @@ body[data-bg="white"] .edit-well__more:hover {
   min-width: 0;
   display: flex;
 }
-.review-dock__dir {
+.review-dock__file {
   min-width: 0;
   overflow: hidden;
-  color: var(--fg4);
   text-overflow: ellipsis;
-}
-.review-dock__file {
-  flex: none;
 }
 .review-dock__from {
   min-width: 0;
@@ -2130,20 +2149,19 @@ html
   border-color: transparent;
 }
 
-/* Deploy: ink button with paper text — a pale highlight fill (olive,
-   amber) reads muddy on paper. The pending dot keeps the highlight and
-   cuts a ring in the surface color. */
+/* Deploy: the New session well on paper too. The pending dot keeps the
+   highlight and cuts a ring in the surface color. */
 html
   body[data-glass]:is([data-bg="white"], [data-bg="cream"])
   .conversation-header__deploy {
-  background: var(--g-fg0);
-  color: rgb(var(--g-tint));
+  background: var(--g-raised);
+  box-shadow: inset 0 0 0 1px rgb(var(--g-ink) / 0.08);
+  color: var(--g-fg0);
 }
 html
   body[data-glass]:is([data-bg="white"], [data-bg="cream"])
   .conversation-header__deploy.is-failed {
-  background: var(--pw-red);
-  color: #fff;
+  color: var(--pw-red);
 }
 html
   body[data-glass]:is([data-bg="white"], [data-bg="cream"])
@@ -2242,9 +2260,11 @@ html
   padding: 6px;
   border-color: var(--dsw-alias-border-l2);
   border-radius: 10px;
-  /* !important: glass-theme popover rules (backdrop.css, above) are more
-     specific and paint this translucent, letting the list bleed through. */
-  background: var(--pw-pop, #fff) !important;
+  /* The shared frosted-menu rule sets --pw-pop: transparent on this element,
+     so var(--pw-pop) paints nothing and the session titles show through.
+     --g-pop is the menu color. An omitted alpha in relative rgb() keeps the
+     source alpha, so set it to 1 or the list still ghosts through. */
+  background: rgb(from var(--g-pop, #17171b) r g b / 1) !important;
   backdrop-filter: none !important;
   -webkit-backdrop-filter: none !important;
   box-shadow: 0 8px 24px rgb(0 0 0 / 0.14);
@@ -2280,6 +2300,7 @@ html
 /* Model line well below the session title. */
 .sidebar__item--saved .sidebar__item-sub {
   font-size: 10.5px;
+  padding-left: 6px;
 }
 .sidebar__item--saved .sidebar__item-sub .sidebar__agent-mark {
   width: 10px;
@@ -2296,6 +2317,7 @@ html
    Reads only the surface tokens (--fg*, --ink, --add, --del, --mono), so
    glass, black, white and cream all come from the blocks at the top. */
 
+.fbadge-k { --k: var(--fg3); }
 .fbadge {
   --k: var(--fg3);
   flex: none;
@@ -2310,12 +2332,19 @@ html
   text-align: center;
   text-transform: uppercase;
 }
+.fbadge-k:is([data-kind="tsx"], [data-kind="jsx"]),
 .fbadge:is([data-kind="tsx"], [data-kind="jsx"]) { --k: #3fb8d4; }
+.fbadge-k[data-kind="ts"],
 .fbadge[data-kind="ts"] { --k: #4f8ff0; }
+.fbadge-k:is([data-kind="js"], [data-kind="mjs"], [data-kind="cjs"]),
 .fbadge:is([data-kind="js"], [data-kind="mjs"], [data-kind="cjs"]) { --k: #d4a72c; }
+.fbadge-k:is([data-kind="css"], [data-kind="scss"]),
 .fbadge:is([data-kind="css"], [data-kind="scss"]) { --k: #9a7cf0; }
+.fbadge-k[data-kind="test"],
 .fbadge[data-kind="test"] { --k: var(--add); }
+.fbadge-k:is([data-kind="json"], [data-kind="yml"], [data-kind="yaml"], [data-kind="toml"]),
 .fbadge:is([data-kind="json"], [data-kind="yml"], [data-kind="yaml"], [data-kind="toml"]) { --k: #e08a3c; }
+.fbadge-k:is([data-kind="md"], [data-kind="html"]),
 .fbadge:is([data-kind="md"], [data-kind="html"]) { --k: #d9667a; }
 
 /* Dock header */
@@ -2490,6 +2519,9 @@ html
 }
 .cdock__name {
   flex: 1;
+  color: color-mix(in srgb, var(--fg) 72%, transparent);
+  font-weight: 400;
+  text-shadow: none;
   min-width: 0;
   overflow: hidden;
   font-family: var(--mono);
@@ -2692,85 +2724,117 @@ html
 }
 .cdock__pop-foot button:hover:not(:disabled) { background: rgb(var(--ink) / 0.07); }
 
-/* While the Changes dock shows the turn scope (its default) it replaces the
-   newest turn's receipt, so one pill shows. Dock dismissed / not git / on
-   Session or Working tree → the receipt stays, so per-turn is never lost. */
-.conversation:has(.cdock[data-scope="turn"]) .turn-files--latest { display: none; }
-
 /* Per-turn change card */
 .turn-files {
   box-sizing: border-box;
   width: 100%;
   max-width: calc(var(--pw-chat-content-width) - 48px);
-  margin: 8px auto 4px;
+  margin: 6px auto 2px;
   overflow: hidden;
-  border-radius: 12px;
-  background: rgb(var(--sink) / var(--wellA));
-  box-shadow: inset 0 0 0 1px rgb(var(--ink) / 0.12);
+  border-radius: 14px;
+  /* Glass default: a light frost over the scene. Solid surfaces re-tint below. */
+  --tf-bg: rgb(var(--ink) / 0.07);
+  --tf-edge: rgb(var(--ink) / 0.14);
+  background: var(--tf-bg);
+  -webkit-backdrop-filter: blur(var(--blur)) saturate(1.4);
+  backdrop-filter: blur(var(--blur)) saturate(1.4);
+  box-shadow: inset 0 0 0 1px var(--tf-edge), inset 0 1px 0 rgb(255 255 255 / 0.05),
+    0 18px 40px rgb(0 0 0 / 0.2);
   color: var(--fg);
+}
+body[data-bg="black"] .turn-files {
+  --tf-bg: rgb(16 19 24 / 0.62);
+  --tf-edge: rgb(255 255 255 / 0.09);
+}
+body[data-bg="white"] .turn-files {
+  --tf-bg: rgb(255 255 255 / 0.84);
+  --tf-edge: rgb(20 24 30 / 0.08);
+}
+body[data-bg="cream"] .turn-files {
+  --tf-bg: rgb(249 245 234 / 0.88);
+  --tf-edge: rgb(60 45 20 / 0.1);
 }
 .turn-files__head {
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 10px 10px 10px 14px;
+  gap: 10px;
+  padding: 10px 10px 10px 12px;
+}
+.turn-files__tile {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 9px;
+  background: rgb(var(--ink) / 0.06);
+  box-shadow: inset 0 0 0 1px rgb(var(--ink) / 0.07);
+  color: var(--fg2);
 }
 .turn-files__title {
   flex: 1;
   min-width: 0;
   display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 4px 10px;
+  flex-direction: column;
+  gap: 2px;
 }
-.turn-files__label { color: var(--fg0); font-size: 12.5px; font-weight: 600; }
+.turn-files__label { color: var(--fg0); font-size: 13px; font-weight: 600; }
 .turn-files__sum,
 .turn-files__stat {
   display: inline-flex;
-  gap: 6px;
+  align-items: center;
+  gap: 7px;
   font-family: var(--mono);
-  font-size: 11.5px;
+  font-size: 11px;
   font-variant-numeric: tabular-nums;
 }
 .turn-files__add { color: var(--add); }
 .turn-files__del { color: var(--del); }
-.turn-files__bar {
-  display: flex;
-  gap: 2px;
-  width: 120px;
-  height: 4px;
-}
-.turn-files__bar-add,
-.turn-files__bar-del { border-radius: 2px; }
-.turn-files__bar-add { background: var(--add); }
-.turn-files__bar-del { background: var(--del); }
+.turn-files__zero { color: var(--fg4); }
+.turn-files__cells { display: inline-flex; gap: 2px; }
+.turn-files__cells i { width: 7px; height: 7px; border-radius: 2px; background: rgb(var(--ink) / 0.12); }
+.turn-files__cells i[data-cell="add"] { background: var(--add); }
+.turn-files__cells i[data-cell="del"] { background: var(--del); }
+.turn-files__error { color: var(--del); font-family: inherit; }
+.turn-files__undo,
 .turn-files__open {
   flex: none;
-  height: 26px;
-  padding: 0 12px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 30px;
+  padding: 0 10px;
   border: 0;
-  border-radius: 7px;
-  background: rgb(var(--ink) / 0.09);
-  color: var(--fg0);
+  border-radius: 8px;
   font: inherit;
   font-size: 12px;
-  font-weight: 500;
   cursor: pointer;
 }
-.turn-files__open:hover { background: rgb(var(--ink) / 0.14); }
+.turn-files__undo { background: none; color: var(--fg3); }
+.turn-files__undo:hover:not(:disabled) { background: rgb(var(--ink) / 0.07); color: var(--fg0); }
+.turn-files__undo.is-confirm { background: color-mix(in srgb, var(--del) 14%, transparent); color: var(--del); }
+.turn-files__undo:disabled { opacity: 0.5; cursor: progress; }
+.turn-files__open {
+  background: rgb(var(--ink) / 0.08);
+  box-shadow: inset 0 0 0 1px rgb(var(--ink) / 0.1);
+  color: var(--fg0);
+  font-weight: 600;
+}
+.turn-files__open:hover { background: rgb(var(--ink) / 0.13); }
 .turn-files__list {
   margin: 0;
   padding: 4px;
   list-style: none;
-  border-top: 1px solid rgb(var(--ink) / 0.07);
+  border-top: 1px solid rgb(var(--ink) / 0.06);
 }
-.turn-files__row {
+.turn-files__row,
+.turn-files__more {
   display: flex;
   align-items: center;
   gap: 10px;
   width: 100%;
-  height: 30px;
-  padding: 0 10px;
+  height: 32px;
+  padding: 0 8px;
   border: 0;
   border-radius: 7px;
   background: none;
@@ -2779,29 +2843,52 @@ html
   text-align: left;
   cursor: pointer;
 }
-.turn-files__row:hover:not(:disabled) { background: rgb(var(--ink) / 0.06); }
+.turn-files__row:hover:not(:disabled),
+.turn-files__more:hover { background: rgb(var(--ink) / 0.05); }
 .turn-files__row:disabled { cursor: default; }
+.turn-files__kind { flex: none; display: grid; color: var(--k); }
 .turn-files__path {
   flex: 1;
   min-width: 0;
   overflow: hidden;
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: 11.5px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .turn-files__dir { color: var(--fg4); }
 .turn-files__name { color: var(--fg); }
-.turn-files__go {
-  display: none;
-  padding: 2px 8px;
-  border-radius: 5px;
-  background: rgb(var(--ink) / 0.1);
-  color: var(--fg0);
-  font-size: 11px;
+.turn-files__more {
+  gap: 6px;
+  /* Aligns the label with the file names: row padding + icon + gap. */
+  padding-left: calc(8px + 15px + 10px);
+  white-space: nowrap;
+  color: var(--fg3);
+  font-size: 12px;
 }
-.turn-files__row:is(:hover, :focus-visible):not(:disabled) .turn-files__stat { display: none; }
-.turn-files__row:is(:hover, :focus-visible):not(:disabled) .turn-files__go { display: inline-block; }
+.turn-files__more .turn-files__dir {
+  min-width: 0;
+  overflow: hidden;
+  font-family: var(--mono);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.turn-files__more:hover { color: var(--fg0); }
+.turn-files--reverted {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 40px;
+  padding: 0 14px;
+  background: none;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  box-shadow: none;
+  border: 1px dashed rgb(var(--ink) / 0.14);
+  color: var(--fg3);
+  font-size: 12.5px;
+}
 .changes__menu.cdock__pop > button .cdock__mono {
   flex: 1;
   min-width: 0;

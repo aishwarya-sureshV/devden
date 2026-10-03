@@ -30,6 +30,8 @@ export const WORKBENCH_BACKGROUNDS: WorkbenchBackground[] = [
 ];
 
 export interface AppearanceSettings {
+  toolDensity: "compact" | "comfortable";
+  toolDurations: boolean;
   /** "Static" keeps the original solid theme; otherwise a scene name. */
   scene: string;
   mode: AppearanceMode;
@@ -304,6 +306,8 @@ function loadDiffColors(stored: unknown): DiffColors {
 }
 
 const DEFAULT_APPEARANCE: AppearanceSettings = {
+  toolDensity: "compact",
+  toolDurations: true,
   scene: STATIC_SCENE,
   mode: "light",
   layout: "classic",

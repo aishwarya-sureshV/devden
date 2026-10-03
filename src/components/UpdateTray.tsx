@@ -63,8 +63,9 @@ export function UpdateTray() {
       const result = await api.harnessUpdates();
       // Never swap rows out from under a run or its result.
       if (phaseRef.current !== "available") return;
+      // DevDen itself lives in the sidebar footer (AppUpdateFooter).
       setRows(
-        (result.updates ?? []).map(({ id, installed, latest }) => ({
+        (result.updates ?? []).filter((u) => u.id !== "devden").map(({ id, installed, latest }) => ({
           id,
           installed,
           latest,

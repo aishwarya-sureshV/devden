@@ -1,0 +1,40 @@
+/* Density pass: trims the loose gaps between rows and surfaces.
+   `body` prefix outranks workbenchSkin.css, which loads after this file. */
+body .session-header {
+ height: 38px;
+ gap: 8px;
+}
+body .session-tabstrip {
+ min-height: 28px;
+}
+body .dock-handlebar {
+ height: 22px;
+}
+body .sidebar .sidebar__item {
+ min-height: 28px;
+}
+body .sidebar .sidebar__nav-item {
+ height: 24px;
+ min-height: 24px;
+}
+body .sidebar .sidebar__heading {
+ padding: 8px 8px 3px;
+}
+body .conversation__column {
+ padding: 8px 14px 0;
+}
+body .chat-turn {
+ margin-bottom: 8px;
+}
+body .user-msg {
+ padding: 6px 11px;
+}
+body .composer {
+ padding-bottom: 6px;
+}
+body .composer__card {
+ padding-bottom: 6px;
+}
+body .app-footer {
+ height: 24px;
+}

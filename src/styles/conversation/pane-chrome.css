@@ -1,0 +1,367 @@
+/* Pane chrome: one splitter for every divider, pane grip in the header,
+   tree-only explorer in the dock, tab menu, quiet changed-files card. */
+
+/* ---- One splitter: 0.5px hairline at rest, 1px accent on hover/drag ---- */
+:is(
+ .sidebar-resizer,
+ .terminal-pane-resizer,
+ .session-resizer,
+ .tool-rail__resize,
+ .workspace-explorer__resize,
+ .workspace-explorer__tree-resize,
+ .subagent-panel__resize
+)::after {
+ display: none;
+}
+body :is(
+ .sidebar-resizer,
+ .terminal-pane-resizer,
+ .session-resizer,
+ .tool-rail__resize,
+ .workspace-explorer__resize,
+ .workspace-explorer__tree-resize,
+ .subagent-panel__resize
+)::before,
+body .dock-resizer.is-x::before {
+ content: "";
+ position: absolute;
+ inset: 0 auto 0 50%;
+ translate: -50% 0;
+ width: 0.5px;
+ background: transparent;
+ pointer-events: none;
+ transition: background 120ms, width 120ms;
+}
+body .dock-resizer.is-y::before {
+ content: "";
+ position: absolute;
+ inset: 50% 0 auto 0;
+ translate: 0 -50%;
+ height: 0.5px;
+ background: transparent;
+ pointer-events: none;
+ transition: background 120ms, height 120ms;
+}
+/* Only dividers between two panes draw a resting line; the rest sit on pane borders. */
+body .session-resizer::before,
+body .dock-resizer:is(.is-x, .is-y)::before {
+ background: rgb(var(--ink) / 0.1);
+}
+body .dock-resizer,
+body .dock-resizer:hover,
+body .dock-resizer:focus-visible {
+ background: transparent;
+ box-shadow: none;
+ outline: 0;
+}
+body .dock-resizer.is-x { width: 9px; }
+body .dock-resizer.is-y { height: 9px; }
+/* 150ms hover delay so a pointer passing over doesn't flash the line. */
+body :is(
+ .sidebar-resizer,
+ .terminal-pane-resizer,
+ .session-resizer,
+ .tool-rail__resize,
+ .workspace-explorer__resize,
+ .workspace-explorer__tree-resize,
+ .subagent-panel__resize,
+ .dock-resizer.is-x
+):is(:hover, :focus-visible)::before {
+ width: 1px;
+ background: var(--g-accent);
+ transition-delay: 150ms;
+}
+body .dock-resizer.is-y:is(:hover, :focus-visible)::before {
+ height: 1px;
+ background: var(--g-accent);
+ transition-delay: 150ms;
+}
+body :is(
+ .sidebar-resizer,
+ .terminal-pane-resizer,
+ .session-resizer,
+ .tool-rail__resize,
+ .workspace-explorer__resize,
+ .workspace-explorer__tree-resize,
+ .subagent-panel__resize,
+ .dock-resizer.is-x
+):active::before,
+.is-resizing-sidebar .sidebar-resizer::before {
+ width: 1px;
+ background: var(--g-accent);
+ transition-delay: 0s;
+}
+body .dock-resizer.is-y:active::before {
+ height: 1px;
+ background: var(--g-accent);
+ transition-delay: 0s;
+}
+
+/* ---- Pane grip: sits at the left of the pane's own header, not floating ---- */
+body .dock-handlebar {
+ top: 7px;
+ left: 6px;
+ translate: none;
+ background: transparent;
+ box-shadow: none;
+ opacity: 0.45;
+}
+body .dock-slot:hover > .dock-handlebar {
+ opacity: 1;
+}
+body .dock-slot > .dock-handlebar ~ .dock-content :is(.review-dock__tabs, .workspace-explorer__search) {
+ padding-left: 30px;
+}
+body .dock-slot :is(.review-dock__tabs, .workspace-explorer__search) {
+ cursor: grab;
+}
+body .dock-layout.is-dragging,
+body .dock-layout.is-dragging * {
+ cursor: grabbing;
+}
+
+/* ---- Explorer in the dock: just the tree until a file is open ---- */
+body .dock-content > .workspace-explorer:not(.has-open) .workspace-explorer__editor,
+body .dock-content > .workspace-explorer:not(.has-open) .workspace-explorer__tree-resize {
+ display: none;
+}
+body .dock-content > .workspace-explorer:not(.has-open) .workspace-explorer__tree {
+ width: auto !important;
+ flex: 1 1 auto !important;
+}
+
+/* A file is open: tree | slider | viewer, at any window width (beats the
+   max-width:1149px rule in workbench-redesign.css that hid the viewer). */
+body .dock-content > .workspace-explorer.has-open .workspace-explorer__editor {
+ display: flex;
+}
+body .dock-content > .workspace-explorer.has-open .workspace-explorer__tree-resize {
+ display: block;
+}
+body .dock-content > .workspace-explorer.has-open .workspace-explorer__tree {
+ width: var(--tree-w) !important;
+ flex: none !important;
+}
+
+/* ---- Tab menu (session tabs + diff tabs) ---- */
+.tab-menu {
+ position: fixed;
+ z-index: 1000;
+ display: flex;
+ flex-direction: column;
+ width: 210px;
+ padding: 5px;
+ border: 0.5px solid rgb(var(--ink) / 0.14);
+ border-radius: 10px;
+ background: var(--g-raised, rgb(36 38 46 / 0.97));
+ backdrop-filter: blur(24px) saturate(1.2);
+ box-shadow: 0 18px 44px rgb(0 0 0 / 0.45);
+}
+.tab-menu button {
+ height: 28px;
+ padding: 0 12px;
+ border: 0;
+ border-radius: 6px;
+ background: transparent;
+ color: var(--fg0);
+ font: inherit;
+ font-size: 13px;
+ text-align: left;
+ cursor: default;
+}
+.tab-menu button:is(:hover, :focus-visible):not(:disabled) {
+ outline: 0;
+ background: var(--g-accent);
+ color: var(--sendFg, #16131f);
+}
+.tab-menu button:disabled {
+ color: var(--fg3);
+ opacity: 0.6;
+}
+.tab-menu__sep {
+ height: 0.5px;
+ margin: 5px 8px;
+ background: rgb(var(--ink) / 0.12);
+}
+
+/* ---- Changed-files card: a receipt, not a headline ---- */
+body .turn-files .turn-files__tile,
+body .turn-files .turn-files__cells {
+ display: none;
+}
+body .turn-files .turn-files__label {
+ color: var(--fg3);
+ font-size: 12px;
+ font-weight: 400;
+}
+body .turn-files .turn-files__open {
+ background: transparent;
+ box-shadow: none;
+ color: var(--fg2, var(--fg1));
+ font-weight: 500;
+}
+body .turn-files .turn-files__open:hover {
+ background: rgb(var(--ink) / 0.08);
+ color: var(--fg0);
+}
+
+/* ---- Session header: chip left, workspace toggle + Deploy pushed right ---- */
+body .session-header__tools {
+ margin-left: auto;
+}
+
+/* ---- Edit calls: long lines scroll sideways inside the card ---- */
+body .edit-well__body,
+body .edit-well__body.is-fade {
+ overflow-x: auto;
+ /* One column as wide as the longest line, so every row's tint spans the scroll. */
+ display: grid;
+ grid-template-columns: minmax(max-content, 1fr);
+ overflow-y: hidden;
+ scrollbar-width: thin;
+}
+body .edit-well__line {
+ grid-template-columns: 44px 16px max-content;
+ padding-right: 12px;
+ box-sizing: border-box;
+}
+
+/* ---- Tool rows: the call's identity (path / pattern / command) wins the space ---- */
+body .trow-stack {
+ container-type: inline-size;
+}
+body .trow__main {
+ grid-template-columns: minmax(0, 1fr) auto auto auto;
+}
+/* Result facts ("2 lines", "ok") cap at a share of the row and ellipsize. */
+body .trow__result {
+ max-width: 34cqi;
+}
+/* Each part is its own flex item, which trims the leading space of " lines". */
+body .trow__result > .trow__part {
+ white-space: pre;
+}
+@container (max-width: 560px) {
+ body .trow__grid {
+  column-gap: 6px;
+  padding: 0 2px;
+ }
+ body .trow__verb {
+  width: 34px;
+ }
+ body .trow__verb.is-wide {
+  min-width: 34px;
+ }
+ body .trow__main {
+  column-gap: 6px;
+ }
+ body .trow__result {
+  max-width: 28cqi;
+ }
+ body .trow__tag {
+  display: none;
+ }
+ body .trow__panel {
+  padding-left: 42px;
+ }
+ body .trow__panel--diff {
+  padding-left: 2px;
+ }
+}
+
+/* ---- Composer: one action row at any width, every backend ---- */
+/* Usage stays on the Send line; the reset time lives in the tooltip. */
+body .composer .composer__row {
+ flex-wrap: nowrap;
+}
+body .composer .composer__tools {
+ min-width: 0;
+}
+body .composer .composer__usage-reset {
+ display: none;
+}
+body .composer .composer__usage {
+ flex-wrap: nowrap;
+ gap: 6px;
+}
+@container (max-width: 460px) {
+ body .composer .composer__card {
+  padding: 8px 6px 6px 10px;
+ }
+ body .composer .composer__mode .composer__chip-name {
+  display: none;
+ }
+}
+@container (max-width: 340px) {
+ /* Keep one window: the weekly number goes first. */
+ body .composer .composer__usage > span + span {
+  display: none;
+ }
+}
+
+/* ---- Session details: project + branch, five usage tiles ---- */
+body .session-header__project {
+ display: flex;
+ align-items: center;
+ gap: 6px;
+ min-width: 0;
+ margin: 2px 0 8px;
+ color: var(--fg3);
+ font-size: 12.5px;
+}
+body .session-header__project b {
+ color: var(--fg0);
+ font-weight: 500;
+}
+body .session-header__branch-pill {
+ display: inline-flex;
+ align-items: center;
+ gap: 4px;
+ min-width: 0;
+ height: 18px;
+ padding: 0 6px;
+ border-radius: 5px;
+ background: rgb(var(--ink) / 0.06);
+ color: var(--fg1);
+ font: 11px var(--mono, ui-monospace, monospace);
+ overflow: hidden;
+ text-overflow: ellipsis;
+ white-space: nowrap;
+}
+body .session-header__id em {
+ color: var(--fg3);
+ font-style: normal;
+}
+body .session-header__usage-head {
+ margin-top: 10px;
+ color: var(--fg3);
+ font-size: 10px;
+ letter-spacing: 0.08em;
+ text-transform: uppercase;
+}
+body .session-header__usage-tile.is-wide {
+ grid-column: span 2;
+}
+body .session-header__usage-tile b.is-empty {
+ color: var(--fg3);
+ font-weight: 400;
+}
+body .session-header__usage-tile b small {
+ margin-left: 3px;
+ color: var(--fg3);
+ font-size: 10px;
+ font-weight: 400;
+}
+body .session-header__usage-bar {
+ display: block;
+ height: 3px;
+ margin-top: 3px;
+ border-radius: 2px;
+ background: rgb(var(--ink) / 0.1);
+ overflow: hidden;
+}
+body .session-header__usage-bar > i {
+ display: block;
+ height: 100%;
+ background: var(--g-accent);
+}

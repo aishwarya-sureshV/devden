@@ -1,15 +1,13 @@
-import type { KeyboardEvent, RefObject } from "react";
+import type { KeyboardEvent, ReactNode, RefObject } from "react";
 import {
-  AGENT_BACKENDS,
   backendLabel,
   backendMark,
   type AgentBackend,
   type ProviderUsage,
 } from "../lib/api";
 import { useAnchoredPopover } from "../lib/anchoredPopover";
-import { usagePair } from "../lib/backendUsage";
-import { effortLabel } from "../lib/effortStops";
-import { BackendLogo, IconChevronDown, IconSearch } from "./icons";
+import { effortEstimate, effortLabel } from "../lib/effortStops";
+import { BackendLogo, IconChevronDown, IconSearch, ModelName } from "./icons";
 
 export type ModelOption = {
   provider: string;
@@ -45,129 +43,42 @@ const MODE_COPY: Record<
   },
 };
 
-const EFFORT_ESTIMATE = ["~2s", "~6s", "~15s", "~40s"];
-
-function tone(left: number | null): string | undefined {
-  if (left === null) return undefined;
-  if (left < 10) return "is-critical";
-  if (left < 25) return "is-low";
-  return undefined;
-}
-
 function formatContext(tokens?: number): string {
   if (!tokens) return "";
   if (tokens >= 1000) return `${Math.round(tokens / 1000)}k`;
   return String(tokens);
 }
 
-export function UsageChip({
-  popRef,
-  open,
-  split,
-  hour,
-  week,
-  current,
-  usage,
-  reset,
-  onToggle,
-}: {
-  popRef: RefObject<HTMLDivElement | null>;
-  open: boolean;
-  split: boolean;
-  hour: number | null;
-  week: number | null;
-  current: AgentBackend;
-  usage: Partial<Record<AgentBackend, ProviderUsage>>;
-  reset?: string | null;
-  onToggle: () => void;
+export function UsageChip({ popRef, open, hour, week, current, usage, reset, onToggle, context }: {
+  popRef: RefObject<HTMLDivElement | null>; open: boolean; split: boolean;
+  hour: number | null; week: number | null; current: AgentBackend;
+  usage: Partial<Record<AgentBackend, ProviderUsage>>; reset?: string | null;
+  onToggle: () => void; context: { percent: number | null; label: string };
 }) {
-  const rows = AGENT_BACKENDS.map((backend) => ({
-    backend,
-    pair: usagePair(usage[backend]),
-  }));
-  const weeks = rows
-    .map((row) => row.pair.week)
-    .filter((value): value is number => value !== null);
-  const overall = weeks.length
-    ? Math.round(weeks.reduce((sum, value) => sum + value, 0) / weeks.length)
-    : null;
+  const used = (left: number | null) => left === null ? null : Math.max(0, Math.min(100, 100 - left));
+  const h = used(hour), w = used(week);
+  const color = (n: number | null) => n !== null && n >= 85 ? "#ff7a8a" : n !== null && n >= 60 ? "#f0b35a" : "#5fd49a";
   const popoverRef = useAnchoredPopover<HTMLDivElement>(open, "end");
-  return (
-    <div ref={popRef}>
-      <button
-        type="button"
-        className={`composer__usage${open ? " is-open" : ""}`}
-        onClick={onToggle}
-      >
-        {hour !== null && <span className={tone(hour)}>5h {hour}%</span>}
-        {week !== null && <span className={tone(week)}>wk {week}%</span>}
-        {hour === null && week === null && <span>usage</span>}
-        {reset && <small className="composer__usage-reset">resets {reset}</small>}
-      </button>
-      {open && (
-        <div
-          ref={popoverRef}
-          className="usage-pop"
-          role="dialog"
-          aria-label="Usage"
-        >
-          <div className="usage-pop__card">
-            <div className="usage-pop__row-head">
-              <strong>Overall this week</strong>
-              <span>{overall === null ? "—" : `${overall}% left`}</span>
-            </div>
-            <div className="usage-pop__stack">
-              {rows.map((row) => (
-                <i
-                  key={row.backend}
-                  style={{
-                    flex: Math.max(row.pair.week ?? 1, 1),
-                    background: backendMark(row.backend).color,
-                  }}
-                />
-              ))}
-            </div>
-            <div className="usage-pop__legend">
-              {rows.map((row) => (
-                <span key={row.backend}>
-                  {backendMark(row.backend).glyph} {backendLabel(row.backend)}
-                </span>
-              ))}
-            </div>
-          </div>
-          {rows.map((row) => (
-            <div
-              key={row.backend}
-              className={`usage-pop__row${row.backend === current ? " is-current" : ""}`}
-            >
-              <BackendLogo backend={row.backend} size={14} />
-              <div>
-                <div className="usage-pop__row-head">
-                  <strong>{backendLabel(row.backend)}</strong>
-                  {row.backend === current && <span>current</span>}
-                  {row.pair.reset && <span>resets {row.pair.reset}</span>}
-                </div>
-                <Meter label="5h" left={row.pair.hour} />
-                <Meter label="wk" left={row.pair.week} />
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function Meter({ label, left }: { label: string; left: number | null }) {
-  return (
-    <div className="usage-pop__meter">
-      <span>{label}</span>
-      <b>
-        <i style={{ width: `${left ?? 0}%` }} />
-      </b>
-      <span className={tone(left)}>{left === null ? "—" : `${left}%`}</span>
-    </div>
-  );
+  const windows = usage[current]?.windows ?? [];
+  const resetFor = (pattern: RegExp) => {
+    const time = windows.find(window => pattern.test(window.label))?.resetsAt;
+    return time ? `Resets ${new Date(time).toLocaleString()}` : "Reset time unavailable";
+  };
+  const rows = [
+    { label: "5-hour window", percent: h, detail: resetFor(/session|hour|5h|24h/i) },
+    { label: "This week", percent: w, detail: resetFor(/week|7d/i) },
+    { label: "Context window", percent: context.percent, detail: context.label },
+  ];
+  return <div ref={popRef} className="composer__usage-wrap">
+    <button type="button" className={`composer__usage${open ? " is-open" : ""}`} aria-haspopup="dialog" aria-expanded={open} aria-label={`Usage: 5-hour ${h === null ? "unavailable" : `${h}% used`}, week ${w === null ? "unavailable" : `${w}% used`}`} title={reset ? `Usage used · resets ${reset}` : "Usage used"} onClick={onToggle}>
+      <span className="usage-bars">{[["5h", h], ["wk", w]].map(([label, n]) => <span key={String(label)}><small>{label}</small><i><b style={{ width: `${n ?? 0}%`, background: color(n as number | null) }} /></i><small>{n === null ? "—" : `${n}%`}</small></span>)}</span>
+      <span className="usage-rings"><svg viewBox="0 0 22 22" width="20" height="20" aria-hidden="true">{[h, w].map((n, i) => <g key={i}><circle cx="11" cy="11" r={i ? 5 : 9} fill="none" stroke="currentColor" opacity=".15" strokeWidth="2.2" /><circle cx="11" cy="11" r={i ? 5 : 9} fill="none" stroke={color(n)} strokeWidth="2.2" pathLength="100" strokeDasharray={`${n ?? 0} 100`} transform="rotate(-90 11 11)" /></g>)}</svg><small style={{ color: color(h === null && w === null ? null : Math.max(h ?? 0, w ?? 0)) }}>{h === null && w === null ? "—" : `${Math.max(h ?? 0, w ?? 0)}%`}</small></span>
+    </button>
+    {open && <div ref={popoverRef} className="usage-pop" role="dialog" aria-label="Usage">
+      <div className="usage-pop__row-head"><strong>{backendLabel(current)} usage</strong><span>% used</span></div>
+      {rows.map(row => <div className="usage-pop__card" key={row.label}><div className="usage-pop__row-head"><strong>{row.label}</strong><span>{row.percent === null ? "—" : `${row.percent}% used`}</span></div><div className="usage-pop__meter"><b><i style={{ width: `${row.percent ?? 0}%`, background: color(row.percent) }} /></b></div><small>{row.detail}</small></div>)}
+    </div>}
+  </div>;
 }
 
 export function ModelChip({
@@ -182,6 +93,7 @@ export function ModelChip({
   modelLabel,
   effort,
   levels,
+  supported,
   effortHover,
   options,
   highlight,
@@ -196,6 +108,7 @@ export function ModelChip({
   onEffortHover,
   onKeyDown,
   onWarm,
+  children,
 }: {
   menuRef: RefObject<HTMLDivElement | null>;
   searchRef: RefObject<HTMLInputElement | null>;
@@ -208,6 +121,8 @@ export function ModelChip({
   modelLabel: string;
   effort: string;
   levels: string[];
+  /** Levels the highlighted model accepts. Missing means the whole ladder. */
+  supported?: string[];
   effortHover: number | null;
   options: ModelOption[];
   highlight: number;
@@ -222,9 +137,18 @@ export function ModelChip({
   onEffortHover: (index: number | null) => void;
   onKeyDown: (event: KeyboardEvent<HTMLDivElement>) => void;
   onWarm: () => void;
+  /** Rendered on the second line beside effort (the mode chip). */
+  children?: ReactNode;
 }) {
   const trackIndex = Math.max(0, levels.indexOf(effort));
-  const shown = effortHover ?? trackIndex;
+  const offered = (level: string) =>
+    !supported?.length || supported.includes(level) || level === effort;
+  const hovered =
+    effortHover != null && offered(levels[effortHover] ?? "")
+      ? effortHover
+      : null;
+  const shown = hovered ?? trackIndex;
+  const shownLevel = levels[shown] ?? effort;
   const providers = new Set(options.map((option) => option.provider));
   const groups: {
     name: string;
@@ -241,7 +165,7 @@ export function ModelChip({
   const popoverRef = useAnchoredPopover<HTMLDivElement>(open);
   return (
     <div
-      className="native-model-controls"
+      className="native-model-controls composer__stack"
       ref={menuRef}
       onPointerDown={onWarm}
       onFocus={onWarm}
@@ -256,12 +180,24 @@ export function ModelChip({
         onClick={onToggle}
       >
         <BackendLogo backend={backend} size={14} />
-        <span className="composer__chip-name">{modelLabel}</span>
-        {levels.length > 0 && effort && (
-          <span className="composer__chip-effort">{effortLabel(effort)}</span>
-        )}
-        <IconChevronDown size={12} />
+        <span className="composer__chip-name"><ModelName name={modelLabel} /></span>
       </button>
+      <div className="composer__chip-meta">
+        {levels.length > 0 && effort && (
+          <button
+            type="button"
+            className="composer__chip-effort"
+            aria-haspopup="menu"
+            aria-expanded={open}
+            disabled={disabled}
+            title="Effort"
+            onClick={onToggle}
+          >
+            {effortLabel(effort)}
+          </button>
+        )}
+        {children}
+      </div>
       {open && (
         <div
           ref={popoverRef}
@@ -341,7 +277,7 @@ export function ModelChip({
                           onClick={() => onPick(option)}
                         >
                           <span className="composer__model-name">
-                            {option.label}
+                            <ModelName name={option.label} />
                           </span>
                           <span className="composer__model-context">
                             {option.context
@@ -365,9 +301,7 @@ export function ModelChip({
                   <div className="think-track__label">
                     <span>Thinking time</span>
                     <span className="think-track__est">
-                      {EFFORT_ESTIMATE[
-                        Math.min(shown, EFFORT_ESTIMATE.length - 1)
-                      ] ?? ""}
+                      {effortEstimate(shownLevel)}
                     </span>
                     <span>per reply</span>
                   </div>
@@ -376,42 +310,63 @@ export function ModelChip({
                     <div
                       className="think-track__fill"
                       style={{
-                        width: `calc((100% - 14px) * ${stopAt(trackIndex)})`,
+                        width: `calc((100% - 14px) * ${stopAt(shown)})`,
+                      }}
+                    />
+                    <div
+                      className="think-track__thumb"
+                      style={{
+                        left: `calc((100% - 14px) * ${stopAt(shown)})`,
                       }}
                     />
                     <div className="think-track__stops">
-                      {levels.map((level, index) => (
-                        <button
-                          type="button"
-                          key={level}
-                          className={`think-track__stop${index < trackIndex ? " is-on" : ""}${index === trackIndex ? " is-current" : ""}`}
-                          style={{
-                            left: `calc((100% - 14px) * ${stopAt(index)})`,
-                          }}
-                          aria-label={level}
-                          onMouseEnter={() => onEffortHover(index)}
-                          onClick={() => onEffort(level)}
-                        >
-                          <i />
-                        </button>
-                      ))}
+                      {levels.map((level, index) => {
+                        const open = offered(level);
+                        return (
+                          <button
+                            type="button"
+                            key={level}
+                            className={`think-track__stop${index < shown ? " is-on" : ""}${index === shown ? " is-current" : ""}${open ? "" : " is-unavailable"}`}
+                            style={{
+                              left: `calc((100% - 14px) * ${stopAt(index)})`,
+                            }}
+                            aria-label={level}
+                            aria-disabled={!open}
+                            onMouseEnter={() => {
+                              if (open) onEffortHover(index);
+                            }}
+                            onClick={() => {
+                              if (open) onEffort(level);
+                            }}
+                          >
+                            <i />
+                          </button>
+                        );
+                      })}
                     </div>
                   </div>
                   <div className="think-track__names">
-                    {levels.map((level, index) => (
-                      <button
-                        type="button"
-                        key={level}
-                        className={`think-track__name${index === 0 ? " is-first" : ""}${index === levels.length - 1 && index !== 0 ? " is-last" : ""}${index === trackIndex ? " is-current" : ""}`}
-                        style={{
-                          left: `calc((100% - 14px) * ${stopAt(index)})`,
-                        }}
-                        onMouseEnter={() => onEffortHover(index)}
-                        onClick={() => onEffort(level)}
-                      >
-                        {level}
-                      </button>
-                    ))}
+                    {levels.map((level, index) => {
+                      const open = offered(level);
+                      return (
+                        <button
+                          type="button"
+                          key={level}
+                          className={`think-track__name${index === 0 ? " is-first" : ""}${index === levels.length - 1 && index !== 0 ? " is-last" : ""}${index === shown ? " is-current" : ""}${open ? "" : " is-unavailable"}`}
+                          style={{
+                            left: `calc((100% - 14px) * ${stopAt(index)})`,
+                          }}
+                          onMouseEnter={() => {
+                            if (open) onEffortHover(index);
+                          }}
+                          onClick={() => {
+                            if (open) onEffort(level);
+                          }}
+                        >
+                          {level}
+                        </button>
+                      );
+                    })}
                   </div>
                 </div>
               )}
@@ -480,6 +435,7 @@ export function ModeChip({
         <span className="composer__chip-name">
           {readOnly ? "Read-only" : copy.label}
         </span>
+        <IconChevronDown size={8} />
       </button>
       {open && (
         <div ref={popoverRef} className="composer__mode-menu" role="menu">

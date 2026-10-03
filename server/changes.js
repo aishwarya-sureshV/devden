@@ -42,7 +42,7 @@ import {
   sep,
 } from "node:path";
 import { promisify } from "node:util";
-import { db, transaction } from "./db.js";
+import { db, docSet, transaction } from "./db.js";
 import { git, withScratchIndex } from "./snapshots.js";
 
 const execFileAsync = promisify(execFile);
@@ -85,10 +85,15 @@ function remember(sessionKey, patch) {
 
 /** The session file and cwd arrive on `state` events, after the turn began. */
 export function noteSessionContext(sessionKey, { cwd, sessionPath } = {}) {
+  const awaitingPath = known.get(sessionKey)?.awaitingSessionPath;
   const learned = sessionPath && known.get(sessionKey)?.sessionPath !== sessionPath;
   remember(sessionKey, { cwd, sessionPath });
   const turn = active.get(sessionKey);
   if (turn && sessionPath) turn.sessionPath = sessionPath;
+  if (sessionPath && awaitingPath) {
+    docSet("devden-sessions", sessionPath, "activity");
+    known.get(sessionKey).awaitingSessionPath = false;
+  }
   // A brand-new conversation's first turns can end before its session file
   // exists; claim them now so the session view still finds them. `state`
   // events are frequent, so only when the path is new.
@@ -98,6 +103,13 @@ export function noteSessionContext(sessionKey, { cwd, sessionPath } = {}) {
         "UPDATE turns SET session_path = ? WHERE session_key = ? AND session_path IS NULL",
       )
       .run(sessionPath, sessionKey);
+}
+
+/** An agent actually started a turn, rather than merely being opened. */
+export function noteSessionActivity(sessionKey) {
+  const context = remember(sessionKey, {});
+  context.awaitingSessionPath = !context.sessionPath;
+  if (context.sessionPath) docSet("devden-sessions", context.sessionPath, "activity");
 }
 
 /**

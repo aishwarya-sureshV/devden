@@ -1,12 +1,20 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useAnchoredPopover } from "../lib/anchoredPopover";
+import { WorkspacePicker, type WorkspacePickerHandle } from "./WorkspacePicker";
 import { DeployButton } from "./DeployButton";
+import { DiffColorButton } from "./DiffColorEditor";
+import { SettingsAppearance } from "./SettingsAppearance";
+import { effortLabel } from "../lib/effortStops";
 import {
+  BackendLogo,
+  ModelName,
   IconBranch,
   IconChat,
   IconCheck,
   IconCode,
   IconCopy,
   IconExpand,
+  IconFolder,
   IconKanban,
   IconList,
   IconTerminal,
@@ -50,7 +58,6 @@ export function SessionHeader({
   renaming,
   renameDraft,
   onRenameDraft,
-  onStartRename,
   onFinishRename,
   onCancelRename,
   detailsOpen,
@@ -73,7 +80,13 @@ export function SessionHeader({
   boardOpen,
   onBoardToggle,
   deployCwd,
+  modelLabel,
+  effort,
+  backend,
 }: {
+  modelLabel?: string;
+  effort?: string | null;
+  backend?: string;
   /** Split view: the title + dropdown live on each pane instead. */
   multi: boolean;
   /** Set while a pane is maximized out of a split; returns to it. */
@@ -82,7 +95,6 @@ export function SessionHeader({
   renaming: boolean;
   renameDraft: string;
   onRenameDraft: (value: string) => void;
-  onStartRename: () => void;
   onFinishRename: () => void;
   onCancelRename: () => void;
   detailsOpen: boolean;
@@ -108,197 +120,17 @@ export function SessionHeader({
   onBoardToggle?: () => void;
   deployCwd?: string;
 }) {
-  const rootRef = useRef<HTMLElement | null>(null);
-  const skipBlur = useRef(false);
-  const [viewOpen, setViewOpen] = useState(false);
-  const current = VIEWS.find((item) => item.id === view) ?? VIEWS[0]!;
-
-  useEffect(() => {
-    if (!detailsOpen && !viewOpen) return;
-    const onPointerDown = (event: PointerEvent) => {
-      if (!rootRef.current?.contains(event.target as Node)) {
-        setViewOpen(false);
-        onDetailsOpen(false);
-      }
-    };
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        setViewOpen(false);
-        onDetailsOpen(false);
-      }
-    };
-    window.addEventListener("pointerdown", onPointerDown);
-    window.addEventListener("keydown", onKeyDown);
-    return () => {
-      window.removeEventListener("pointerdown", onPointerDown);
-      window.removeEventListener("keydown", onKeyDown);
-    };
-  }, [detailsOpen, viewOpen, onDetailsOpen]);
-
   return (
-    <header className="session-header" ref={rootRef}>
-      {onBack && (
-        <button
-          type="button"
-          className="session-header__back"
-          onClick={onBack}
-          title="Back to split view"
-        >
-          <span aria-hidden>←</span> Back
-        </button>
-      )}
-      {!multi && (
-        <div className="session-header__lead">
-          {renaming ? (
-            <div className="session-header__identity">
-              <input
-                className="session-header__title-input"
-                value={renameDraft}
-                onChange={(event) => onRenameDraft(event.target.value)}
-                onBlur={() => {
-                  if (skipBlur.current) {
-                    skipBlur.current = false;
-                    return;
-                  }
-                  onFinishRename();
-                }}
-                onKeyDown={(event) => {
-                  if (event.key === "Escape") {
-                    event.preventDefault();
-                    skipBlur.current = true;
-                    onCancelRename();
-                    return;
-                  }
-                  if (event.key === "Enter") {
-                    event.preventDefault();
-                    event.currentTarget.blur();
-                  }
-                }}
-                onFocus={(event) => event.target.select()}
-                aria-label="Session title"
-              />
-            </div>
-          ) : (
-            <button
-              type="button"
-              className="session-header__identity"
-              aria-expanded={detailsOpen}
-              aria-haspopup="dialog"
-              title="Click for details · double-click to rename"
-              onClick={() => {
-                setViewOpen(false);
-                onDetailsOpen(!detailsOpen);
-              }}
-              onDoubleClick={() => {
-                setViewOpen(false);
-                onDetailsOpen(false);
-                onStartRename();
-              }}
-            >
-              <span className="session-header__title">{title}</span>
-              <Chevron />
-            </button>
-          )}
-          {detailsOpen && (
-            <SessionDetails
-              title={title}
-              statusLabel={statusLabel}
-              statusTone={statusTone}
-              pathLabel={pathLabel}
-              branchLabel={branchLabel}
-              contextLabel={contextLabel}
-              usageLabel={usageLabel}
-              sessionId={sessionId}
-              onCopyId={onCopyId}
-              logUrl={logUrl}
-            />
-          )}
-        </div>
-      )}
-
-      <div className="session-header__view">
-        <button
-          type="button"
-          className="session-header__view-btn"
-          aria-haspopup="menu"
-          aria-expanded={viewOpen}
-          onClick={() => {
-            onDetailsOpen(false);
-            setViewOpen((open) => !open);
-          }}
-        >
-          <span className="session-header__view-icon">{current.icon}</span>
-          {current.label}
-          <Chevron />
-        </button>
-        {viewOpen && (
-          <div
-            className="session-header__menu session-header__menu--view"
-            role="menu"
-          >
-            {VIEWS.map((item) => (
-              <button
-                key={item.id}
-                type="button"
-                role="menuitemradio"
-                aria-checked={item.id === view}
-                className="session-header__view-item"
-                onClick={() => {
-                  onView(item.id);
-                  setViewOpen(false);
-                }}
-              >
-                <span className="session-header__view-icon">{item.icon}</span>
-                {item.label}
-              </button>
-            ))}
-          </div>
-        )}
+    <header className="session-header">
+      {onBack && <button type="button" className="session-header__back" onClick={onBack}>← Back</button>}
+      <div className="session-header__view-switch" role="group" aria-label="Conversation view" hidden={multi}>
+        {VIEWS.map(item => <button key={item.id} type="button" aria-pressed={view === item.id} onClick={() => onView(item.id)}>{item.label}</button>)}
       </div>
-
-      <span className="session-header__rule" aria-hidden />
       <div className="session-header__tools">
-        {onTerminalToggle && (
-          <button
-            type="button"
-            className={`session-header__tool${terminalOpen ? " is-active" : ""}`}
-            aria-pressed={terminalOpen}
-            aria-label="Terminal"
-            title="Terminal"
-            onClick={onTerminalToggle}
-          >
-            <IconTerminal size={15} />
-          </button>
-        )}
-        {onWorkspaceToggle && (
-          <button
-            type="button"
-            className={`session-header__tool${workspaceOpen ? " is-active" : ""}`}
-            aria-pressed={workspaceOpen}
-            aria-label="Workspace"
-            title="Workspace"
-            onClick={onWorkspaceToggle}
-          >
-            <IconCode size={15} />
-          </button>
-        )}
-        {onBoardToggle && (
-          <>
-            <span className="session-header__tool-rule" aria-hidden />
-            <button
-              type="button"
-              className={`session-header__tool${boardOpen ? " is-active" : ""}`}
-              aria-pressed={boardOpen}
-              aria-label="Kanban"
-              title="Kanban"
-              onClick={onBoardToggle}
-            >
-              <IconKanban size={15} />
-            </button>
-          </>
-        )}
+        <DiffColorButton className="session-header__tool is-icon" label="Appearance"><SettingsAppearance /></DiffColorButton>
+        {onWorkspaceToggle && <button type="button" className="session-header__tool is-icon" aria-label="Code" title="Code" aria-pressed={workspaceOpen} onClick={onWorkspaceToggle}><IconCode size={16} /></button>}
       </div>
-      {deployCwd ? <DeployButton cwd={deployCwd} /> : null}
+      {deployCwd ? <DeployButton key={deployCwd} cwd={deployCwd} /> : null}
     </header>
   );
 }
@@ -330,34 +162,89 @@ export function SessionDetails({
   sessionId,
   onCopyId,
   logUrl,
-}: SessionDetailsInfo) {
+  modelLabel,
+  effortText,
+  view,
+  onView,
+}: SessionDetailsInfo & {
+  modelLabel?: string;
+  effortText?: string;
+  view?: SessionView;
+  onView?: (view: SessionView) => void;
+}) {
   const [copied, setCopied] = useState(false);
+  const popoverRef = useAnchoredPopover<HTMLDivElement>(true);
+  // "91% cache hit · 46 tok/s · 184k input" → the same five tiles for every
+  // backend; a metric the backend never reported reads "—".
+  const metric = (pattern: RegExp) => usageLabel.match(pattern)?.[1] ?? "—";
+  const hit = metric(/(\d+%) cache hit/);
+  const usageTiles = [
+    { label: "Input", value: metric(/(\S+) input/) },
+    { label: "Output", value: metric(/(\S+) output/) },
+    { label: "Cached", value: metric(/(\S+) cached/) },
+    { label: "Speed", value: metric(/(\S+) tok\/s/), unit: "tok/s" },
+    { label: "Cache hit", value: hit, bar: hit === "—" ? 0 : parseInt(hit, 10) },
+  ];
+  const project = pathLabel.split("/").filter(Boolean).pop() ?? pathLabel;
   return (
     <div
+      ref={popoverRef}
       className="session-header__menu session-header__menu--details"
       role="dialog"
       aria-label="Session details"
       onClick={(event) => event.stopPropagation()}
     >
       <div className="session-header__details-head">
-        <span className="session-header__details-title">{title}</span>
+        <span className="session-header__details-title">
+          {modelLabel ? (
+            <>
+              <ModelName name={modelLabel} />
+              {effortText && <em> {effortText}</em>}
+            </>
+          ) : (
+            title
+          )}
+        </span>
         <span className="session-header__status">
           <i className={`session-header__dot is-${statusTone}`} aria-hidden />
           {statusLabel}
         </span>
       </div>
+      <div className="session-header__project">
+        <IconFolder size={13} />
+        <b>{project}</b>
+        {branchLabel && (
+          <span className="session-header__branch-pill">
+            <IconBranch size={11} />
+            {branchLabel}
+          </span>
+        )}
+      </div>
+      {onView && (
+        <div className="session-header__views" role="group" aria-label="View">
+          {VIEWS.map((item) => (
+            <button
+              key={item.id}
+              type="button"
+              role="menuitemradio"
+              aria-checked={item.id === view}
+              className="session-header__view-item"
+              onClick={() => onView(item.id)}
+            >
+              <span className="session-header__view-icon">{item.icon}</span>
+              {item.label}
+            </button>
+          ))}
+        </div>
+      )}
       <div className="session-header__details-grid">
         <span>Path</span>
         <span className="session-header__path">{pathLabel}</span>
-        <span>Branch</span>
-        <span className="session-header__path">{branchLabel ?? "—"}</span>
         <span>Context</span>
         <span>{contextLabel}</span>
-        <span>Usage</span>
-        <span>{usageLabel}</span>
-        <span>Session ID</span>
+        <span>Session</span>
         <span className="session-header__id">
-          <code>{sessionId ?? "—"}</code>
+          {sessionId ? <code>{sessionId}</code> : <em>Assigned on first reply</em>}
           {sessionId && (
             <button
               type="button"
@@ -382,6 +269,19 @@ export function SessionDetails({
             </a>
           </>
         )}
+      </div>
+      <div className="session-header__usage-head">Usage · this session</div>
+      <div className="session-header__usage">
+        {usageTiles.map((tile) => (
+          <div key={tile.label} className={`session-header__usage-tile${tile.bar !== undefined ? " is-wide" : ""}`}>
+            <span>{tile.label}</span>
+            <b className={tile.value === "—" ? "is-empty" : undefined}>
+              {tile.value}
+              {tile.unit && tile.value !== "—" && <small>{tile.unit}</small>}
+            </b>
+            {tile.bar !== undefined && <i className="session-header__usage-bar"><i style={{ width: `${tile.bar}%` }} /></i>}
+          </div>
+        ))}
       </div>
     </div>
   );
@@ -503,4 +403,44 @@ export function displayPath(cwd: string): string {
   if (match && cwd.startsWith(match[0]))
     return `~${cwd.slice(match[0].length)}` || "~";
   return cwd || "—";
+}
+
+export function SessionTab({ title, backend, cwd, active, sessionKey, details, open, onOpen, contextPercent, disabled, onPickWorkspace }: {
+  title: string; backend: string; cwd: string; active: boolean; sessionKey: string; details: SessionDetailsInfo & { modelLabel?: string; effortText?: string; view: SessionView; onView: (view: SessionView) => void };
+  open: boolean; onOpen: (open: boolean) => void; contextPercent: number | null;
+  disabled: boolean; onPickWorkspace: (path: string) => Promise<void>;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+  const workspacePicker = useRef<WorkspacePickerHandle>(null);
+  useEffect(() => {
+    if (!active || disabled) return;
+    const key = (event: KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "o") {
+        event.preventDefault();
+        workspacePicker.current?.openBrowser();
+      }
+    };
+    window.addEventListener("keydown", key);
+    return () => window.removeEventListener("keydown", key);
+  }, [active, disabled]);
+  useEffect(() => {
+    if (!open) return;
+    const close = (event: PointerEvent) => { if (!ref.current?.contains(event.target as Node)) onOpen(false); };
+    const key = (event: KeyboardEvent) => { if (event.key === "Escape") onOpen(false); };
+    window.addEventListener("pointerdown", close); window.addEventListener("keydown", key);
+    return () => { window.removeEventListener("pointerdown", close); window.removeEventListener("keydown", key); };
+  }, [open, onOpen]);
+  const percent = contextPercent === null ? null : Math.max(0, Math.min(100, contextPercent));
+  return <div className="session-tab-content" ref={ref}>
+    <button type="button" className="session-tab-content__title" role="tab" aria-selected={active} aria-controls={`dock-${sessionKey}`} tabIndex={active ? 0 : -1} aria-haspopup="dialog" aria-expanded={open} title="Session details" onClick={() => onOpen(!open)}>{title}</button>
+    <div className="session-tab-content__workspace">
+      {details.modelLabel && details.modelLabel !== "model…" && <><span className="session-tab-content__model" title={details.modelLabel}>{details.modelLabel.toLowerCase()}</span><span aria-hidden className="session-tab-content__dot">·</span></>}
+      <WorkspacePicker ref={workspacePicker} cwd={cwd} backend={backend as "pi" | "claude" | "codex" | "grok"} disabled={disabled} onPick={onPickWorkspace} variant="chip" sessionTitle={title} />
+      {details.branchLabel && <><IconBranch size={10} /><span title={details.branchLabel}>{details.branchLabel}</span></>}
+    </div>
+    <button type="button" className="session-tab-content__context" title={details.contextLabel} aria-label={`Context: ${details.contextLabel}`} onClick={() => onOpen(!open)}>
+      <span><i style={{ width: `${percent ?? 0}%`, background: percent !== null && percent >= 85 ? "#ff7a8a" : percent !== null && percent >= 60 ? "#f0b35a" : "#8fe39b" }} /></span><small>{percent === null ? "—" : `${percent}%`}</small>
+    </button>
+    {open && <SessionDetails {...details} />}
+  </div>;
 }

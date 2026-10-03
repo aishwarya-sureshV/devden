@@ -3,6 +3,8 @@ import { syntaxLang, type SyntaxLang } from "../lib/syntaxPaint";
 import { DiffView } from "./DiffView";
 import { BackendLogo } from "./icons";
 import { SynText } from "./SynText";
+import { useState } from "react";
+import { TabMenu } from "./TabMenu";
 
 export type ReviewTab = {
   id: string;
@@ -18,10 +20,10 @@ export function reviewTabId(sessionKey: string, title: string): string {
   return `${sessionKey}\n${title}`;
 }
 
-function fileName(path: string): { dir: string; file: string } {
-  const parts = path.split("/");
-  const file = parts.pop() || path;
-  return { dir: parts.length ? `${parts.join("/")}/` : "", file };
+/** Last meaningful segment: "a/b/" -> "b", ignoring empty parts. */
+function fileName(path: string): string {
+  const parts = path.split("/").filter(Boolean);
+  return parts.at(-1) || path;
 }
 
 export function ReviewDock({
@@ -44,14 +46,25 @@ export function ReviewDock({
   onCloseDiff: () => void;
 }) {
   const active = tabs.find((tab) => tab.id === activeId) ?? tabs[0];
+  const [menu, setMenu] = useState<{ id: string; x: number; y: number } | null>(null);
+  const menuItems = (id: string) => {
+    const index = tabs.findIndex((tab) => tab.id === id);
+    const others = tabs.filter((tab) => tab.id !== id);
+    const right = tabs.slice(index + 1);
+    return [
+      { label: "Close", onSelect: () => onCloseTab(id) },
+      { label: "Close Others", onSelect: () => others.forEach((tab) => onCloseTab(tab.id)), disabled: !others.length },
+      { label: "Close to the Right", onSelect: () => right.forEach((tab) => onCloseTab(tab.id)), disabled: !right.length },
+      { label: "Close All", onSelect: onCloseDiff },
+    ];
+  };
   if (!active) return null;
   const lang = syntaxLang(active.view.language, active.view.title);
-  const path = fileName(active.view.title);
   const diff = active.view.diff;
+  // Hover keeps the full path; the label is just the file's name.
   const pathLabel = (
     <span className="review-dock__path" title={active.view.title}>
-      <span className="review-dock__dir">{path.dir}</span>
-      <span className="review-dock__file">{path.file}</span>
+      <span className="review-dock__file">{fileName(active.view.title)}</span>
     </span>
   );
   const from = multi && (
@@ -70,12 +83,13 @@ export function ReviewDock({
             type="button"
             className={`review-dock__tab${tab.id === active.id ? " is-active" : ""}`}
             onClick={() => onActivate(tab.id)}
+            onContextMenu={(event) => {
+              event.preventDefault();
+              setMenu({ id: tab.id, x: event.clientX, y: event.clientY });
+            }}
           >
             <BackendLogo backend={tab.backend} size={12} />
-            {fileName(tab.view.title).file}
-            {tab.id === active.id && diff && (
-              <span className="review-dock__badge">diff</span>
-            )}
+            {fileName(tab.view.title)}
             <span
               role="presentation"
               onClick={(event) => {
@@ -87,6 +101,9 @@ export function ReviewDock({
             </span>
           </button>
         ))}
+        {menu && tabs.some((tab) => tab.id === menu.id) && (
+          <TabMenu x={menu.x} y={menu.y} items={menuItems(menu.id)} onClose={() => setMenu(null)} />
+        )}
         <button
           type="button"
           className="review-dock__x"
@@ -101,7 +118,6 @@ export function ReviewDock({
           key={active.id}
           diff={diff}
           path={active.view.title}
-          lead={pathLabel}
           tail={from}
         />
       ) : (

@@ -161,8 +161,20 @@ function browserWindowOptions() {
   };
 }
 
+// Chromium doesn't keep Cmd+/Cmd- zoom across launches here, so we save it ourselves.
+const zoomFile = () => path.join(app.getPath("userData"), "zoom-level");
+
 function attachChrome(win) {
+  win.on("close", () => {
+    try {
+      fs.writeFileSync(zoomFile(), String(win.webContents.getZoomLevel()));
+    } catch {}
+  });
   win.webContents.on("did-finish-load", () => {
+    try {
+      const level = Number(fs.readFileSync(zoomFile(), "utf8"));
+      if (Number.isFinite(level)) win.webContents.setZoomLevel(level);
+    } catch {}
     void win.webContents.executeJavaScript(
       "document.documentElement.classList.add('is-electron')",
     );

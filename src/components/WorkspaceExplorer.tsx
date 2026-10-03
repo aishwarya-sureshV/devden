@@ -5,6 +5,7 @@ import {
   useMemo,
   useState,
   type ComponentProps,
+  type CSSProperties,
   type KeyboardEvent as ReactKeyboardEvent,
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
@@ -12,6 +13,7 @@ import {
 import {
   api,
   type GitChange,
+  type GitChangesResponse,
   type WorkspaceEntry,
   type WorkspaceFileResponse,
 } from "../lib/api";
@@ -24,11 +26,14 @@ import {
   type PaletteResult,
 } from "./EditorPalette";
 import { CopyButton } from "./CopyButton";
-import { DiffColorButton } from "./DiffColorEditor";
+import { ExplorerGit } from "./ExplorerGit";
 import { DiffView } from "./DiffView";
 import { parseUnifiedDiff } from "./ChangesPanel";
+import { WorkbenchIcon } from "./WorkbenchIcon";
+import { fmtCount } from "../lib/workbenchLook";
 import { RichText } from "./RichText";
 import {
+  IconBranch,
   IconCode,
   IconExpand,
   IconFile,
@@ -40,71 +45,13 @@ import {
 
 export type WorkspacePlacement = "side" | "full";
 
+const gitCache = new Map<string, GitChangesResponse>();
+
 // CodeMirror is the heaviest thing this app can load, and most sessions never
 // open a file. Keep it out of the entry chunk.
 const CodeEditor = lazy(() =>
   import("./CodeEditor").then((module) => ({ default: module.CodeEditor })),
 );
-
-/** Folder tints from the workbench design; unlisted folders hash into FOLDER_PALETTE. */
-const FOLDER_COLORS: Record<string, string> = {
-  ".claude": "var(--ic-orange)",
-  commands: "var(--ic-blue)",
-  prompts: "var(--ic-purple)",
-  bin: "#ff7a8a",
-  dist: "#9aa4b8",
-  electron: "#5fd49a",
-  node_modules: "#7a7884",
-  packaging: "#c3a6ff",
-  public: "#6aa8ff",
-  scripts: "#f0c84a",
-  docs: "var(--ic-blue)",
-  server: "#ff9f6a",
-  src: "#4fd1c5",
-  components: "#6ad4e0",
-  lib: "#e8b84a",
-  styles: "var(--ic-purple)",
-  test: "var(--ic-teal)",
-  tests: "var(--ic-teal)",
-};
-
-const FOLDER_PALETTE = [
-  "#ff7a8a",
-  "#ff9f6a",
-  "#f0c84a",
-  "#86e6b0",
-  "#5fd49a",
-  "#4fd1c5",
-  "#6ad4e0",
-  "#6aa8ff",
-  "#9cc4ff",
-  "#c3a6ff",
-  "#ff9cc4",
-  "#e8b84a",
-];
-
-/** Stable per-name color: the same folder is always the same tint. */
-function folderColor(name: string): string {
-  const known = FOLDER_COLORS[name];
-  if (known) return known;
-  let hash = 0;
-  for (const ch of name) hash = (hash * 31 + ch.charCodeAt(0)) | 0;
-  return FOLDER_PALETTE[Math.abs(hash) % FOLDER_PALETTE.length];
-}
-
-function FolderGlyph({ color }: { color: string }) {
-  return (
-    <svg viewBox="0 0 16 16" width="15" height="15" aria-hidden>
-      <path
-        d="M1.5 4.2A1.4 1.4 0 0 1 2.9 2.8h3.2l1.6 1.5h5.4a1.4 1.4 0 0 1 1.4 1.4v6.6a1.4 1.4 0 0 1-1.4 1.4H2.9a1.4 1.4 0 0 1-1.4-1.4z"
-        fill={color}
-        fillOpacity="0.28"
-        stroke={color}
-        strokeWidth="1.1"
-      />
-    </svg>
-  );
-}
 
 // Glyph + color per extension. \uFE0E forces text (not emoji) presentation.
 const EXT_BADGE: Record<string, [string, string]> = {
@@ -352,8 +299,14 @@ function ExplorerPanel({
       : Math.max(520, Math.round(window.innerWidth * 0.5));
   });
   const [treeWidth, setTreeWidth] = useState(() => {
-    const stored = Number(localStorage.getItem("devden.workspace-tree-width"));
-    return Number.isFinite(stored) ? Math.min(420, Math.max(168, stored)) : 228;
+    const raw = localStorage.getItem("devden.workspace-tree-width");
+    const stored = raw === null ? NaN : Number(raw);
+    return Number.isFinite(stored) ? Math.min(420, Math.max(236, stored)) : 248;
+  });
+  const [treeCollapsed, setTreeCollapsed] = useState(() => localStorage.getItem("devden.workspace-tree-collapsed") === "1");
+  const toggleTree = () => setTreeCollapsed(value => {
+    try { localStorage.setItem("devden.workspace-tree-collapsed", value ? "0" : "1"); } catch { /* lasts this mount */ }
+    return !value;
   });
 
   const dirty = Boolean(
@@ -428,7 +381,9 @@ function ExplorerPanel({
       }
       if (event.key !== "Escape") return;
       // Unwind one layer at a time; Escape only closes the explorer once
-      // nothing is stacked on top of it.
+      // nothing is stacked on top of it. An open popover (Appearance) closes
+      // itself on this same Escape, after listeners run.
+      if (document.querySelector(":popover-open")) return;
       if (palette) {
         setPalette(null);
         return;
@@ -613,7 +568,7 @@ function ExplorerPanel({
   };
 
   const persistTreeWidth = (width: number) => {
-    const next = Math.min(420, Math.max(168, width));
+    const next = Math.min(420, Math.max(236, width));
     setTreeWidth(next);
     localStorage.setItem("devden.workspace-tree-width", String(next));
     return next;
@@ -684,7 +639,12 @@ function ExplorerPanel({
     [listings, query, rootEntries],
   );
 
+  const [filterOpen, setFilterOpen] = useState(false);
+  const [showHidden, setShowHidden] = useState(false);
+  const [branch, setBranch] = useState<string | null>(null);
   const [baseChanges, setBaseChanges] = useState<GitChange[] | null>(null);
+  const [gitInfo, setGitInfo] = useState<GitChangesResponse | null>(null);
+  const [gitReload, setGitReload] = useState(0);
   const [changeDiffs, setChangeDiffs] = useState<
     Record<string, ToolDiff | undefined>
   >({});
@@ -692,13 +652,18 @@ function ExplorerPanel({
   // Files this branch changed since its base (main). `base=1` widens the
   // numstat from the dirty tree to the whole worktree branch.
   useEffect(() => {
-    if (tab !== "changes" || !sessionKey) return;
+    if (!sessionKey) return;
     let alive = true;
-    setBaseChanges(null);
+    // Git changes are per repo, not per session: switching sessions shows the
+    // last result at once and refreshes quietly instead of reloading.
+    const cached = gitCache.get(root);
+    if (cached) { setBaseChanges(cached.changes ?? []); setBranch(cached.branch ?? null); setGitInfo(cached); }
+    else if (gitReload === 0) setBaseChanges(null);
     api
       .gitChanges(sessionKey, root, true)
       .then((result) => {
-        if (alive) setBaseChanges(result.changes ?? []);
+        gitCache.set(root, result);
+        if (alive) { setBaseChanges(result.changes ?? []); setBranch(result.branch ?? null); setGitInfo(result); }
       })
       .catch(() => {
         if (alive) setBaseChanges([]);
@@ -706,11 +671,25 @@ function ExplorerPanel({
     return () => {
       alive = false;
     };
-  }, [tab, sessionKey, root]);
+  }, [tab, sessionKey, root, gitReload]);
 
   // Clicking a changed file shows its diff (vs the same base) in the editor
   // pane instead of the current file content.
   const [openChangePath, setOpenChangePath] = useState<string | null>(null);
+  // Docked explorer always opens as tree | viewer (blank until a file is
+  // picked), so it asks for room for both up front.
+  const hasOpen = Boolean(selected || openChangePath);
+  // The explorer is open, so a file is likely next: fetch CodeMirror while
+  // idle instead of on the first click (after a deploy its chunk is cold).
+  useEffect(() => {
+    const warm = () => void import("./CodeEditor");
+    const id = window.requestIdleCallback ? window.requestIdleCallback(warm, { timeout: 1500 }) : window.setTimeout(warm, 300);
+    return () => (window.cancelIdleCallback ? window.cancelIdleCallback(id) : window.clearTimeout(id));
+  }, []);
+  useEffect(() => {
+    window.dispatchEvent(new CustomEvent("devden:side-pane-width", { detail: (treeCollapsed ? 40 : treeWidth) + 560 }));
+  }, [treeCollapsed]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const openChange = async (path: string) => {
     setOpenChangePath(path);
     setSelected(null);
@@ -738,7 +717,7 @@ function ExplorerPanel({
 
   return (
     <aside
-      className={`workspace-explorer is-${placement}`}
+      className={`workspace-explorer is-${placement}${hasOpen ? " has-open" : ""}${treeCollapsed ? " is-tree-collapsed" : ""}`}
       aria-label="Workspace source"
       style={
         placement === "side"
@@ -759,21 +738,10 @@ function ExplorerPanel({
       <div className="workspace-explorer__body">
         <div
           className="workspace-explorer__tree"
-          style={{ width: treeWidth, flexBasis: treeWidth }}
+          style={{ width: treeWidth, flexBasis: treeWidth, "--tree-w": `${treeWidth}px` } as CSSProperties}
         >
           <div className="workspace-explorer__search">
-            {tab === "files" && (
-              <>
-                <IconSearch size={12} />
-                <input
-                  type="search"
-                  value={query}
-                  placeholder="Filter files"
-                  aria-label="Filter workspace files"
-                  onChange={(event) => setQuery(event.target.value)}
-                />
-              </>
-            )}
+            <button type="button" className="workspace-explorer__filter-toggle" aria-label="Toggle file filter" aria-expanded={filterOpen} onClick={() => setFilterOpen(value => !value)}><IconSearch size={13} /></button>
             <div className="workspace-explorer__tabs" role="tablist">
               <button
                 type="button"
@@ -799,7 +767,20 @@ function ExplorerPanel({
                 ) : null}
               </button>
             </div>
+            <button type="button" className="workspace-explorer__collapse" aria-label={treeCollapsed ? "Show file tree" : "Hide file tree"} title={treeCollapsed ? "Show file tree" : "Hide file tree"} aria-expanded={!treeCollapsed} onClick={toggleTree}><IconPanel size={14} /></button>
           </div>
+          {treeCollapsed && (
+            <nav className="workspace-explorer__rail" aria-label="Explorer views">
+              <button type="button" aria-label="Files" title="Files" aria-pressed={tab === "files"} onClick={() => { switchTab("files"); toggleTree(); }}><IconFolder size={15} /></button>
+              <button type="button" aria-label="Changes" title={`Changes${baseChanges?.length ? ` (${baseChanges.length})` : ""}`} aria-pressed={tab === "changes"} onClick={() => { switchTab("changes"); toggleTree(); }}>
+                <IconBranch size={15} />
+                {baseChanges?.length ? <span className="workspace-explorer__rail-count">{baseChanges.length > 99 ? "99+" : baseChanges.length}</span> : null}
+              </button>
+              <button type="button" aria-label="Search files" title="Search files" onClick={() => { setFilterOpen(true); toggleTree(); }}><IconSearch size={14} /></button>
+            </nav>
+          )}
+          {filterOpen && <div className="workspace-explorer__filter"><input type="search" value={query} placeholder={tab === "files" ? "Filter files" : "Filter changes"} aria-label={tab === "files" ? "Filter files" : "Filter changes"} onChange={event => setQuery(event.target.value)} />{tab === "files" && <label><input type="checkbox" checked={showHidden} onChange={event => setShowHidden(event.target.checked)} /> Hidden files</label>}</div>}
+          {tab === "changes" && baseChanges && <div className="workspace-change-summary"><span><b>+{fmtCount(baseChanges.reduce((n, f) => n + f.additions, 0))}</b> <i>−{fmtCount(baseChanges.reduce((n, f) => n + f.deletions, 0))}</i></span><small>{root.split("/").at(-1)} {branch && `⎇ ${branch}`}</small></div>}
           <div
             className="workspace-explorer__list"
             aria-busy={
@@ -816,28 +797,15 @@ function ExplorerPanel({
                   No changes against the main branch.
                 </div>
               ) : (
-                baseChanges.map((change) => (
-                  <button
-                    key={change.path}
-                    type="button"
-                    className={`workspace-change${openChangePath === change.path ? " is-active" : ""}`}
-                    title={change.path}
-                    onClick={() => void openChange(change.path)}
-                  >
-                    <span
-                      className={`workspace-change__status is-${change.status}`}
-                    >
-                      {GIT_LETTER[change.status]}
-                    </span>
-                    <span className="workspace-change__path">
-                      {change.path}
-                    </span>
-                    <span className="workspace-change__stats">
-                      <b>+{change.additions}</b>
-                      <i>−{change.deletions}</i>
-                    </span>
-                  </button>
-                ))
+                <ExplorerGit
+                  sessionKey={sessionKey ?? ""}
+                  root={root}
+                  info={gitInfo}
+                  changes={baseChanges.filter(change => change.path.toLowerCase().includes(query.toLowerCase()))}
+                  activePath={openChangePath}
+                  onOpen={(path) => void openChange(path)}
+                  onReload={() => setGitReload((n) => n + 1)}
+                />
               )
             ) : (
               <>
@@ -858,12 +826,13 @@ function ExplorerPanel({
                       {query ? "No matching files." : "This folder is empty."}
                     </div>
                   )}
-                {shownRoot.map((entry) => (
+                {shownRoot.filter(entry => showHidden || !entry.name.startsWith(".")).map((entry) => (
                   <TreeNode
                     key={entry.path}
                     entry={entry}
                     depth={0}
                     query={query}
+                    showHidden={showHidden}
                     expanded={expanded}
                     listings={listings}
                     loadingPaths={loadingPaths}
@@ -899,22 +868,31 @@ function ExplorerPanel({
         <section className="workspace-explorer__editor" aria-label="Source">
           {openChangePath &&
             (changeDiffs[openChangePath] ? (
+              <>
+              <div className="workspace-explorer__file-head">
+                <div className="workspace-explorer__tab" title={openChangePath}>
+                  <i style={{ background: fileBadge(openChangePath.split("/").at(-1) ?? "").fg }} aria-hidden />
+                  <strong>{openChangePath.split("/").at(-1)}</strong>
+                  <small>{openChangePath.slice(0, openChangePath.lastIndexOf("/") + 1)}</small>
+                </div>
+              </div>
               <div className="workspace-explorer__code workspace-explorer__diff">
                 <DiffView
                   diff={changeDiffs[openChangePath]!}
                   path={`${root.replace(/\/$/, "")}/${openChangePath}`}
                 />
               </div>
+              </>
             ) : (
               <div className="workspace-explorer__status">Loading diff…</div>
             ))}
           {!selected && !openChangePath && (
             <div className="workspace-explorer__placeholder">
               <IconCode size={22} />
-              <strong>Browse the project</strong>
+              <strong>Nothing open yet</strong>
               <p>
-                Open a file to edit it, or double-click for Finder-style
-                actions.
+                Pick a file from the tree to read or edit it here. In Changes,
+                a file opens as its diff.
               </p>
               <p>
                 ⌘P go to file · ⇧⌘F find in project · ⌘-click a symbol for its
@@ -974,7 +952,6 @@ function ExplorerPanel({
                     {saving ? "Saving…" : "Save"}
                   </button>
                 )}
-                <DiffColorButton className="workspace-explorer__copy" />
                 <CopyButton
                   text={draft || file.content}
                   label="Copy file"
@@ -1131,6 +1108,7 @@ function TreeNode({
   entry,
   depth,
   query,
+  showHidden,
   expanded,
   listings,
   loadingPaths,
@@ -1149,6 +1127,7 @@ function TreeNode({
   entry: WorkspaceEntry;
   depth: number;
   query: string;
+  showHidden: boolean;
   expanded: ReadonlySet<string>;
   listings: Record<string, WorkspaceEntry[]>;
   loadingPaths: ReadonlySet<string>;
@@ -1170,7 +1149,7 @@ function TreeNode({
   const badge = gitBadge(git, entry.path);
   const mark = isDirectory ? null : fileBadge(entry.name);
   const children = isOpen
-    ? visibleEntries(listings[entry.path] ?? [], query, listings)
+    ? visibleEntries(listings[entry.path] ?? [], query, listings).filter(child => showHidden || !child.name.startsWith("."))
     : [];
   const heavy = isDirectory && HEAVY_DIRS.has(entry.name);
   const isRenaming = renaming === entry.path;
@@ -1227,7 +1206,7 @@ function TreeNode({
           )}
           {isDirectory ? (
             <span className="workspace-tree__folder">
-              <FolderGlyph color={folderColor(entry.name)} />
+              <WorkbenchIcon kind="folders" name={entry.name} />
             </span>
           ) : (
             <span
@@ -1269,6 +1248,7 @@ function TreeNode({
             entry={child}
             depth={depth + 1}
             query={query}
+            showHidden={showHidden}
             expanded={expanded}
             listings={listings}
             loadingPaths={loadingPaths}

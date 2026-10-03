@@ -14,7 +14,7 @@ import { promisify } from "node:util";
 const execFileAsync = promisify(execFile);
 
 const NPM_MS = 15_000;
-const LATEST_TTL_MS = 6 * 60 * 60 * 1000;
+const LATEST_TTL_MS = 5 * 60_000;
 const DEV_ROOT = fileURLToPath(new URL("..", import.meta.url));
 
 /** Harness CLIs: npm package names to check; `bin` enables the native
@@ -34,7 +34,7 @@ const CLI_PACKAGES = [
 ];
 
 const latestCache = new Map(); // pkg -> { value: string|null, at: number }
-const remoteHeadCache = { sha: null, at: 0 };
+const remoteHeadCache = { sha: null, behind: 0, at: 0 };
 let devdenVersionPromise = null;
 let installedPromise = null; // global npm tree: pkg -> { version }
 
@@ -99,8 +99,9 @@ async function resolveHarness(entry, npmTree) {
   return null;
 }
 
-function latestVersion(pkg) {
+export function latestVersion(pkg) {
   const row = latestCache.get(pkg);
+  if (row?.promise) return row.promise;
   if (row && Date.now() - row.at < LATEST_TTL_MS) return Promise.resolve(row.value);
   const pending = execFileAsync("npm", ["view", pkg, "version"], {
     timeout: NPM_MS,
@@ -111,7 +112,7 @@ function latestVersion(pkg) {
       latestCache.set(pkg, { value, at: Date.now() });
       return value;
     });
-  latestCache.set(pkg, { value: row?.value ?? null, at: Date.now() });
+  latestCache.set(pkg, { value: row?.value ?? null, at: Date.now(), promise: pending });
   // The promise above overwrites the placeholder once it settles.
   return pending;
 }
@@ -125,29 +126,31 @@ function devdenVersion() {
   return devdenVersionPromise;
 }
 
-async function devdenLatestSha() {
-  if (Date.now() - remoteHeadCache.at < LATEST_TTL_MS)
-    return remoteHeadCache.sha;
-  try {
-    const { stdout } = await execFileAsync(
-      "git",
-      ["ls-remote", "origin", "HEAD"],
-      { cwd: DEV_ROOT, timeout: NPM_MS },
+/** Commits on the upstream branch that HEAD lacks. Local commits ahead of
+ *  origin are not an update (a SHA compare flagged them forever). */
+async function devdenBehind() {
+  if (Date.now() - remoteHeadCache.at < LATEST_TTL_MS) return remoteHeadCache;
+  const git = (args) =>
+    execFileAsync("git", args, { cwd: DEV_ROOT, timeout: NPM_MS }).then(
+      ({ stdout }) => String(stdout).trim(),
     );
-    remoteHeadCache.sha = String(stdout).trim().split("\t")[0] || null;
+  try {
+    await git(["fetch", "--quiet", "origin"]);
+    remoteHeadCache.behind = Number(await git(["rev-list", "--count", "HEAD..@{u}"])) || 0;
+    remoteHeadCache.sha = await git(["rev-parse", "--short", "@{u}"]);
   } catch {
-    remoteHeadCache.sha = null; // offline or not a git checkout
+    remoteHeadCache.behind = 0; // offline, no upstream, or not a git checkout
+    remoteHeadCache.sha = null;
   }
   remoteHeadCache.at = Date.now();
-  return remoteHeadCache.sha;
+  return remoteHeadCache;
 }
 
 /** Installed vs latest for every known package; only outdated ones returned. */
 export async function readHarnessUpdates() {
-  const [npmTree, devdenInstalled, localHead] = await Promise.all([
+  const [npmTree, devdenInstalled] = await Promise.all([
     readInstalledVersions(),
     devdenVersion(),
-    devdenLocalHead(),
   ]);
   const rows = await Promise.all(
     CLI_PACKAGES.map(async (entry) => {
@@ -165,28 +168,17 @@ export async function readHarnessUpdates() {
         : null;
     }),
   );
-  const devdenLatest = await devdenLatestSha();
-  if (localHead && devdenLatest && localHead !== devdenLatest)
+  const upstream = await devdenBehind();
+  if (upstream.behind > 0)
     rows.push({
       id: "devden",
       pkg: "devden",
       installed: devdenInstalled,
-      latest: devdenLatest.slice(0, 7),
+      latest: upstream.sha,
+      behind: upstream.behind,
       npm: false,
     });
   return rows.filter(Boolean);
-}
-
-async function devdenLocalHead() {
-  try {
-    const { stdout } = await execFileAsync("git", ["rev-parse", "HEAD"], {
-      cwd: DEV_ROOT,
-      timeout: NPM_MS,
-    });
-    return String(stdout).trim();
-  } catch {
-    return null;
-  }
 }
 
 /** One-line, human reason for a failed update (raw output goes in `log`). */
@@ -195,6 +187,10 @@ export function explainUpdateError(error) {
   if (/EACCES|EPERM|permission denied/i.test(text))
     return "Permission denied. npm can't write to the global folder.";
   if (error?.killed) return "Timed out before it finished.";
+  if (/Not possible to fast-forward|diverg/i.test(text))
+    return "Your local commits diverge from main. Merge or rebase by hand.";
+  if (/conflict/i.test(text))
+    return "Your local edits conflict with the update. Commit or stash them first.";
   if (/ENOTFOUND|ETIMEDOUT|ECONNRESET|EAI_AGAIN|network/i.test(text))
     return "Couldn't reach the registry. Check your connection.";
   const line = text.split("\n").map((row) => row.trim()).find(Boolean);
@@ -220,7 +216,7 @@ export async function runHarnessUpdate(id) {
 async function upgrade(id, setCmd) {
   const entry = CLI_PACKAGES.find((row) => row.id === id);
   if (id === "devden") {
-    setCmd("git pull --ff-only && npm install && npm run build");
+    setCmd("git pull --ff-only --autostash && npm install && npm run build");
     await updateDevden();
     return { ok: true, pkg: "devden" };
   }
@@ -249,7 +245,7 @@ async function upgrade(id, setCmd) {
 }
 
 async function updateDevden() {
-  await execFileAsync("git", ["pull", "--ff-only"], {
+  await execFileAsync("git", ["pull", "--ff-only", "--autostash"], {
     cwd: DEV_ROOT,
     timeout: 5 * 60_000,
   });
@@ -263,5 +259,5 @@ async function updateDevden() {
   });
   // The running server keeps old code until restarted; the UI says so.
   remoteHeadCache.at = 0;
-  await devdenLatestSha();
+  await devdenBehind();
 }

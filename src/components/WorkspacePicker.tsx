@@ -13,6 +13,7 @@ import {
   type AgentBackend,
   type DirectoryListingResponse,
 } from "../lib/api";
+import { useAnchoredPopover } from "../lib/anchoredPopover";
 import { useStore } from "../lib/store";
 import { IconChevronDown, IconCode, IconFolder } from "./icons";
 
@@ -50,6 +51,7 @@ export const WorkspacePicker = forwardRef<
     onIsolate?: () => Promise<void>;
     hideTrigger?: boolean;
     variant?: "default" | "chip";
+    sessionTitle?: string;
   }
 >(function WorkspacePicker(
   {
@@ -61,11 +63,13 @@ export const WorkspacePicker = forwardRef<
     onIsolate,
     hideTrigger = false,
     variant = "default",
+    sessionTitle,
   },
   ref,
 ) {
   const rootRef = useRef<HTMLDivElement | null>(null);
   const [open, setOpen] = useState(false);
+  const menuRef = useAnchoredPopover<HTMLDivElement>(open);
   const [browserOpen, setBrowserOpen] = useState(false);
   const [listing, setListing] = useState<DirectoryListingResponse | null>(null);
   const [pathDraft, setPathDraft] = useState(cwd);
@@ -217,11 +221,13 @@ export const WorkspacePicker = forwardRef<
 
       {open && (
         <div
+          ref={menuRef}
           className={`workspace-picker__menu${dropUp ? " is-upwards" : ""}`}
           role="menu"
           aria-label="Workspaces"
           style={{ maxHeight: menuMaxHeight }}
         >
+          {sessionTitle && <div className="workspace-picker__heading">Workspace for this tab<small>{sessionTitle}</small></div>}
           <button
             type="button"
             role="menuitem"
@@ -247,7 +253,7 @@ export const WorkspacePicker = forwardRef<
                 <IconFolder size={16} />
                 <span>
                   {folderLabel(path)}
-                  {(duplicateLabels.get(folderLabel(path)) ?? 0) > 1 && (
+                  {(sessionTitle || (duplicateLabels.get(folderLabel(path)) ?? 0) > 1) && (
                     <em>{path}</em>
                   )}
                 </span>
@@ -273,7 +279,7 @@ export const WorkspacePicker = forwardRef<
             )}
             <button type="button" role="menuitem" onClick={openBrowser}>
               <IconFolder size={16} />
-              <span>New folder…</span>
+              <span>Open folder… ⌘O</span>
             </button>
             {onIsolate && (
               <button

@@ -1,0 +1,1031 @@
+/* Workbench polish: header, session tabs, explorer bar, mini git.
+   Loaded after workbench-v3.css so these win without !important wars. */
+
+/* ---- Header: Code is an icon button; Deploy keeps its own styling ---- */
+body .session-header__tool.is-icon {
+ width: 32px;
+ height: 30px;
+ padding: 0;
+ justify-content: center;
+ border-radius: 9px;
+ color: var(--fg3);
+}
+body .session-header__tool.is-icon[aria-pressed="true"] {
+ background: color-mix(in srgb, var(--acc, #7c86ff) 26%, transparent);
+ color: var(--fg0);
+}
+
+/* The backend/model line in the sidebar's top row ("So…") is hidden: the
+   row keeps only the pop-out and collapse icons. */
+body .sidebar__brand-row .sidebar__backend-menu {
+ display: none;
+}
+
+/* ---- Session tabs: one thin context line, active tab only ---- */
+body .session-tab-content__context small {
+ display: none;
+}
+body .session-tabstrip__tab:not(:has([aria-selected="true"])) .session-tab-content__context {
+ visibility: hidden;
+}
+body .session-tab-content__context {
+ position: absolute;
+ left: 0;
+ right: 0;
+ bottom: -5px;
+ height: 2px;
+}
+body .session-tab-content__context > span {
+ height: 2px;
+ background: rgb(var(--ink) / 0.06);
+}
+body .session-tab-content__workspace {
+ margin-bottom: 4px;
+}
+
+/* ---- Pane grip: tight to the left edge ---- */
+/* top centres the 22px grip on the explorer/review bar (36px tall, 8px
+   down in the pane): measured 74px centre for both. */
+body .dock-handlebar {
+ top: 15px;
+ left: 2px;
+}
+body .dock-slot > .dock-handlebar ~ .dock-content :is(.review-dock__tabs, .workspace-explorer__search) {
+ padding-left: 18px;
+}
+
+/* ---- Explorer bar: collapse · Files|Changes · palette · search, one line ---- */
+body .workspace-explorer__search {
+ display: flex;
+ align-items: center;
+ gap: 4px;
+ height: 36px;
+ min-width: 0;
+ padding-right: 6px;
+}
+body .workspace-explorer__search .workspace-explorer__tabs {
+ flex: 0 1 auto;
+ min-width: 0;
+ margin: 0 auto 0 0;
+ padding: 2px;
+ gap: 2px;
+ border-radius: 9px;
+ background: rgb(var(--ink) / 0.06);
+ overflow: hidden;
+}
+body .workspace-explorer__search .workspace-explorer__tab {
+ height: 24px;
+ padding: 0 9px;
+ border-radius: 7px;
+ font-size: 12.5px;
+ font-weight: 500;
+ line-height: 24px;
+ white-space: nowrap;
+ color: var(--fg3);
+}
+body .workspace-explorer__search .workspace-explorer__tab.is-active {
+ background: rgb(var(--ink) / 0.12);
+ color: var(--fg0);
+ box-shadow: 0 1px 2px rgb(0 0 0 / 0.25);
+}
+body .workspace-explorer__search .workspace-explorer__tab-count {
+ margin-left: 4px;
+ padding: 0 5px;
+ min-width: 18px;
+ border-radius: 8px;
+ background: rgb(240 179 90 / 0.18);
+ color: #f0b35a;
+ font-size: 10.5px;
+ line-height: 16px;
+ font-variant-numeric: tabular-nums;
+}
+body .workspace-explorer__search :is(.workspace-explorer__filter-toggle, .workspace-explorer__collapse) {
+ flex: none;
+ display: grid;
+ place-items: center;
+ width: 26px;
+ height: 26px;
+ padding: 0;
+ border: 0;
+ border-radius: 7px;
+ background: none;
+ color: var(--fg3);
+ cursor: pointer;
+}
+body .workspace-explorer__search :is(.workspace-explorer__filter-toggle, .workspace-explorer__collapse):hover {
+ background: rgb(var(--ink) / 0.08);
+ color: var(--fg0);
+}
+
+/* Collapsed tree: a 40px rail holding only the expand button. */
+body .workspace-explorer.is-tree-collapsed .workspace-explorer__tree,
+body .dock-content > .workspace-explorer.is-tree-collapsed .workspace-explorer__tree {
+ width: 40px !important;
+ flex: none !important;
+ min-width: 0;
+}
+body .workspace-explorer.is-tree-collapsed .workspace-explorer__tree > :not(.workspace-explorer__search, .workspace-explorer__rail),
+body .workspace-explorer.is-tree-collapsed .workspace-explorer__search > :not(.workspace-explorer__collapse),
+body .workspace-explorer.is-tree-collapsed .workspace-explorer__tree-resize {
+ display: none !important;
+}
+body .dock-slot > .dock-handlebar ~ .dock-content .workspace-explorer.is-tree-collapsed .workspace-explorer__search {
+ padding-left: 7px;
+}
+
+/* Docked explorer always shows tree | viewer; the viewer is blank until a
+   file opens (overrides the tree-only rules in pane-chrome.css). */
+body .dock-content > .workspace-explorer:not(.has-open) .workspace-explorer__editor {
+ display: flex;
+}
+body .dock-content > .workspace-explorer:not(.has-open):not(.is-tree-collapsed) .workspace-explorer__tree-resize {
+ display: block;
+}
+body .dock-content > .workspace-explorer:not(.has-open):not(.is-tree-collapsed) .workspace-explorer__tree {
+ width: var(--tree-w) !important;
+ flex: none !important;
+}
+body .workspace-explorer__placeholder {
+ margin: auto;
+ max-width: 300px;
+ gap: 6px;
+ text-align: center;
+ color: var(--fg4);
+}
+body .workspace-explorer__placeholder strong {
+ color: var(--fg2, var(--fg1));
+ font-size: 13.5px;
+ font-weight: 600;
+}
+body .workspace-explorer__placeholder p {
+ margin: 0;
+ font-size: 12px;
+ line-height: 1.5;
+}
+
+/* File title row: name, then its folder, dimmed. */
+body .workspace-explorer__file-head > .workspace-explorer__tab small {
+ margin-left: 6px;
+ overflow: hidden;
+ text-overflow: ellipsis;
+ white-space: nowrap;
+ color: var(--fg4);
+ font-size: 11px;
+ font-weight: 400;
+}
+
+/* Full Appearance panel in the explorer's palette popover. */
+.diff-colors-pop.is-appearance {
+ width: 460px;
+ max-height: min(78vh, 720px);
+ padding: 14px 16px;
+}
+
+/* ---- Mini git (explorer Changes tab) ---- */
+.egit {
+ display: flex;
+ flex-direction: column;
+ gap: 8px;
+ padding: 4px 6px 10px;
+ font-size: 12.5px;
+}
+.egit[aria-busy="true"] {
+ cursor: progress;
+}
+.egit-bar {
+ display: flex;
+ align-items: center;
+ gap: 2px;
+}
+.egit-bar__spacer {
+ flex: 1;
+}
+.egit-branch {
+ display: inline-flex;
+ align-items: center;
+ gap: 5px;
+ min-width: 0;
+ padding: 0 6px;
+ height: 26px;
+ border-radius: 7px;
+ color: var(--fg2);
+ background: rgb(var(--ink) / 0.05);
+}
+.egit-branch select {
+ min-width: 0;
+ max-width: 150px;
+ border: 0;
+ background: none;
+ color: inherit;
+ font: inherit;
+ font-size: 12px;
+ cursor: pointer;
+ outline: none;
+}
+.egit-icon {
+ display: inline-flex;
+ align-items: center;
+ gap: 2px;
+ height: 26px;
+ min-width: 26px;
+ padding: 0 5px;
+ justify-content: center;
+ border: 0;
+ border-radius: 7px;
+ background: none;
+ color: var(--fg3);
+ cursor: pointer;
+}
+.egit-icon:hover:not(:disabled) {
+ background: rgb(var(--ink) / 0.08);
+ color: var(--fg0);
+}
+.egit-icon small {
+ font-size: 10px;
+ font-variant-numeric: tabular-nums;
+}
+.egit-icon:disabled,
+.egit-commit button:disabled {
+ opacity: 0.4;
+ cursor: default;
+}
+.egit-commit {
+ display: flex;
+ flex-direction: column;
+ gap: 6px;
+}
+.egit-commit textarea {
+ resize: vertical;
+ min-height: 44px;
+ padding: 7px 9px;
+ border: 1px solid rgb(var(--ink) / 0.1);
+ border-radius: 8px;
+ background: rgb(var(--ink) / 0.04);
+ color: var(--fg0);
+ font: inherit;
+ font-size: 12.5px;
+ outline: none;
+}
+.egit-commit textarea:focus {
+ border-color: color-mix(in srgb, var(--acc, #7c86ff) 60%, transparent);
+}
+.egit-commit__actions {
+ display: flex;
+ gap: 5px;
+}
+.egit-primary,
+.egit-secondary {
+ height: 26px;
+ padding: 0 10px;
+ border: 0;
+ border-radius: 7px;
+ font: inherit;
+ font-size: 12px;
+ font-weight: 500;
+ cursor: pointer;
+ white-space: nowrap;
+}
+.egit-primary {
+ flex: 1;
+ background: color-mix(in srgb, var(--acc, #7c86ff) 70%, transparent);
+ color: #fff;
+}
+.egit-secondary {
+ background: rgb(var(--ink) / 0.07);
+ color: var(--fg1, var(--fg0));
+}
+.egit-feedback {
+ font-size: 11.5px;
+ color: #8fe39b;
+}
+.egit-feedback.is-error {
+ color: #ff7a8a;
+ white-space: pre-wrap;
+}
+.egit-list {
+ display: flex;
+ flex-direction: column;
+}
+.egit-row {
+ display: flex;
+ align-items: center;
+ gap: 6px;
+ min-height: 26px;
+ padding-right: 6px;
+ border-radius: 7px;
+}
+.egit-row:hover {
+ background: rgb(var(--ink) / 0.05);
+}
+.egit-row.is-active {
+ background: rgb(var(--ink) / 0.1);
+}
+.egit-row input[type="checkbox"] {
+ flex: none;
+ width: 12px;
+ height: 12px;
+ margin: 0;
+ accent-color: var(--acc, #7c86ff);
+ cursor: pointer;
+}
+.egit-row__main {
+ flex: 1;
+ display: flex;
+ align-items: center;
+ gap: 6px;
+ min-width: 0;
+ padding: 0;
+ border: 0;
+ background: none;
+ color: var(--fg1, var(--fg0));
+ font: inherit;
+ text-align: left;
+ cursor: pointer;
+}
+.egit-row--folder .egit-row__main {
+ color: var(--fg2, var(--fg1));
+ font-weight: 500;
+}
+.egit-row__name {
+ min-width: 0;
+ overflow: hidden;
+ text-overflow: ellipsis;
+ white-space: nowrap;
+}
+.egit-row__count {
+ flex: none;
+ padding: 0 5px;
+ border-radius: 7px;
+ background: rgb(var(--ink) / 0.08);
+ color: var(--fg4);
+ font-size: 10px;
+ line-height: 15px;
+}
+.egit-chevron {
+ display: inline-grid;
+ flex: none;
+ color: var(--fg4);
+ transform: rotate(-90deg);
+ transition: transform 0.12s ease;
+}
+.egit-chevron.is-open {
+ transform: none;
+}
+.egit-status {
+ flex: none;
+ display: inline-grid;
+ place-items: center;
+ width: 16px;
+ height: 16px;
+ border-radius: 4px;
+ font-size: 10px;
+ font-weight: 700;
+ background: rgb(240 179 90 / 0.18);
+ color: #f0b35a;
+}
+.egit-status.is-added { background: rgb(143 227 155 / 0.16); color: #8fe39b; }
+.egit-status.is-deleted { background: rgb(255 122 138 / 0.16); color: #ff7a8a; }
+.egit-status.is-conflicted { background: rgb(233 139 255 / 0.18); color: #e98bff; }
+.egit-stats {
+ flex: none;
+ display: inline-flex;
+ gap: 4px;
+ font-size: 11px;
+ font-variant-numeric: tabular-nums;
+}
+.egit-stats b { color: #8fe39b; font-weight: 500; }
+.egit-stats i { color: #ff7a8a; font-style: normal; }
+.egit-row__discard {
+ flex: none;
+ display: none;
+ place-items: center;
+ width: 20px;
+ height: 20px;
+ padding: 0;
+ border: 0;
+ border-radius: 5px;
+ background: none;
+ color: var(--fg4);
+ cursor: pointer;
+}
+.egit-row:hover .egit-row__discard {
+ display: grid;
+}
+.egit-row__discard:hover {
+ color: #ff7a8a;
+ background: rgb(255 122 138 / 0.12);
+}
+.egit-section {
+ display: flex;
+ flex-direction: column;
+ gap: 2px;
+ padding-top: 6px;
+ border-top: 1px solid rgb(var(--ink) / 0.07);
+}
+.egit-section__head {
+ display: flex;
+ align-items: center;
+ gap: 6px;
+ padding: 4px 2px;
+ border: 0;
+ background: none;
+ color: var(--fg3);
+ font: inherit;
+ font-size: 11px;
+ font-weight: 600;
+ letter-spacing: 0.04em;
+ text-transform: uppercase;
+ text-align: left;
+ cursor: pointer;
+}
+.egit-log-row {
+ display: flex;
+ align-items: center;
+ gap: 7px;
+ min-height: 24px;
+ padding: 0 4px;
+ font-size: 12px;
+}
+.egit-log-row code {
+ flex: none;
+ color: var(--fg4);
+ font-size: 11px;
+}
+.egit-log-row__subject {
+ flex: 1;
+ min-width: 0;
+ overflow: hidden;
+ text-overflow: ellipsis;
+ white-space: nowrap;
+ color: var(--fg1, var(--fg0));
+}
+.egit-log-row small {
+ flex: none;
+ color: var(--fg4);
+ font-size: 10.5px;
+}
+.egit-link {
+ flex: none;
+ padding: 1px 6px;
+ border: 0;
+ border-radius: 5px;
+ background: rgb(var(--ink) / 0.07);
+ color: var(--fg2, var(--fg1));
+ font: inherit;
+ font-size: 11px;
+ cursor: pointer;
+}
+
+/* Bar order: search · Files|Changes · (gap) · collapse. Buttons never
+   shrink; only the tab labels give way on a narrow tree. */
+body .workspace-explorer__search .workspace-explorer__tab {
+ flex: 0 1 auto;
+ min-width: 0;
+ overflow: hidden;
+ text-overflow: ellipsis;
+}
+body .workspace-explorer__search .workspace-explorer__tab-count {
+ flex: none;
+}
+body .workspace-explorer__search .workspace-explorer__collapse {
+ margin-left: auto;
+}
+
+/* ---- Turn changes card: a rule between the summary and the file list ---- */
+body .turn-files__head {
+ padding-bottom: 10px;
+ margin-bottom: 6px;
+ border-bottom: 1px solid rgb(var(--ink) / 0.08);
+}
+
+/* ---- Session details popover: compact ---- */
+body .session-header__menu--details {
+ width: 260px;
+ padding: 4px;
+ font-size: 12px;
+}
+body .session-header__menu--details :is(button, a, dd, dt, span) {
+ font-size: 12px;
+}
+body .session-header__menu--details .session-header__details-head {
+ padding: 6px 8px 4px;
+}
+
+/* Tab subtitle: "grok 4.7 · devden ⎇ main" */
+.session-tab-content__model {
+ flex: 0 1 auto;
+ min-width: 0;
+ max-width: 45%;
+ overflow: hidden;
+ text-overflow: ellipsis;
+ white-space: nowrap;
+ color: var(--fg3);
+}
+.session-tab-content__dot {
+ flex: none;
+ color: var(--fg4);
+}
+
+/* ---- Tool rows: name white, icon carries the tool color; result counts
+   (matches, files, lines) take the color too ---- */
+body .trow .trow__verb,
+body .trow-stack.is-running .trow__verb {
+ color: var(--fg0);
+}
+body .trow .trow__verb .workbench-icon {
+ color: var(--tool-color);
+}
+body .trow .trow__part.is-num {
+ color: var(--tool-color);
+}
+body .trow .trow__part.is-dim {
+ color: color-mix(in srgb, var(--tool-color) 45%, var(--fg4));
+}
+
+/* ---- Diffs: hairline change markers ---- */
+body :is(.edit-well__line, .rdiff__line, .rdiff__side).is-add {
+ box-shadow: inset 1px 0 0 color-mix(in srgb, var(--add) 70%, transparent);
+}
+body :is(.edit-well__line, .rdiff__line, .rdiff__side).is-remove {
+ box-shadow: inset 1px 0 0 color-mix(in srgb, var(--del) 70%, transparent);
+}
+body .dview__ruler {
+ width: 3px;
+ margin: 6px 3px;
+ background: rgb(var(--ink) / 0.03);
+}
+body .dview__ruler > span {
+ left: 0;
+ right: 0;
+ opacity: 0.55;
+}
+body .dview__ruler > span:hover {
+ opacity: 1;
+}
+
+/* ---- Sidebar session filter: matches the Files|Changes segmented look ---- */
+body .sidebar__filters {
+ width: min(264px, calc(100% - 4px));
+ gap: 8px;
+ padding: 8px;
+ border: 1px solid rgb(var(--ink) / 0.1);
+ border-radius: 12px;
+ box-shadow: 0 16px 40px rgb(0 0 0 / 0.35);
+}
+body .sidebar__filter-sorts {
+ display: flex;
+ gap: 2px;
+ padding: 2px;
+ border: 0;
+ border-radius: 9px;
+ background: rgb(var(--ink) / 0.06);
+}
+body .sidebar__filter-sorts button {
+ flex: 1;
+ height: 24px;
+ padding: 0;
+ border: 0;
+ border-radius: 7px;
+ background: none;
+ color: var(--fg3);
+ font-size: 12px;
+ font-weight: 500;
+}
+body .sidebar__filter-sorts button.is-active {
+ background: rgb(var(--ink) / 0.12);
+ color: var(--fg0);
+ box-shadow: 0 1px 2px rgb(0 0 0 / 0.25);
+}
+body .sidebar__filter-search {
+ height: 28px;
+ padding: 0 9px;
+ border: 1px solid rgb(var(--ink) / 0.08);
+ border-radius: 8px;
+ background: rgb(var(--ink) / 0.04);
+}
+body .sidebar__filter-agent-row {
+ min-height: 28px;
+ border-radius: 7px;
+}
+body .sidebar__filter-agent-row:hover {
+ background: rgb(var(--ink) / 0.05);
+}
+body .sidebar__filter-check {
+ width: 14px;
+ height: 14px;
+ border: 1px solid rgb(var(--ink) / 0.22);
+ border-radius: 4px;
+ background: none;
+ color: var(--fg0);
+ font-size: 9px;
+ line-height: 12px;
+}
+body .sidebar__filter-check.is-on {
+ border-color: transparent;
+ background: rgb(var(--ink) / 0.85);
+ color: rgb(0 0 0 / 0.85);
+}
+body .sidebar__filter-foot {
+ display: flex;
+ align-items: center;
+ gap: 6px;
+ min-width: 0;
+ padding: 8px 2px 0;
+ border-top: 1px solid rgb(var(--ink) / 0.08);
+ font-size: 11px;
+}
+body .sidebar__filter-foot span {
+ flex: 1 1 auto;
+ min-width: 0;
+ overflow: hidden;
+ text-overflow: ellipsis;
+ white-space: nowrap;
+}
+body .sidebar__filter-foot button {
+ flex: none;
+ height: 24px;
+ padding: 0 8px;
+ border-radius: 7px;
+ color: var(--fg3);
+ font-size: 11.5px;
+}
+body .sidebar__filter-foot button:hover {
+ background: rgb(var(--ink) / 0.06);
+ color: var(--fg0);
+}
+body .sidebar__filter-foot .sidebar__filter-apply {
+ padding: 0 12px !important;
+ border: 0 !important;
+ background: rgb(var(--ink) / 0.9) !important;
+ color: rgb(0 0 0 / 0.88) !important;
+ font-weight: 600;
+}
+
+/* ---- Mini git: quieter rows ---- */
+/* Stage checkboxes appear on hover (or when unticked, so exclusions stay visible). */
+.egit-row input[type="checkbox"] {
+ opacity: 0;
+ transition: opacity 0.12s;
+}
+.egit-row:hover input[type="checkbox"],
+.egit-row input[type="checkbox"]:not(:checked),
+.egit-row input[type="checkbox"]:focus-visible {
+ opacity: 1;
+}
+/* Status is a colour, not a letter: dot + tinted name. */
+.egit-status {
+ width: 6px;
+ height: 6px;
+ border-radius: 50%;
+ font-size: 0;
+ background: #f0b35a;
+}
+.egit-status.is-added { background: #8fe39b; }
+.egit-status.is-deleted { background: #ff7a8a; }
+.egit-status.is-conflicted { background: #e98bff; }
+.egit-row:has(.egit-status.is-added) .egit-row__name { color: #a8eab2; }
+.egit-row:has(.egit-status.is-deleted) .egit-row__name { color: #ff9aa6; text-decoration: line-through; }
+.egit-row:has(.egit-status.is-conflicted) .egit-row__name { color: #efb0ff; }
+
+/* ---- Turn changes card: icon before "N files changed" ---- */
+body .turn-files .turn-files__icon {
+ display: inline-grid;
+ place-items: center;
+ flex: none;
+ width: 26px;
+ height: 26px;
+ margin-right: 8px;
+ border-radius: 8px;
+ background: rgb(var(--ink) / 0.07);
+ color: var(--fg3);
+}
+body .turn-files__head {
+ align-items: center;
+}
+
+/* ---- Dropdowns: compact. Scaled from the edge they hang off. ---- */
+body .composer__model-menu,
+body .composer__mode-menu {
+ transform: scale(0.84);
+ transform-origin: bottom left;
+}
+body :is(.sidebar__session-popover, .sidebar__filters, .session-header__menu, .tab-menu, .workspace-picker__menu) {
+ transform: scale(0.9);
+ transform-origin: top left;
+}
+body .sidebar__filters {
+ transform-origin: top right;
+}
+body .workspace-picker__menu.is-upwards {
+ transform-origin: bottom left;
+}
+
+/* ---- Tool rows sit below the prose: dimmer and lighter than body text ---- */
+body .trow .trow__verb,
+body .trow-stack.is-running .trow__verb {
+ color: var(--fg2, rgb(var(--ink) / 0.72));
+ font-weight: 500;
+}
+body .trow .trow__bright {
+ color: var(--fg2, rgb(var(--ink) / 0.72));
+ font-weight: 400;
+}
+body .trow .trow__dim {
+ color: var(--fg4);
+}
+body .trow .trow__part.is-num {
+ color: color-mix(in srgb, var(--tool-color) 75%, transparent);
+}
+
+/* ---- Tool rows: compact ---- */
+body .trow .trow__grid {
+ min-height: 22px;
+ padding: 4px 6px;
+ grid-template-columns: 66px minmax(0, 1fr);
+ line-height: 1.35;
+}
+body .trow .trow__main {
+ min-height: 20px;
+ grid-template-rows: 20px;
+ row-gap: 0;
+ column-gap: 6px;
+}
+body .trow .trow__arg {
+ color: var(--fg2, rgb(var(--ink) / 0.72));
+}
+@container (max-width: 640px) {
+ body .trow .trow__grid { grid-template-columns: 56px minmax(0, 1fr); }
+ body .trow .trow__main { grid-template-rows: 18px auto; }
+ body .trow .trow__result { line-height: 16px; }
+}
+
+/* Narrow panes (≤400px): tool rows hug the left edge. */
+@container (max-width: 400px) {
+ body .tl.tl--tool { padding-left: 4px; }
+ body .trow .trow__grid { padding-left: 2px; padding-right: 2px; }
+ body .trow-explored .trow-nest { padding-left: 8px; }
+}
+
+/* Added files: hollow green ring only; name and counts stay neutral. Green/red counts stay for modified files only; folder totals
+   are grey so a folder of new files is calm. */
+.egit-row:has(.egit-status.is-added) .egit-stats b,
+.egit-row--folder .egit-stats b,
+.egit-row--folder .egit-stats i {
+ color: var(--fg4);
+}
+
+/* ---- Scrollbars: hairline thumb, no track; widens slightly on hover ---- */
+body *::-webkit-scrollbar,
+body .conversation__scroll::-webkit-scrollbar {
+ width: 5px;
+ height: 5px;
+ background: transparent;
+}
+body *::-webkit-scrollbar-track,
+body .conversation__scroll::-webkit-scrollbar-track {
+ background: transparent;
+}
+body *::-webkit-scrollbar-thumb,
+body .conversation__scroll::-webkit-scrollbar-thumb {
+ border: 1px solid transparent;
+ border-radius: 5px;
+ background: rgb(var(--ink, 255 255 255) / 0.16) padding-box;
+}
+body *::-webkit-scrollbar-thumb:hover {
+ background: rgb(var(--ink, 255 255 255) / 0.32) padding-box;
+}
+body *::-webkit-scrollbar-corner {
+ background: transparent;
+}
+
+/* Mini git file markers: modified = filled amber dot, added = hollow green
+   ring with a faint fill; names stay neutral. */
+.egit-row { gap: 5px; }
+.egit-row:has(.egit-status.is-added) .egit-row__name { color: inherit; }
+.egit-status.is-added {
+ width: 7px;
+ height: 7px;
+ background: rgb(143 227 155 / 0.18);
+ box-shadow: inset 0 0 0 1.5px #8fe39b;
+}
+
+/* Collapsed explorer: an activity rail of the views it holds. */
+.workspace-explorer__rail {
+ display: flex;
+ flex-direction: column;
+ align-items: center;
+ gap: 4px;
+ padding-top: 6px;
+ margin-top: 4px;
+ border-top: 1px solid rgb(var(--ink) / 0.07);
+}
+.workspace-explorer__rail button {
+ position: relative;
+ display: grid;
+ place-items: center;
+ width: 28px;
+ height: 28px;
+ padding: 0;
+ border: 0;
+ border-radius: 8px;
+ background: none;
+ color: var(--fg3);
+ cursor: pointer;
+}
+.workspace-explorer__rail button:hover {
+ background: rgb(var(--ink) / 0.08);
+ color: var(--fg0);
+}
+.workspace-explorer__rail button[aria-pressed="true"] {
+ background: rgb(var(--ink) / 0.1);
+ color: var(--fg0);
+ box-shadow: inset 2px 0 0 var(--acc, #7c86ff);
+}
+.workspace-explorer__rail-count {
+ position: absolute;
+ top: -3px;
+ right: -5px;
+ min-width: 15px;
+ padding: 0 3px;
+ border-radius: 8px;
+ background: #f0b35a;
+ color: #1a1a1a;
+ font-size: 8.5px;
+ font-weight: 700;
+ line-height: 13px;
+ text-align: center;
+}
+body .workspace-explorer.is-tree-collapsed .workspace-explorer__search {
+ justify-content: center;
+ padding: 0;
+}
+body .dock-slot > .dock-handlebar ~ .dock-content .workspace-explorer.is-tree-collapsed .workspace-explorer__search {
+ padding-left: 0;
+}
+body .workspace-explorer.is-tree-collapsed .workspace-explorer__collapse {
+ margin: 0;
+}
+body .workspace-explorer.is-tree-collapsed .workspace-explorer__tree {
+ align-items: center;
+ border-right: 1px solid rgb(var(--ink) / 0.06);
+}
+
+/* ---- Composer chips: ghost style ----
+   Model: [logo name · effort ⌄], mode: [» Full auto]. No border or fill at
+   rest, a soft fill on hover/open. Narrow panes drop the chevron and the
+   mode label (icon stays) and trim padding. */
+body .composer .composer__chip,
+body .composer .native-model-controls .composer__chip {
+ height: 26px;
+ gap: 5px;
+ padding: 0 7px;
+ border: 0;
+ border-radius: 8px;
+ background: transparent;
+ color: var(--fg1, var(--fg0));
+ font-size: 12.5px;
+ font-weight: 500;
+ box-shadow: none;
+}
+body .composer .composer__chip:hover,
+body .composer .composer__chip.is-open {
+ background: rgb(var(--ink) / 0.08);
+}
+body .composer .native-model-controls {
+ flex: 0 1 auto;
+ min-width: 0;
+}
+body .composer .native-model-controls .composer__chip { max-width: 100%; }
+body .composer .native-model-controls .composer__chip > svg,
+body .composer .native-model-controls .composer__chip > span:first-child {
+ display: inline-flex;
+ flex: none;
+}
+body .composer .native-model-controls .composer__chip-name {
+ flex: 0 1 auto;
+ min-width: 0;
+ max-width: 240px;
+ overflow: hidden;
+ text-overflow: ellipsis;
+ white-space: nowrap;
+}
+body .composer .composer__chip-effort {
+ flex: none;
+ overflow: visible;
+ color: #ff8fc4;
+ font-size: 11.5px;
+ font-weight: 500;
+}
+body .composer .composer__chip-effort::before {
+ content: "·";
+ margin-right: 5px;
+ color: var(--fg4);
+}
+body .composer .native-model-controls .composer__chip > svg:last-child { color: var(--fg4); }
+body .composer .composer__mode { flex: none; min-width: 0; }
+body .composer .composer__mode .composer__chip { color: var(--fg3); }
+body .composer .composer__mode .composer__chip > span:first-child { flex: none; font-size: 13px; }
+body .composer .composer__mode .composer__chip-name { display: inline; white-space: nowrap; }
+body .composer .composer__mode .composer__chip.is-amber { color: #f0b35a; }
+@container (max-width: 420px) {
+ body .composer .composer__chip,
+ body .composer .native-model-controls .composer__chip { height: 24px; gap: 4px; padding: 0 4px; font-size: 12px; }
+ body .composer .native-model-controls .composer__chip > svg:last-child { display: none; }
+ body .composer .composer__mode .composer__chip-name { display: none; }
+ body .composer .composer__mode .composer__chip { padding: 0 6px; }
+}
+
+/* ---- Composer: stacked model block ----
+   Line 1: [logo NAME ☁]  → model picker.
+   Line 2: [effort] · [» Full auto ⌄]  → model picker / mode menu.
+   No pill or fill at rest (overrides the glass theme's amber pill); the
+   model name is the only thing that ellipsizes. Mode keeps its label at
+   every width and takes the Settings accent when it is Full auto. */
+body .composer .native-model-controls.composer__stack {
+ height: auto;
+ display: flex;
+ flex: 1 1 auto;
+ flex-direction: column;
+ align-items: flex-start;
+ gap: 1px;
+ min-width: 0;
+}
+body .composer .native-model-controls.composer__stack::before { display: none; }
+body .composer .native-model-controls.composer__stack .composer__chip,
+body .composer .native-model-controls.composer__stack .composer__chip:is(:hover, .is-open) {
+ box-shadow: none;
+ color: var(--fg0);
+}
+body .composer .native-model-controls.composer__stack .composer__chip {
+ flex: none;
+ height: 22px;
+ max-width: 100%;
+ padding: 0 5px;
+ gap: 6px;
+ border-radius: 6px;
+ background: transparent;
+ font-size: 12.5px;
+}
+body .composer .native-model-controls.composer__stack .composer__chip:is(:hover, .is-open) {
+ background: rgb(var(--ink) / 0.07);
+}
+body .composer .composer__stack .composer__chip-name { max-width: none; }
+body .composer .composer__chip-meta {
+ display: flex;
+ align-items: center;
+ min-width: 0;
+ max-width: 100%;
+}
+body .composer .composer__chip-meta .composer__chip-effort {
+ height: 18px;
+ padding: 0 5px;
+ border: 0;
+ border-radius: 5px;
+ background: none;
+ color: color-mix(in oklab, var(--g-highlight, #e8a765) 40%, var(--fg2, #a39e95));
+ font: inherit;
+ font-size: 10.5px;
+ font-weight: 500;
+ cursor: pointer;
+}
+body .composer .composer__chip-meta .composer__chip-effort::before { content: none; }
+body .composer .composer__chip-meta .composer__chip-effort + .composer__mode::before {
+ content: "·";
+ color: var(--fg4);
+ font-size: 10.5px;
+}
+body .composer .composer__chip-meta .composer__mode {
+ display: flex;
+ align-items: center;
+ min-width: 0;
+}
+body .composer .composer__stack .composer__mode .composer__chip {
+ height: 18px;
+ gap: 4px;
+ padding: 0 5px;
+ border-radius: 5px;
+ color: var(--fg3);
+ font-size: 10.5px;
+ font-weight: 500;
+}
+body .composer .composer__stack .composer__mode .composer__chip > span:first-child { font-size: 12px; }
+body .composer .composer__stack .composer__mode .composer__chip-name {
+ display: inline;
+ overflow: hidden;
+ text-overflow: ellipsis;
+ white-space: nowrap;
+ color: inherit;
+ font-weight: inherit;
+}
+body .composer .composer__stack .composer__mode .composer__chip > svg { flex: none; color: var(--fg4); }
+body .composer .composer__stack .composer__mode .composer__chip.is-amber {
+ color: var(--g-highlight, var(--g-accent, #e8a765));
+}
+body .composer .composer__chip-meta button:is(:hover, .is-open):not(:disabled) {
+ background: rgb(var(--ink) / 0.07);
+}
+body .composer .composer__stack > .composer__chip .composer__chip-name { font-size: calc(1em - 2px); }
+/* Wide composer: model, effort and mode sit side by side on one line. */
+@container (min-width: 450px) {
+ body .composer .native-model-controls.composer__stack { flex-direction: row; align-items: center; gap: 4px; }
+}

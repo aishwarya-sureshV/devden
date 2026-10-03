@@ -113,6 +113,7 @@ import {
 } from "./agent-registry.js";
 import { clearDetectionCache } from "./agent-detect.js";
 import { readHarnessUpdates, runHarnessUpdate } from "./harness-update.js";
+import { cachedModels, clearModelCatalogs } from "./model-catalog.js";
 import { devdenHome, readSetup, writeSetup } from "./setup-state.js";
 import {
   agentIsAlive,
@@ -145,6 +146,7 @@ import {
   endTurn,
   forgetSessionChanges,
   noteSessionContext,
+  noteSessionActivity,
   noteToolCall,
   pruneChanges,
   readChanges,
@@ -690,7 +692,9 @@ function currentGitHead(projectRoot = ROOT) {
 function workingTreeSignature(projectRoot = ROOT) {
   try {
     const out = execSync(
-      "git rev-parse HEAD && git status --porcelain && git diff HEAD",
+      // `git diff HEAD` skips untracked files, so hash their contents too:
+      // editing a new file would otherwise leave the button on "Live".
+      "git rev-parse HEAD && git status --porcelain && git diff HEAD && git ls-files -o --exclude-standard -z | xargs -0 git hash-object --",
       {
         cwd: projectRoot,
         stdio: ["ignore", "pipe", "ignore"],
@@ -963,6 +967,7 @@ function trackTurnChanges(sessionKey, event) {
         });
         return;
       case "agent_start":
+        noteSessionActivity(sessionKey);
         beginTurn({ sessionKey, takeSnapshot });
         return;
       case "tool_execution_start":
@@ -1251,37 +1256,8 @@ function adoptLiveAgent(sessionKey, backend, sessionPath) {
   return undefined;
 }
 
-/**
- * Model catalogs are expensive to build and near-static: pi spawns
- * `pi --list-models` (plus an Ollama probe), codex boots its app-server, grok
- * hits its proxy. Every dropdown open paid that again, per tab, so the list
- * took seconds to appear on every backend. One process-wide cache per
- * backend+cwd fixes both: the stored value is the promise, so concurrent
- * openings share a single lookup, and failures are evicted so a transient
- * outage is not remembered for five minutes.
- */
-const MODELS_TTL_MS = 5 * 60_000;
-const modelsCache = new Map();
 
-function cachedModels(agent) {
-  const key = `${agent.__watchedBackend ?? "pi"}\0${agent.cwd ?? ""}`;
-  const hit = modelsCache.get(key);
-  if (hit && Date.now() - hit.at < MODELS_TTL_MS) return hit.value;
-  const value = Promise.resolve()
-    .then(() => agent.getAvailableModels())
-    .then((result) => {
-      if (!result?.ok || !result.models?.length) modelsCache.delete(key);
-      return result;
-    })
-    .catch((error) => {
-      modelsCache.delete(key);
-      return { ok: false, error: String(error?.message ?? error) };
-    });
-  modelsCache.set(key, { at: Date.now(), value });
-  return value;
-}
-
-function watch(sessionKey, requestedBackend) {
+function watch(sessionKey, requestedBackend, bind = true) {
   // An adopted-away key still routes here (old tab sending a command):
   // resolve to the live agent instead of spawning a duplicate process.
   sessionKey = resolveSessionKey(sessionKey) ?? sessionKey;
@@ -1289,8 +1265,15 @@ function watch(sessionKey, requestedBackend) {
     requestedBackend === undefined
       ? (sessionBackends.get(sessionKey) ?? "pi")
       : backendName(requestedBackend);
-  sessionBackends.set(sessionKey, backend);
+  // Catalog reads (model list, thinking levels) must not retarget the
+  // session. A picker prefetch used to land here and leave the next prompt
+  // on whichever agent was listed last.
+  if (bind) sessionBackends.set(sessionKey, backend);
   const agent = poolFor(backend).get(sessionKey);
+  if (!bind) {
+    agent.__watchedBackend ??= backend;
+    return agent;
+  }
   // Rebind rather than register once: adoptLiveAgent moves a running process
   // to the refreshed page's key, and a listener still closed over the old key
   // published the whole in-flight turn under a key no client is listening on
@@ -1952,9 +1935,13 @@ async function route(req, res) {
   if (pathname === "/api/harness-updates/run" && req.method === "POST") {
     const body = await readBody(req);
     try {
+      const result = await runHarnessUpdate(String(body.id));
+      clearModelCatalogs();
+      for (const pool of Object.values(POOLS))
+        for (const agent of pool.agents.values()) agent.modelCatalog = undefined;
       return sendJson(res, 200, {
         ok: true,
-        ...(await runHarnessUpdate(String(body.id))),
+        ...result,
       });
     } catch (error) {
       return sendJson(res, 500, {
@@ -2562,10 +2549,22 @@ async function route(req, res) {
     // request, which is strictly narrower than the client-supplied cwd
     // /start and /prompt already trust.
     const running = streamingSessionPaths();
-    for (const session of result.sessions ?? []) {
+    // The sidebar derives a <=68-char title from the first sentence of
+    // firstPrompt, but full prompts (pasted logs, whole files) were ~1MB of
+    // the ~1.6MB listing fetched on every refresh. Copies, not mutations:
+    // the summaries are the server's mtime cache. `name` falls back to the
+    // prompt, and the client compares the two, so cap both alike.
+    const cap = (text) =>
+      typeof text === "string" && text.length > 2000 ? text.slice(0, 2000) : text;
+    result.sessions = (result.sessions ?? []).map((session) => {
       addWorkspaceRoot(session.cwd);
-      session.isStreaming = running.has(session.path);
-    }
+      return {
+        ...session,
+        name: cap(session.name),
+        firstPrompt: cap(session.firstPrompt),
+        isStreaming: running.has(session.path),
+      };
+    });
     return sendJson(res, 200, result);
   }
 
@@ -3523,6 +3522,7 @@ async function route(req, res) {
       stashProbe,
       branchListProbe,
       remoteListProbe,
+      logProbe,
     ] = await Promise.all([
       git(["remote", "get-url", "origin"]),
       git(["branch", "--show-current"]),
@@ -3549,6 +3549,8 @@ async function route(req, res) {
         "--format=%(refname:short)",
         "refs/remotes",
       ]),
+      // Recent commits for the explorer's mini git panel.
+      git(["log", "-8", "--format=%h%x09%s%x09%cr"]),
     ]);
     const remote = remoteProbe.ok ? remoteProbe.stdout.trim() : "";
     const branch = branchProbe.stdout.trim() || "(detached)";
@@ -3561,11 +3563,40 @@ async function route(req, res) {
           deletions: Number(match[2]) || 0,
         });
     }
+    // `git status --porcelain` collapses a fully untracked directory into a
+    // single "dir/" row, which is not a file: its per-file diff is a git
+    // error and the pill would list a path instead of code. Expand it into
+    // the files it contains so the pill rows and their diffs are real.
+    let statusRows = statusProbe.stdout.split("\n");
+    if (statusProbe.ok) {
+      const expanded = [];
+      await Promise.all(
+        statusRows.map(async (row) => {
+          const path = row.slice(3).replace(/^"|"$/g, "");
+          if (!row.startsWith("??") || !path.endsWith("/")) {
+            expanded.push(row);
+            return;
+          }
+          const inside = await git([
+            "ls-files",
+            "-o",
+            "--exclude-standard",
+            "--",
+            path.replace(/\/$/, ""),
+          ]);
+          const files = inside.ok
+            ? inside.stdout.split("\n").filter(Boolean)
+            : [];
+          if (files.length === 0) return; // nothing trackable in there
+          for (const file of files) expanded.push(`?? ${file}`);
+        }),
+      );
+      statusRows = expanded;
+    }
     // Untracked files have no numstat row; count them all at once. Probing
     // them one by one serialized a git spawn per file (dozens of them),
     // which is what kept the Changes pill blank for seconds.
-    const untrackedPaths = statusProbe.stdout
-      .split("\n")
+    const untrackedPaths = statusRows
       .filter((row) => row.startsWith("??"))
       .map((row) => row.slice(3).replace(/^"|"$/g, ""));
     await Promise.all(
@@ -3586,7 +3617,7 @@ async function route(req, res) {
       }),
     );
     const changes = [];
-    for (const row of statusProbe.stdout.split("\n")) {
+    for (const row of statusRows) {
       if (row.length < 4) continue;
       const code = row.slice(0, 2);
       const path = row.slice(3).replace(/^"|"$/g, "");
@@ -3661,6 +3692,11 @@ async function route(req, res) {
       stashes,
       branches,
       remoteBranches,
+      log: logProbe.stdout
+        .split("\n")
+        .map((row) => row.split("\t"))
+        .filter((row) => row.length === 3)
+        .map(([hash, subject, age]) => ({ hash, subject, age })),
       state,
       conflicts: changes
         .filter((change) => change.status === "conflicted")
@@ -4315,13 +4351,14 @@ async function route(req, res) {
       res,
       200,
       await cachedModels(
-        watch(sessionKey, url.searchParams.get("backend") || undefined),
+        watch(sessionKey, url.searchParams.get("backend") || undefined, false),
       ),
     );
   if (req.method === "GET" && action === "thinking-levels") {
     const agent = watch(
       sessionKey,
       url.searchParams.get("backend") || undefined,
+      false,
     );
     if (!hasMethod(agent, "getThinkingLevels"))
       return sendJson(res, 200, { ok: true, levels: [] });

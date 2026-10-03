@@ -156,6 +156,7 @@
 
 /* rich text — current AgentDeck markdown semantics, adapted to DeepSeek tokens */
 .rich-text {
+ font-size: calc(1em + 1px);
  width: 100%;
  min-width: 0;
  max-width: none;

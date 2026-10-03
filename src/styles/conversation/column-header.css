@@ -77,6 +77,10 @@
 .chat-turn:last-child {
  margin-bottom: 0;
 }
+.conversation__spacer {
+ flex-shrink: 0;
+ overflow-anchor: none;
+}
 
 /* Session header and view tabs, following the DeepSeek harness hierarchy. */
 .conversation-header {
@@ -178,10 +182,14 @@
  padding: 0 10px;
  border: 0;
  border-radius: 7px;
- background: var(--send, var(--pw-accent));
- color: var(--sendFg, #1b0f0a);
+ /* Same well as the sidebar's New session button. */
+ background: rgb(128 128 128 / 0.14);
+ box-shadow:
+  inset 0 1px 0 rgb(255 255 255 / 0.08),
+  inset 0 0 0 1px rgb(255 255 255 / 0.06);
+ color: var(--dsw-alias-label-primary);
  font-size: 12.5px;
- font-weight: 600;
+ font-weight: 500;
  line-height: 1;
  white-space: nowrap;
  cursor: pointer;
@@ -192,7 +200,7 @@
  align-items: center;
 }
 .conversation-header__deploy:hover:not(:disabled) {
- filter: brightness(1.06);
+ background: rgb(128 128 128 / 0.22);
 }
 .conversation-header__deploy:disabled {
  opacity: 0.75;
@@ -203,8 +211,7 @@
  animation: pw-spin 0.9s linear infinite;
 }
 .conversation-header__deploy.is-failed {
- background: var(--del, var(--pw-red, #e5484d));
- color: #1b0a0d;
+ color: var(--del, var(--pw-red, #e5484d));
 }
 .conversation-header__deploy-dot {
  position: absolute;

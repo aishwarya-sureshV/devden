@@ -570,7 +570,9 @@ body[data-glass][data-ds-dark-theme]
   .usage-pop,
   .app-footer__motion,
   .editor-palette,
-  .update-tray
+  .update-tray,
+  .tab-menu,
+  .diff-colors-pop
  ) {
  background: var(--glass-fill);
  -webkit-backdrop-filter: var(--glass-filter);
@@ -605,25 +607,6 @@ body[data-glass][data-ds-dark-theme] .composer__model-menu {
   inset 0 0 0 1.5px color-mix(in srgb, var(--g-accent) 60%, transparent),
   0 0 36px -8px color-mix(in srgb, var(--g-accent) 22%, transparent),
   0 18px 40px -18px rgb(0 0 0 / 0.55);
-}
-
-/* The model chip lights up: the amber pill that opened the picker. */
-body[data-glass][data-ds-dark-theme] .native-model-controls .composer__chip {
- background: color-mix(in srgb, var(--g-accent) 16%, transparent);
- box-shadow: inset 0 0 0 1px
-  color-mix(in srgb, var(--g-accent) 45%, transparent);
- color: #f3efe9;
-}
-body[data-glass][data-ds-dark-theme]
- .native-model-controls
- .composer__chip:hover,
-body[data-glass][data-ds-dark-theme]
- .native-model-controls
- .composer__chip.is-open {
- background: rgb(255 240 220 / 0.1);
- box-shadow: inset 0 0 0 1px
-  color-mix(in srgb, var(--g-accent) 50%, transparent);
- color: #f3efe9;
 }
 
 /* Picker selection: warm tint on the browsed / keyboard-highlighted model
@@ -714,6 +697,9 @@ body[data-glass][data-ds-dark-theme]
  .composer__model-menu
  .think-track__stop.is-current:hover
  i {
+ background: var(--g-accent);
+}
+body[data-glass][data-ds-dark-theme] .composer__model-menu .think-track__thumb {
  background: var(--g-accent);
  box-shadow: 0 0 0 4px color-mix(in srgb, var(--g-accent) 20%, transparent);
 }

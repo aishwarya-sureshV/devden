@@ -42,7 +42,10 @@ import {
   subscribeAppearance,
 } from "./lib/appearance";
 import type { WorkbenchView } from "./lib/navigation";
+import { type SessionDrag } from "./lib/dockLayout";
 import { MAX_SPLIT_PANES, sessionPaneLayout } from "./lib/sessionLayout";
+import { DockLayout, type DockPanel } from "./components/DockLayout";
+import { BoardPanel } from "./components/BoardPanel";
 import { TerminalRunsProvider } from "./lib/terminalRuns";
 import { applyCodeTheme, codeTheme } from "./lib/codeTheme";
 import "./styles/app.css";
@@ -50,6 +53,8 @@ import "./styles/conversation.css";
 import "./styles/thinkingEmoji.css";
 import "./styles/onboarding.css";
 import "./styles/workbenchSkin.css";
+import "./styles/conversation/workbench-v3.css";
+import "./styles/conversation/workbench-polish.css";
 
 /**
  * A dropped connection is invisible in the transcript: the agent's own
@@ -96,6 +101,7 @@ function Frame() {
     activeKey,
     setActiveKey,
     closeConversation,
+    resumeSessions, resumeConversation,
     setVisibleSessionKeys,
   } = useStore();
   const [view, setView] = useState<WorkbenchView>("sessions");
@@ -113,6 +119,7 @@ function Frame() {
   );
   const [splitSessionKeys, setSplitSessionKeys] = useState<string[]>([]);
   // The split a pane was expanded out of, so Back can put it back.
+  const [tabbedSessionKeys, setTabbedSessionKeys] = useState<string[]>([]);
   const [restoreSplit, setRestoreSplit] = useState<string[] | null>(null);
   // Transient toast (pane cap reached); clears itself.
   const [toast, setToast] = useState<string | null>(null);
@@ -121,6 +128,11 @@ function Frame() {
     const timer = window.setTimeout(() => setToast(null), 3500);
     return () => window.clearTimeout(timer);
   }, [toast]);
+  useEffect(() => {
+    const show = (event: Event) => setToast((event as CustomEvent<string>).detail);
+    window.addEventListener("devden:toast", show);
+    return () => window.removeEventListener("devden:toast", show);
+  }, []);
   const paneLimitToast = () =>
     setToast(
       `Up to ${MAX_SPLIT_PANES} sessions fit side by side. Close one to open another.`,
@@ -162,18 +174,11 @@ function Frame() {
   const [showThinking, setShowThinking] = useState(
     () => localStorage.getItem("devden.show-thinking") === "on",
   );
-  // Terminal lives in a right-docked pane next to the conversation; the
-  // expand button swaps it to a full-width view without unmounting the PTYs.
+  // Terminal shares the movable workbench layout; expanding keeps PTYs mounted.
   const [terminalPane, setTerminalPane] = useState(
     () => localStorage.getItem("devden.terminal-pane") === "open",
   );
   const [terminalExpanded, setTerminalExpanded] = useState(false);
-  const [terminalWidth, setTerminalWidth] = useState(() => {
-    const stored = Number(localStorage.getItem("devden.terminal-width"));
-    return Number.isFinite(stored) && stored > 0
-      ? Math.min(760, Math.max(280, stored))
-      : 420;
-  });
 
   useEffect(() => {
     document.body.toggleAttribute("data-ds-dark-theme", theme === "dark");
@@ -284,32 +289,6 @@ function Frame() {
     setView(next);
   };
 
-  const startTerminalResize = (event: ReactPointerEvent<HTMLButtonElement>) => {
-    event.preventDefault();
-    event.currentTarget.setPointerCapture(event.pointerId);
-    const startX = event.clientX;
-    const startWidth = terminalWidth;
-    const onMove = (moveEvent: PointerEvent) => {
-      // Left edge drag: moving left widens the pane.
-      const next = Math.min(
-        760,
-        Math.max(280, startWidth + (startX - moveEvent.clientX)),
-      );
-      setTerminalWidth(next);
-      localStorage.setItem("devden.terminal-width", String(next));
-    };
-    const finish = () => {
-      window.removeEventListener("pointermove", onMove);
-      window.removeEventListener("pointerup", finish);
-      window.removeEventListener("pointercancel", finish);
-      document.body.classList.remove("is-resizing-sessions");
-    };
-    document.body.classList.add("is-resizing-sessions");
-    window.addEventListener("pointermove", onMove);
-    window.addEventListener("pointerup", finish, { once: true });
-    window.addEventListener("pointercancel", finish, { once: true });
-  };
-
   const toggleSplitSessions = () => {
     if (splitSessions) {
       focusSession(activeKey);
@@ -349,7 +328,8 @@ function Frame() {
   const splitWithSession = (key: string) => {
     const base = splitSessionKeys.length > 0 ? splitSessionKeys : [activeKey];
     const next = [...new Set([...base, key])].filter(Boolean);
-    if (next.length > MAX_SPLIT_PANES) {
+    const grouped = next.filter(key => tabbedSessionKeys.includes(key)).length;
+    if (next.length - Math.max(0, grouped - 1) > MAX_SPLIT_PANES) {
       paneLimitToast();
       return;
     }
@@ -363,23 +343,23 @@ function Frame() {
     ? tabs.filter((tab) => {
         if (tab.guest && !splitSessionKeys.includes(tab.key)) return false;
         return (
-          splitSessionKeys.length === 0 || splitSessionKeys.includes(tab.key)
+          splitSessionKeys.length === 0 || splitSessionKeys.includes(tab.key) || tabbedSessionKeys.includes(tab.key)
         );
       })
-    : active
-      ? [active]
-      : [];
+    : tabs.filter(tab => tab.key === activeKey || tabbedSessionKeys.includes(tab.key));
+
+  const visiblePaneCount = visibleTabs.length - Math.max(0, visibleTabs.filter(tab => tabbedSessionKeys.includes(tab.key)).length - 1);
 
   // The store persists which panes were on screen so a refresh restores the
   // whole split layout instead of collapsing to the active session.
   const visibleKeyList = visibleTabs.map((tab) => tab.key).join(",");
   useEffect(() => {
-    setVisibleSessionKeys(visibleKeyList ? visibleKeyList.split(",") : []);
-  }, [visibleKeyList, setVisibleSessionKeys]);
+    setVisibleSessionKeys([...new Set([...(visibleKeyList ? visibleKeyList.split(",") : []), ...tabbedSessionKeys])]);
+  }, [visibleKeyList, tabbedSessionKeys, setVisibleSessionKeys]);
 
   // Past four panes the grid needs the sidebar's width, so crossing that
   // line collapses it once. Not persisted, and the user can reopen it.
-  const crowded = visibleTabs.length > SIDEBAR_PANE_LIMIT;
+  const crowded = visiblePaneCount > SIDEBAR_PANE_LIMIT;
   useEffect(() => {
     if (crowded) setSidebarCollapsed(true);
   }, [crowded]);
@@ -394,6 +374,25 @@ function Frame() {
       return live.length === keys.length ? keys : live;
     });
   }, [tabs]);
+
+  const dropSession = (data: SessionDrag, asTab: boolean) => {
+    if (!asTab && visiblePaneCount >= MAX_SPLIT_PANES &&
+        !("key" in data && visibleTabs.some(tab => tab.key === data.key))) {
+      paneLimitToast();
+      return null;
+    }
+    const session = "path" in data ? resumeSessions.find(item => item.path === data.path) : undefined;
+    const key = "key" in data ? tabs.find(tab => tab.key === data.key)?.key : session ? resumeConversation(session) : undefined;
+    if (!key) return null;
+    if (asTab) {
+      setSplitSessionKeys(keys => [...new Set([...(keys.length ? keys : [activeKey]), key])].filter(Boolean));
+      setSplitSessions(true);
+      localStorage.setItem("devden.session-layout", "split");
+    } else splitWithSession(key);
+    setActiveKey(key);
+    changeView("sessions");
+    return key;
+  };
 
   const persistSidebarWidth = (width: number) => {
     const next = Math.min(480, Math.max(200, width));
@@ -445,6 +444,7 @@ function Frame() {
     onSessionSplit: splitWithSession,
     onPaneLimit: paneLimitToast,
     openTabKeys: visibleTabs.map((tab) => tab.key),
+    paneCount: visiblePaneCount,
     terminalOpen: terminalPane && view === "sessions",
     onTerminalToggle: toggleTerminalPane,
     onResizePointerDown: startSidebarResize,
@@ -457,6 +457,7 @@ function Frame() {
       <div
         className={`app-frame${navOpen ? " is-nav-open" : ""}${view === "settings" ? " is-settings" : ""}`}
         data-layout={appearance.layout}
+        data-tool-density={appearance.toolDensity} data-tool-durations={appearance.toolDurations ? "shown" : "hidden"}
         style={{
           ["--pw-sidebar-width" as string]: `${effCollapsed ? 56 : sidebarWidth}px`,
         }}
@@ -496,31 +497,32 @@ function Frame() {
           />
         )}
         <main className="center">
-          <div
-            className={`center__body${terminalPane && terminalExpanded ? " is-hidden" : ""}`}
-          >
+          <div className="center__body">
             {view === "sessions" ? (
-              <>
-                {tabs.length > 0 ? (
-                  <SessionGrid
-                    tabs={tabs}
-                    visibleTabs={visibleTabs}
-                    activeKey={activeKey}
-                    showThinking={showThinking}
-                    onActivate={setActiveKey}
-                    onClose={closeConversation}
-                    onFocus={expandSession}
-                    onBack={
-                      restoreSplit && !splitSessions ? backToSplit : undefined
-                    }
-                    onSessionSplit={splitWithSession}
-                    terminalOpen={terminalPane && view === "sessions"}
-                    onTerminalToggle={toggleTerminalPane}
-                  />
-                ) : (
-                  <EmptyCenter />
-                )}
-              </>
+              <SessionGrid
+                tabs={tabs}
+                visibleTabs={visibleTabs}
+                paneCount={visiblePaneCount}
+                activeKey={activeKey}
+                showThinking={showThinking}
+                onActivate={setActiveKey}
+                onClose={closeConversation}
+                onFocus={expandSession}
+                onBack={
+                  restoreSplit && !splitSessions ? backToSplit : undefined
+                }
+                onSessionSplit={splitWithSession}
+                terminalOpen={terminalPane && view === "sessions"}
+                onTerminalToggle={toggleTerminalPane}
+                terminalExpanded={terminalExpanded}
+                onTerminalExpand={() => setTerminalExpanded(true)}
+                onTerminalCollapse={() => setTerminalExpanded(false)}
+                onTerminalClose={closeTerminalPane}
+                theme={theme}
+                onSessionDrop={dropSession}
+                onSessionTabsChange={setTabbedSessionKeys}
+                focusMode={!splitSessions}
+              />
             ) : view === "fleet" ? (
               <FleetPage
                 onFocusSession={(key) => {
@@ -556,36 +558,6 @@ function Frame() {
             </div>
           )}
           <UpdateTray />
-          {terminalPane && view === "sessions" && !terminalExpanded && (
-            <button
-              type="button"
-              className="terminal-pane-resizer"
-              role="separator"
-              aria-orientation="vertical"
-              aria-label="Resize terminal pane"
-              title="Drag to resize terminal"
-              onPointerDown={startTerminalResize}
-            />
-          )}
-          {terminalPane && view === "sessions" && (
-            <aside
-              className={`terminal-pane${terminalExpanded ? " is-expanded" : ""}`}
-              aria-label="Terminal pane"
-              style={
-                terminalExpanded ? undefined : { width: `${terminalWidth}px` }
-              }
-            >
-              <TerminalPage
-                cwd={active?.cwd}
-                theme={theme}
-                pane
-                expanded={terminalExpanded}
-                onExpand={() => setTerminalExpanded(true)}
-                onCollapse={() => setTerminalExpanded(false)}
-                onClose={closeTerminalPane}
-              />
-            </aside>
-          )}
         </main>
         {view !== "settings" && <AppFooter />}
       </div>
@@ -599,6 +571,7 @@ const SIDEBAR_PANE_LIMIT = 4;
 function SessionGrid({
   tabs,
   visibleTabs,
+  paneCount,
   activeKey,
   showThinking,
   onActivate,
@@ -608,9 +581,12 @@ function SessionGrid({
   onSessionSplit,
   terminalOpen,
   onTerminalToggle,
+  terminalExpanded, onTerminalExpand, onTerminalCollapse, onTerminalClose, theme,
+  onSessionDrop, onSessionTabsChange, focusMode,
 }: {
   tabs: ConversationTab[];
   visibleTabs: ConversationTab[];
+  paneCount: number;
   activeKey: string;
   showThinking: boolean;
   onActivate: (key: string) => void;
@@ -620,20 +596,28 @@ function SessionGrid({
   onSessionSplit: (key: string) => void;
   terminalOpen: boolean;
   onTerminalToggle: () => void;
+  terminalExpanded: boolean;
+  onTerminalExpand: () => void;
+  onTerminalCollapse: () => void;
+  onTerminalClose: () => void;
+  theme: "light" | "dark";
+  onSessionDrop: (data: SessionDrag, asTab: boolean) => string | null;
+  onSessionTabsChange: (keys: string[]) => void;
+  focusMode: boolean;
 }) {
-  const split = visibleTabs.length > 1;
+  const split = paneCount > 1;
   const [headerHost, setHeaderHost] = useState<HTMLDivElement | null>(null);
+  const [tabHosts, setTabHosts] = useState<Record<string, HTMLDivElement | null>>({});
+  const onTabHost = useCallback((key: string, node: HTMLDivElement | null) => {
+    setTabHosts(current => current[key] === node ? current : { ...current, [key]: node });
+  }, []);
   const focusedKey = visibleTabs.some((tab) => tab.key === activeKey)
     ? activeKey
     : visibleTabs[0]?.key;
   const [reviewTabs, setReviewTabs] = useState<ReviewTab[]>([]);
   const [activeReviewId, setActiveReviewId] = useState<string | null>(null);
   const [diffLayout, setDiffLayout] = useState<DiffLayout>("unified");
-  // Split view shares one workspace pane on the right, following the
-  // focused session's folder.
-  // Split view shares one workspace pane on the right, following the
-  // focused session's folder. Persisted: settings and other pages remount
-  // the grid, and without this the open pane collapses every time.
+  // One movable workspace follows the focused session; its open state persists.
   const [sharedWorkspace, setSharedWorkspace] = useState(
     () => localStorage.getItem("devden.split-workspace") === "1",
   );
@@ -649,7 +633,18 @@ function SessionGrid({
     localStorage.setItem("devden.split-workspace-tab", workspaceTab);
   }, [workspaceTab]);
   const focusedTab = visibleTabs.find((tab) => tab.key === focusedKey);
-  const showWorkspace = split && sharedWorkspace && !!focusedTab?.cwd;
+  const showWorkspace = sharedWorkspace && !!focusedTab?.cwd;
+  const [boardOpen, setBoardOpen] = useState(false);
+  useEffect(() => {
+    const toggle = () => setBoardOpen(open => !open);
+    window.addEventListener("devden:toggle-board", toggle);
+    return () => window.removeEventListener("devden:toggle-board", toggle);
+  }, []);
+  const [maximizedPane, setMaximizedPane] = useState<string | null>(null);
+  const openSharedWorkspace = useCallback((nextTab?: "files" | "changes") => {
+    if (nextTab) setWorkspaceTab(nextTab);
+    setSharedWorkspace(true);
+  }, []);
   useEffect(() => {
     const keys = new Set(tabs.map((tab) => tab.key));
     setReviewTabs((current) => {
@@ -693,160 +688,57 @@ function SessionGrid({
     reviewTabs[0] ??
     null;
   const docked = reviewTabs.length > 0;
-  const layout = sessionPaneLayout(visibleTabs.length);
-  // Four panes tile 2×2. Three panes are two on top and one underneath
-  // that spans both. Other counts keep the tiler.
-  const twoByTwo = split && visibleTabs.length === 4;
-  const threeStack = split && visibleTabs.length === 3;
-  // Which panes have a neighbor to their left / above them — those edges
-  // get a hairline divider. Walks the same row-major order the grid
-  // auto-placement fills, so it matches every tiling without per-count
-  // CSS.
-  const trackCount = threeStack || twoByTwo ? 2 : layout.track;
-  const spanList = threeStack
-    ? [1, 1, 2]
-    : twoByTwo
-      ? [1, 1, 1, 1]
-      : layout.spans;
-  const paneEdges: Array<{ left: boolean; top: boolean }> = [];
-  {
-    let row = 0;
-    let col = 0;
-    for (const span of spanList) {
-      paneEdges.push({ left: col > 0, top: row > 0 });
-      col += span;
-      if (col >= trackCount) {
-        row += 1;
-        col = 0;
-      }
-    }
-  }
-  return (
-    <div className={`workbench-split${docked ? " is-docked" : ""}`}>
-      {split && <div className="session-toolbar" ref={setHeaderHost} />}
-      <div className="workbench-split__row">
-        <div
-          className={`session-grid${split ? " is-split" : ""}`}
-          data-density={split ? layout.density : "full"}
-          style={
-            split
-              ? {
-                  gridTemplateColumns:
-                    threeStack || twoByTwo
-                      ? "repeat(2, minmax(0, 1fr))"
-                      : `repeat(${layout.track}, minmax(0, 1fr))`,
-                  ...(threeStack || twoByTwo
-                    ? { gridTemplateRows: "repeat(2, minmax(0, 1fr))" }
-                    : {}),
-                }
-              : undefined
-          }
-        >
-          {tabs.map((tab) => {
-            const visibleIndex = visibleTabs.findIndex(
-              (visible) => visible.key === tab.key,
-            );
-            const visible = visibleIndex >= 0;
-            return (
-              <div
-                key={tab.key}
-                className={`session-pane-slot${visible ? "" : " is-background"}`}
-                hidden={!visible}
-                aria-hidden={!visible}
-                data-edge-left={
-                  visible && split && paneEdges[visibleIndex]?.left
-                    ? ""
-                    : undefined
-                }
-                data-edge-top={
-                  visible && split && paneEdges[visibleIndex]?.top
-                    ? ""
-                    : undefined
-                }
-                style={
-                  visible && split
-                    ? threeStack
-                      ? visibleIndex === 2
-                        ? { gridColumn: "1 / -1" }
-                        : undefined
-                      : { gridColumn: `span ${layout.spans[visibleIndex]}` }
-                    : undefined
-                }
-              >
-                <section
-                  className={`session-pane${tab.key === activeKey ? " is-active" : ""}${activeReview?.sessionKey === tab.key ? " is-reviewing" : ""}`}
-                  aria-label={`Session ${tab.label}`}
-                  onPointerDownCapture={() => onActivate(tab.key)}
-                >
-                  <Conversation
-                    tab={tab}
-                    showThinking={showThinking}
-                    split={split}
-                    density={split ? layout.density : "full"}
-                    sessionCount={visibleTabs.length}
-                    headerHost={split ? headerHost : null}
-                    focused={tab.key === focusedKey}
-                    visible={visible}
-                    onClose={
-                      visible && split ? () => onClose(tab.key) : undefined
-                    }
-                    onFocus={
-                      visible && split ? () => onFocus(tab.key) : undefined
-                    }
-                    onBack={visible && !split ? onBack : undefined}
-                    sharedWorkspaceOpen={showWorkspace}
-                    onSharedWorkspaceToggle={
-                      split
-                        ? () => setSharedWorkspace((open) => !open)
-                        : undefined
-                    }
-                    onSessionSplit={onSessionSplit}
-                    terminalOpen={terminalOpen}
-                    onTerminalToggle={onTerminalToggle}
-                    reviewTitle={
-                      activeReview?.sessionKey === tab.key
-                        ? activeReview.view.title
-                        : null
-                    }
-                    dockMulti={split}
-                    onOpenReview={(view) => openReview(tab, view)}
-                  />
-                </section>
-              </div>
-            );
-          })}
-        </div>
-        {showWorkspace && focusedTab && (
-          <WorkspaceExplorer
-            key={focusedTab.cwd}
-            sessionKey={focusedTab.key}
-            root={focusedTab.cwd}
-            visible
-            placement="side"
-            tab={workspaceTab}
-            onTabChange={setWorkspaceTab}
-            onPlacementChange={() => {}}
-            onClose={() => setSharedWorkspace(false)}
-          />
-        )}
-        {docked && activeReview && (
-          <ReviewDock
-            tabs={reviewTabs}
-            activeId={activeReview.id}
-            layout={diffLayout}
-            multi={split}
-            onLayout={setDiffLayout}
-            onActivate={setActiveReviewId}
-            onCloseTab={closeReviewTab}
-            onCloseDiff={() => {
-              setReviewTabs([]);
-              setActiveReviewId(null);
-            }}
-          />
-        )}
-      </div>
-    </div>
-  );
+  const { workingKeys, awaitingKeys, openConversation, openDefaultConversation } = useStore();
+  const layout = sessionPaneLayout(paneCount);
+  // Layout identities persist while process keys stay unique to each browser page.
+  const panels: DockPanel[] = tabs.map((tab) => {
+    const visible = visibleTabs.some(item => item.key === tab.key);
+    return {
+      id: tab.key, layoutId: tab.layoutId ?? tab.key, session: true, title: tab.label || "Chat", hidden: !visible,
+      backend: tab.backend, tone: awaitingKeys.has(tab.key) ? "waiting" : workingKeys.has(tab.key) ? "running" : undefined,
+      content: <section
+        className={`session-pane${tab.key === activeKey ? " is-active" : ""}${activeReview?.sessionKey === tab.key ? " is-reviewing" : ""}`}
+        aria-label={`Session ${tab.label}`} onPointerDownCapture={() => onActivate(tab.key)}>
+        <Conversation
+          tab={tab} showThinking={showThinking} split={split}
+          density={split ? layout.density : "full"} sessionCount={paneCount}
+          headerHost={headerHost} tabHost={tabHosts[tab.key] ?? null} focused={tab.key === focusedKey} visible={visible}
+          onClose={visible && split ? () => onClose(tab.key) : undefined}
+          onFocus={visible && split ? () => onFocus(tab.key) : undefined}
+          onBack={visible && !split ? onBack : undefined}
+          sharedWorkspaceOpen={showWorkspace}
+          onSharedWorkspaceToggle={() => setSharedWorkspace(open => !open)}
+          onSharedWorkspaceOpen={openSharedWorkspace}
+          sharedBoardOpen={boardOpen}
+          onSharedBoardToggle={() => setBoardOpen(open => !open)}
+          onSessionSplit={onSessionSplit} terminalOpen={terminalOpen} onTerminalToggle={onTerminalToggle}
+          reviewTitle={activeReview?.sessionKey === tab.key ? activeReview.view.title : null}
+          dockMulti={split} onOpenReview={view => openReview(tab, view)}
+        />
+      </section>,
+    };
+  });
+  if (!tabs.length) panels.push({ id: "empty", title: "Workspace", content: <EmptyCenter /> });
+  if (showWorkspace && focusedTab) panels.push({ id: "workspace", title: "Files & changes", content:
+    <WorkspaceExplorer key={focusedTab.cwd} sessionKey={focusedTab.key} root={focusedTab.cwd}
+      visible placement={maximizedPane === "workspace" ? "full" : "side"} tab={workspaceTab} onTabChange={setWorkspaceTab}
+      onPlacementChange={placement => setMaximizedPane(placement === "full" ? "workspace" : null)}
+      onClose={() => { setSharedWorkspace(false); setMaximizedPane(null); }} /> });
+  if (docked && activeReview) panels.push({ id: "review", title: "Review", content:
+    <ReviewDock tabs={reviewTabs} activeId={activeReview.id} layout={diffLayout} multi={split}
+      onLayout={setDiffLayout} onActivate={setActiveReviewId} onCloseTab={closeReviewTab}
+      onCloseDiff={() => { setReviewTabs([]); setActiveReviewId(null); }} /> });
+  if (boardOpen && focusedTab?.cwd) panels.push({ id: "board", title: "Board", content:
+    <BoardPanel key={focusedTab.cwd} cwd={focusedTab.cwd} sessionPath={focusedTab.sessionPath} onClose={() => setBoardOpen(false)} /> });
+  if (terminalOpen) panels.push({ id: "terminal", title: "Terminal", content:
+    <TerminalPage cwd={focusedTab?.cwd} theme={theme} pane expanded={terminalExpanded}
+      onExpand={onTerminalExpand} onCollapse={onTerminalCollapse} onClose={onTerminalClose} /> });
+  return <div className="workbench-split">
+    <DockLayout onTabHost={onTabHost} onNewSession={() => { if (focusedTab?.cwd) openConversation(focusedTab.cwd, undefined, focusedTab.backend, { forceNew: true }); else void openDefaultConversation(); }} toolbar={!terminalExpanded ? <div className="session-toolbar" ref={setHeaderHost} /> : null} panels={panels} storageKey="devden.dock-layout" maximized={terminalExpanded ? "terminal" : showWorkspace ? maximizedPane : null}
+      className={`session-grid${split ? " is-split" : ""}`}
+      activeSession={activeKey} onSessionActivate={onActivate} onSessionDrop={onSessionDrop}
+      onSessionTabsChange={onSessionTabsChange} onSessionClose={onClose} focusMode={focusMode} />
+  </div>;
 }
 
 function EmptyCenter() {

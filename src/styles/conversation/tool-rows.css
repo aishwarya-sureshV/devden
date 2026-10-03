@@ -295,13 +295,10 @@
 .trow-stack.is-waiting .trow__thread-bar {
  width: 4%;
 }
-.trow__thread-bar.is-segmented {
+.trow__thread-bar.is-segmented,
+.trow-stack.is-running .trow__thread-bar {
  height: 3px;
- background: repeating-linear-gradient(
-  90deg,
-  color-mix(in srgb, var(--pw-fg-strong) 78%, transparent) 0 9px,
-  transparent 9px 13px
- );
+ background: var(--backend-accent, color-mix(in srgb, var(--pw-fg-strong) 78%, transparent));
 }
 .trow-stack.is-settled .trow__thread-bar,
 .trow-stack.is-settled .trow__thread-bar.is-segmented {
@@ -329,7 +326,7 @@
  height: 4px;
  border-radius: 2px;
  opacity: 0;
- background: linear-gradient(90deg, transparent, var(--pw-fg-strong));
+ background: linear-gradient(90deg, transparent, var(--backend-accent, var(--pw-fg-strong)));
 }
 .trow-stack.is-waiting .trow__thread-head {
  opacity: 1;
@@ -357,7 +354,12 @@
 }
 .trow__diff {
  margin: 4px 0 6px;
- overflow: hidden;
+ display: grid;
+ grid-template-columns: minmax(max-content, 1fr);
+ /* Long lines scroll inside the diff instead of being cut with an ellipsis. */
+ overflow-x: auto;
+ overflow-y: hidden;
+ scrollbar-width: thin;
  border-radius: 6px;
  background: color-mix(in srgb, var(--pw-fg) 6%, transparent);
  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--pw-fg) 8%, transparent);
@@ -369,9 +371,11 @@
 }
 .trow__diff-line {
  display: grid;
- grid-template-columns: calc(var(--diff-gutter, 3ch) + 14px) 14px minmax(0, 1fr);
+ grid-template-columns: calc(var(--diff-gutter, 3ch) + 14px) 14px max-content;
+ width: max-content;
+ min-width: 100%;
+ box-sizing: border-box;
  height: 20px;
- overflow: hidden;
  /* Untouched lines stay dim. Adds and removals keep the text color and
     only tint the row and the sign. */
  color: var(--pw-fg-3);
@@ -390,8 +394,7 @@
  color: var(--pw-fg-4);
 }
 .trow__diff-line span:last-child {
- overflow: hidden;
- text-overflow: ellipsis;
+ padding-right: 10px;
 }
 .trow__diff-line.is-add,
 .trow__diff-line.is-remove {

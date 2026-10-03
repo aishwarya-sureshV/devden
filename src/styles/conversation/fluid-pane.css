@@ -1,0 +1,140 @@
+/* Fluid pane: the composer toolbar and the per-turn change card size
+   themselves from their own container width, so any dock pane, single
+   session or split layout gets the same result with no per-pixel
+   breakpoints. --fit runs 0 → full as the pane grows past ~240px.
+   The dock refuses to shrink a pane below MIN_PANE_W (lib/dockLayout.ts).
+   Prefixed selectors outrank workbenchSkin.css, which loads later. */
+.composer,
+.turn-files {
+ container-type: inline-size;
+}
+.composer .composer__card,
+.turn-files > * {
+ --fit: clamp(0px, calc(100cqi - 240px), 240px);
+}
+
+/* Composer: tools wrap onto the first line, send stays pinned top-right, the
+   usage readout drops to its own line once the tools need the width. */
+.composer .composer__row {
+ position: relative;
+ flex-wrap: wrap;
+ justify-content: flex-start;
+ row-gap: 3px;
+ min-height: 28px;
+ padding: 0 38px 3px 6px;
+}
+.composer .composer__trailing {
+ position: absolute;
+ top: 0;
+ right: 6px;
+}
+.composer .composer__rule {
+ display: none;
+}
+.composer .composer__tools {
+ flex: 1 1 0;
+ min-width: min(100%, 200px);
+ gap: 2px;
+}
+.composer .composer__usage-wrap {
+ flex: none;
+ margin-left: auto;
+}
+.composer .composer__primary {
+ width: calc(24px + var(--fit) * 0.0167);
+ height: calc(24px + var(--fit) * 0.0167);
+}
+.composer .composer__add {
+ width: calc(20px + var(--fit) * 0.008);
+ height: calc(20px + var(--fit) * 0.008);
+}
+.composer .composer__chip {
+ height: calc(22px + var(--fit) * 0.0167);
+ gap: calc(4px + var(--fit) * 0.0125);
+ padding: 0 calc(5px + var(--fit) * 0.0125) 0 4px;
+ font-size: calc(11px + var(--fit) * 0.0042);
+}
+.composer .composer__usage {
+ height: calc(22px + var(--fit) * 0.0167);
+ padding: 0 calc(4px + var(--fit) * 0.0167);
+ font-size: calc(10.5px + var(--fit) * 0.0021);
+}
+/* Order of sacrifice as the tools row runs out of room: mode label (icon
+   stays), then effort text, then the model name's tail (ellipsis). */
+.composer .native-model-controls {
+ flex: 0 1 auto;
+ min-width: 0;
+ max-width: none;
+}
+.composer .native-model-controls .composer__chip {
+ width: auto;
+ max-width: 100%;
+}
+.composer .composer__chip-name {
+ flex: 0 1 auto;
+ min-width: 0;
+}
+.composer .composer__chip-effort {
+ flex: 0 100 auto;
+ min-width: 0;
+ overflow: hidden;
+ white-space: nowrap;
+}
+.composer .composer__mode {
+ flex: 0 100 auto;
+ min-width: 30px;
+ overflow: hidden;
+}
+
+/* Change card: the tile, text and buttons scale with the card; the undo
+   label folds into its icon as the card narrows. */
+.turn-files {
+ border-radius: 10px;
+}
+.turn-files .turn-files__head {
+ gap: calc(6px + var(--fit) * 0.0083);
+ padding: calc(5px + var(--fit) * 0.0083) calc(6px + var(--fit) * 0.0083)
+  calc(5px + var(--fit) * 0.0083) calc(8px + var(--fit) * 0.0083);
+}
+.turn-files .turn-files__tile {
+ width: calc(20px + var(--fit) * 0.0167);
+ height: calc(20px + var(--fit) * 0.0167);
+ border-radius: 7px;
+}
+.turn-files .turn-files__label {
+ overflow: hidden;
+ font-size: calc(12px + var(--fit) * 0.0021);
+ text-overflow: ellipsis;
+ white-space: nowrap;
+}
+.turn-files .turn-files__sum,
+.turn-files .turn-files__stat {
+ font-size: calc(10.5px + var(--fit) * 0.0021);
+}
+.turn-files .turn-files__cells i {
+ width: calc(5px + var(--fit) * 0.0042);
+ height: calc(5px + var(--fit) * 0.0042);
+}
+.turn-files .turn-files__undo,
+.turn-files .turn-files__open {
+ height: calc(22px + var(--fit) * 0.0083);
+ padding: 0 calc(7px + var(--fit) * 0.0083);
+ border-radius: 6px;
+ font-size: calc(11px + var(--fit) * 0.0021);
+}
+.turn-files__undo-label {
+ display: inline-block;
+ max-width: clamp(0px, calc(var(--fit) * 1.2 - 90px), 80px);
+ overflow: hidden;
+ white-space: nowrap;
+}
+.turn-files .turn-files__row,
+.turn-files .turn-files__more {
+ height: calc(24px + var(--fit) * 0.0083);
+}
+.turn-files .turn-files__path {
+ font-size: calc(11px + var(--fit) * 0.0021);
+}
+.turn-files .turn-files__list {
+ padding: 2px 4px 4px;
+}

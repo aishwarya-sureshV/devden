@@ -31,6 +31,28 @@ const edit = (sessionKey, cwd, file, content) => {
 };
 const byPath = (view) => Object.fromEntries(view.files.map((f) => [f.path, f]));
 
+test("session provenance requires a turn and survives late paths outside git", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "devden-session-origin-"));
+  const has = (path) => Boolean(db().prepare("SELECT 1 FROM docs WHERE ns = 'devden-sessions' AND key = ?").get(path));
+  const opened = join(cwd, "opened.jsonl");
+  changes.noteSessionContext("opened-only", { cwd, sessionPath: opened });
+  assert.equal(has(opened), false);
+  start("opened-only", cwd);
+  assert.equal(has(opened), false);
+  changes.noteSessionActivity("opened-only");
+  assert.equal(has(opened), true);
+  await changes.endTurn("opened-only");
+  const next = join(cwd, "empty-next.jsonl");
+  changes.noteSessionContext("opened-only", { cwd, sessionPath: next });
+  assert.equal(has(next), false);
+  start("late-path", cwd);
+  changes.noteSessionActivity("late-path");
+  await changes.endTurn("late-path");
+  const late = join(cwd, "late.jsonl");
+  changes.noteSessionContext("late-path", { sessionPath: late });
+  assert.equal(has(late), true);
+});
+
 test("turn and session views, tool vs command attribution", async () => {
   const cwd = repo();
   start("s1", cwd);

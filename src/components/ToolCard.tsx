@@ -27,6 +27,8 @@ import {
   type ToolRowModel,
 } from "../lib/toolRow";
 import { SynText } from "./SynText";
+import { toolLook } from "../lib/workbenchLook";
+import { WorkbenchIcon } from "./WorkbenchIcon";
 
 type ToolItem = Extract<TimelineItem, { kind: "tool" }>;
 
@@ -43,8 +45,10 @@ function EditWell({
   inDock,
   dockWord,
   onOpen,
+  cwd = "",
 }: {
   title: string;
+  cwd?: string;
   diff: ToolDiff;
   inDock: boolean;
   dockWord: string;
@@ -55,12 +59,14 @@ function EditWell({
   const preview = 9;
   const shown = expanded ? code : code.slice(0, preview);
   const more = code.length - shown.length;
-  const path = splitPath(title);
+  // Repo-relative in the header ("server/x.js"), full path on hover.
+  const root = cwd.replace(/\/+$/, "");
+  const path = splitPath(root && title.startsWith(`${root}/`) ? title.slice(root.length + 1) : title);
   const lang = syntaxLang(undefined, title);
   return (
     <div className={`edit-well${inDock ? " is-open" : ""}`}>
       <div className="edit-well__head">
-        <span className="edit-well__verb">edit</span>
+        <span className="edit-well__verb"><WorkbenchIcon kind="tools" name="edit" />edit</span>
         <span className="edit-well__path" title={title}>
           {path.dir && <span>{path.dir}</span>}
           <strong>{path.file}</strong>
@@ -123,6 +129,10 @@ export function ToolCard({
   dockWord?: string;
 }) {
   const model = describeTool(item, cwd, repeat);
+  const offset = Number(item.args.offset ?? item.args.start_line ?? 0);
+  const limit = Number(item.args.limit ?? item.args.end_line ?? 0);
+  const range = model.detail === "file" && model.thread === "settled" && offset > 0 && limit > 0
+    ? ` · L${offset}–${item.args.end_line ? limit : offset + limit - 1}` : "";
   const elapsed = useElapsed(item);
   const running = item.status === "running";
   const duration = running ? formatDuration(elapsed, true) : model.duration;
@@ -171,6 +181,7 @@ export function ToolCard({
         <span className="tl__node" />
         <EditWell
           title={title}
+          cwd={cwd}
           diff={fullDiff}
           inDock={dockTitle === title}
           dockWord={dockWord}
@@ -190,6 +201,8 @@ export function ToolCard({
       <span className="tl__node" />
       <div className={`trow-stack is-${model.thread}`}>
         <CallRow
+          range={range}
+          toolName={item.name.startsWith("mcp") ? item.name : model.verb}
           model={{ ...model, parts, duration }}
           signal={item.output}
           expanded={open}
@@ -289,6 +302,11 @@ export function ExploredRows({
       { text: `${failed} failed`, tone: "fail" },
     );
   }
+  const counts = entries.reduce<Record<string, number>>((all, entry) => {
+    const verb = describeTool(entry.item, cwd, entry.repeat).verb;
+    all[verb] = (all[verb] ?? 0) + entry.repeat;
+    return all;
+  }, {});
   const model: ToolRowModel = {
     verb: "explored",
     accent: false,
@@ -320,6 +338,8 @@ export function ExploredRows({
         <div className="trow-stack is-settled">
           <CallRow
             model={model}
+            summary={<>Explored{Object.entries(counts).map(([verb, count]) => <span key={verb}> · <b style={{ color: toolLook(verb).color, fontWeight: 600 }}>{count}</b> {verb}</span>)}</>}
+            action={<span className="trow__open">{open ? "Fold" : "Expand"}</span>}
             expanded={open}
             onClick={() => setOpen((value) => !value)}
           />
@@ -381,12 +401,18 @@ export function WorkingLine({
 }
 
 export function CallRow({
+  range,
+  summary,
+  toolName,
   model,
   signal = "",
   expanded,
   onClick,
   action,
 }: {
+  range?: string;
+  summary?: ReactNode;
+  toolName?: string;
   model: ToolRowModel;
   /** Live output, so a "12 of 14" can pull the thread instead of the clock. */
   signal?: string;
@@ -399,6 +425,7 @@ export function CallRow({
     <button
       type="button"
       className="trow"
+      style={{ "--tool-color": toolLook(toolName ?? model.verb).color } as CSSProperties}
       aria-expanded={expanded}
       aria-label={`${model.verb} ${model.title} ${model.parts.map((part) => part.text).join("")}`.trim()}
       onClick={onClick}
@@ -407,7 +434,7 @@ export function CallRow({
         <span
           className={`trow__verb${model.accent ? " is-accent" : ""}${model.verb.length > 7 ? " is-wide" : ""}`}
         >
-          {model.verb}
+          <WorkbenchIcon kind="tools" name={toolLook(toolName ?? model.verb).icon} />{model.verb}
         </span>
         <span className="trow__main">
           <span
@@ -418,7 +445,7 @@ export function CallRow({
             {model.prefix && (
               <span className="trow__dim trow__prefix">{model.prefix}</span>
             )}
-            <span className="trow__bright">{model.main}</span>
+            <span className="trow__bright">{summary ?? model.main}</span>
             {model.suffix && (
               <span className="trow__dim trow__suffix">{model.suffix}</span>
             )}
@@ -428,9 +455,11 @@ export function CallRow({
             className="trow__result"
             aria-label={model.parts.map((part) => part.text).join("")}
           >
+            {model.detail === "file" && model.prefix && <span className="trow__folder" title={model.prefix}>{model.prefix} · </span>}
             {model.parts.map((part, index) => (
               <AnimatedText key={index} text={part.text} tone={part.tone} />
             ))}
+            {range && <span className="trow__range">{range}</span>}
           </span>
           <span className="trow__dur">{model.duration}</span>
           {action}

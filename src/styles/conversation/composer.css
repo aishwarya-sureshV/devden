@@ -174,15 +174,15 @@
 }
 /* Per-agent accent: a claude session must not look identical to a pi one.
    Colors the send button and the agent badge; pi keeps the default look. */
-.composer[data-backend="claude"] {
+[data-backend="claude"] {
  --backend-accent: #c96442;
  --backend-accent-contrast: #fff;
 }
-.composer[data-backend="grok"] {
+[data-backend="grok"] {
  --backend-accent: #7c5cbf;
  --backend-accent-contrast: #fff;
 }
-.composer[data-backend="codex"] {
+[data-backend="codex"] {
  --backend-accent: #0f8a6d;
  --backend-accent-contrast: #fff;
 }

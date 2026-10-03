@@ -5,6 +5,7 @@ import {
 } from "../lib/api";
 import { useStore } from "../lib/store";
 import { AgentConnect } from "./AgentConnect";
+import { BackendLogo } from "./icons";
 
 type Step = "welcome" | "agents" | "start";
 
@@ -110,7 +111,7 @@ export function Onboarding() {
     <div className="setup">
       <aside className="setup__side">
         <div className="setup__brand">
-          <div className="setup__mark">π</div>
+          <div className="setup__mark"><BackendLogo backend="pi" size={26} /></div>
           <div>
             <strong>devden</strong>
             <span>first run</span>

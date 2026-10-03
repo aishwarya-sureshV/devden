@@ -83,8 +83,9 @@ export function SettingsAppearance({
   showThinking,
   onShowThinkingChange,
 }: {
-  showThinking: boolean;
-  onShowThinkingChange: (show: boolean) => void;
+  /** Omitted in the explorer's quick panel, which hides that row. */
+  showThinking?: boolean;
+  onShowThinkingChange?: (show: boolean) => void;
 }) {
   const settings = useSyncExternalStore(subscribeAppearance, getAppearance);
   const fileRef = useRef<HTMLInputElement>(null);
@@ -558,7 +559,9 @@ export function SettingsAppearance({
       <section className="settings-block">
         <div className="settings-block__label">Conversation</div>
         <div className="settings-group">
-          <div className="settings-field">
+          <div className="settings-field"><div className="settings-field__text"><strong>Tool row density</strong><span>Spacing between tool calls.</span></div><Segmented options={[{ id: "compact", label: "Compact" }, { id: "comfortable", label: "Comfortable" }]} active={settings.toolDensity} onPick={id => setAppearance({ toolDensity: id as AppearanceSettings["toolDensity"] })} /></div>
+          <div className="settings-field"><div className="settings-field__text"><strong>Tool durations</strong><span>Show elapsed time beside tool calls.</span></div><Segmented options={[{ id: "shown", label: "Shown" }, { id: "hidden", label: "Hidden" }]} active={settings.toolDurations ? "shown" : "hidden"} onPick={id => setAppearance({ toolDurations: id === "shown" })} /></div>
+          {onShowThinkingChange && <div className="settings-field">
             <div className="settings-field__text">
               <strong>Thinking blocks</strong>
               <span>
@@ -574,7 +577,7 @@ export function SettingsAppearance({
               active={showThinking ? "shown" : "hidden"}
               onPick={(id) => onShowThinkingChange(id === "shown")}
             />
-          </div>
+          </div>}
         </div>
       </section>
 
