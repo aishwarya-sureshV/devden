@@ -1,0 +1,63 @@
+/* Prosecutor round 1 effort floor: the reason under the thinking ladder. */
+.compact-picker__floor {
+  margin-top: -2px;
+  color: #8d9097;
+}
+
+/* After round 1's guilty verdict: an ignorable nudge to lower the builder's
+   effort. Same shape as .route-setup__paused, accent instead of warning. */
+.prosecutor-nudge {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 4px 4px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--pw-accent-line);
+  color: var(--dsw-alias-label-caption);
+  font-size: 12px;
+}
+.prosecutor-nudge span {
+  flex: 1 1 240px;
+}
+.prosecutor-nudge select {
+  font-family: var(--ds-font-family-code);
+  font-size: 12px;
+  color: var(--dsw-alias-label-primary);
+  padding: 4px 24px 4px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--dsw-alias-border-l3);
+  background: var(--pw-card-strong)
+    url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="10" height="6"><path d="M1 1l4 4 4-4" fill="none" stroke="%23756957" stroke-width="1.4"/></svg>')
+    no-repeat right 8px center;
+  appearance: none;
+  cursor: pointer;
+}
+.prosecutor-nudge__apply,
+.prosecutor-nudge__later {
+  padding: 4px 9px;
+  border-radius: 7px;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.prosecutor-nudge__apply {
+  border: 1px solid var(--pw-accent-line);
+  background: transparent;
+  color: var(--pw-accent);
+}
+.prosecutor-nudge__apply:hover {
+  background: var(--dsw-alias-interactive-bg-hover-solid);
+}
+.prosecutor-nudge__later {
+  border: 0;
+  background: transparent;
+  color: var(--dsw-alias-label-caption);
+}
+.prosecutor-nudge__later:hover {
+  color: var(--dsw-alias-label-primary);
+}
+.prosecutor-nudge .ask-card__icon-btn {
+  width: 24px;
+  height: 24px;
+}

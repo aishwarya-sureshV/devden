@@ -53,6 +53,13 @@ test("session provenance requires a turn and survives late paths outside git", a
   assert.equal(has(late), true);
 });
 
+test("a turn killed before any state event still marks a path known at start", () => {
+  const path = join(mkdtempSync(join(tmpdir(), "devden-killed-")), "chat_history.jsonl");
+  changes.noteSessionActivity("killed-first-turn", path);
+  const row = db().prepare("SELECT value FROM docs WHERE ns = 'devden-sessions' AND key = ?").get(path);
+  assert.equal(row?.value, '"activity"');
+});
+
 test("turn and session views, tool vs command attribution", async () => {
   const cwd = repo();
   start("s1", cwd);

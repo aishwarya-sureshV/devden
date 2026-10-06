@@ -2,6 +2,7 @@
  * ACP (Agent Client Protocol) over a CLI's stdio. Grok launches through it
  * (`grok agent stdio`).
  */
+import { trackAgentProcess } from "./agent-pids.js";
 import { spawn } from "node:child_process";
 import { Readable, Writable } from "node:stream";
 import {
@@ -33,6 +34,7 @@ export async function openAcpClient({
     env: withHostGuardEnv({ ...process.env, ...env }),
     stdio: ["pipe", "pipe", "pipe"],
   });
+  trackAgentProcess(child);
   onSpawn?.(child);
   if (onStderr) child.stderr.on("data", onStderr);
   if (onError) child.once("error", onError);

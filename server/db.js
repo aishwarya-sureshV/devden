@@ -65,6 +65,41 @@ const MIGRATIONS = [
    );
    CREATE INDEX turn_files_before ON turn_files (before_hash);
    CREATE INDEX turn_files_after ON turn_files (after_hash);`,
+  // Prosecutor cases. Session id is the session file path: tab keys change
+  // on refresh. `extra` / `findings` are JSON for fields a later change adds
+  // (status, gate, owned, findings, flags) without another migration.
+  `CREATE TABLE cases (
+     id TEXT PRIMARY KEY,
+     session_id TEXT NOT NULL,
+     cwd TEXT NOT NULL DEFAULT '',
+     task TEXT NOT NULL DEFAULT '',
+     prosecutor_backend TEXT,
+     prosecutor_model TEXT,
+     prosecutor_effort TEXT,
+     executor_backend TEXT,
+     executor_model TEXT,
+     round INTEGER NOT NULL DEFAULT 0,
+     phase TEXT NOT NULL,
+     baseline_commit TEXT,
+     last_report TEXT,
+     last_defense TEXT,
+     updated_at INTEGER NOT NULL,
+     extra TEXT NOT NULL DEFAULT '{}'
+   );
+   CREATE INDEX cases_by_session ON cases (session_id, updated_at);
+   CREATE TABLE case_rounds (
+     case_id TEXT NOT NULL REFERENCES cases (id) ON DELETE CASCADE,
+     seq INTEGER NOT NULL,
+     round INTEGER NOT NULL,
+     "by" TEXT NOT NULL DEFAULT '',
+     prompt TEXT NOT NULL DEFAULT '',
+     report TEXT,
+     reply TEXT,
+     reply_by TEXT,
+     died TEXT,
+     findings TEXT,
+     PRIMARY KEY (case_id, seq)
+   );`,
 ];
 
 /** One connection per file; tests point DEVDEN_HOME (or a dir) elsewhere. */

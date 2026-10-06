@@ -1,12 +1,17 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   AGENT_BACKENDS,
   BACKEND_CAPABILITIES,
   backendName,
   capabilitiesFor,
   listBackends,
+  readDisabledBackends,
   sessionScope,
+  setBackendEnabled,
 } from "./agent-registry.js";
 import { AgentPool } from "./agent-pool.js";
 import { attachQueue } from "./agent-queue.js";
@@ -64,6 +69,33 @@ describe("agent-registry", () => {
     assert.equal(BACKEND_CAPABILITIES.pi.queue, true);
     assert.equal(capabilitiesFor("grok").warmStart, true);
     assert.equal(capabilitiesFor("pi").warmStart, false);
+  });
+
+  it("toggles agents off and on, persisting the disabled set", async () => {
+    // Isolate the doc store: DEVDEN_HOME points it at a throwaway db.
+    const saved = process.env.DEVDEN_HOME;
+    const home = await mkdtemp(join(tmpdir(), "devden-agents-doc-"));
+    process.env.DEVDEN_HOME = home;
+    try {
+      assert.equal(readDisabledBackends().size, 0);
+      assert.deepEqual(setBackendEnabled("codex", false), ["codex"]);
+      assert.equal(readDisabledBackends().has("codex"), true);
+      // Unknown ids coerce to a known backend, never an arbitrary doc key.
+      setBackendEnabled("codex; rm -rf /", false);
+      assert.deepEqual([...readDisabledBackends()].sort(), ["codex", "pi"]);
+      setBackendEnabled("pi", true);
+      setBackendEnabled("codex", true);
+      assert.equal(readDisabledBackends().size, 0);
+      // The catalog marks disabled rows for the pickers to hide.
+      setBackendEnabled("grok", false);
+      const listed = await listBackends();
+      assert.equal(listed.find((row) => row.id === "grok")?.enabled, false);
+      assert.equal(listed.find((row) => row.id === "pi")?.enabled, true);
+    } finally {
+      if (saved === undefined) delete process.env.DEVDEN_HOME;
+      else process.env.DEVDEN_HOME = saved;
+      await rm(home, { recursive: true, force: true });
+    }
   });
 });
 

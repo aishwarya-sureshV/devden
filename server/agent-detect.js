@@ -4,7 +4,7 @@
  */
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
-import { readFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -71,6 +71,57 @@ export function connectionCommand(id, installedPath) {
     : login;
   const install = spec.installCommand.replace("npm i -g", 'npm install --global --prefix "$HOME/.local"');
   return `export PATH="$HOME/.local/bin:$PATH"; ${installedPath ? connect : `${install} && ${connect}`}`;
+}
+
+/** The CLI's own sign-out, so a cancelled or switched account can be
+ *  replaced from the UI. pi has no logout subcommand: its credentials file
+ *  is edited instead (see signOutPiCredentials). */
+const LOGOUT_ARGS = {
+  claude: ["auth", "logout"],
+  codex: ["logout"],
+  grok: ["logout"],
+  zcode: ["logout"],
+};
+
+/** pi stores one credential per provider; drop only the subscription
+ *  (OAuth) entries and keep API keys, so sign-out never deletes a key the
+ *  user set up by hand. */
+export async function signOutPiCredentials(home = process.env.PI_CODING_AGENT_DIR || join(homedir(), ".pi", "agent")) {
+  const file = join(home, "auth.json");
+  let credentials;
+  try {
+    credentials = JSON.parse(await readFile(file, "utf8"));
+  } catch (error) {
+    if (error.code === "ENOENT") return { ok: false, error: "Pi is not signed in." };
+    return { ok: false, error: String(error?.message ?? error) };
+  }
+  const remaining = Object.fromEntries(
+    Object.entries(credentials ?? {}).filter(([, entry]) => entry?.type !== "oauth"),
+  );
+  if (Object.keys(remaining).length === Object.keys(credentials ?? {}).length)
+    return { ok: false, error: "Pi has no subscription sign-in to remove." };
+  await writeFile(file, `${JSON.stringify(remaining, null, 2)}\n`);
+  return { ok: true };
+}
+
+/** Run the CLI's logout for one built-in. `detected` is the server's own
+ *  detection row (trusted path), never a client-supplied one. */
+export async function signOutBackend(id, detected) {
+  if (id === "pi") return signOutPiCredentials();
+  if (!LOGOUT_ARGS[id]) return { ok: false, error: "This agent has no sign-out." };
+  if (!detected?.path) return { ok: false, error: `${id} isn't installed.` };
+  try {
+    await execFileAsync(detected.path, LOGOUT_ARGS[id], {
+      timeout: 20_000,
+      ...(id === "zcode"
+        ? { env: { ...process.env, ZCODE_BUILTIN_PROVIDER_CONFIG_FILE: ZCODE_APP_CONFIG } }
+        : {}),
+    });
+    return { ok: true };
+  } catch (error) {
+    const text = `${error?.stderr ?? ""}\n${error?.message ?? error}`.trim();
+    return { ok: false, error: text || `${id} sign-out failed.` };
+  }
 }
 
 let builtinCache = null;

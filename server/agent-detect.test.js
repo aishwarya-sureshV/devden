@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import test from "node:test";
-import { connectionCommand, clearDetectionCache, detectBuiltins } from "./agent-detect.js";
+import { connectionCommand, clearDetectionCache, detectBuiltins, signOutBackend, signOutPiCredentials } from "./agent-detect.js";
 
 test("Connect quotes executable paths and accepts only known subscription backends", async (t) => {
   const folder = await mkdtemp(join(tmpdir(), "devden-connect-"));
@@ -20,6 +20,64 @@ test("Connect quotes executable paths and accepts only known subscription backen
   assert.match(connectionCommand("pi"), /pi-login\.js/);
   assert.match(connectionCommand("codex"), /--prefix "\$HOME\/\.local"/);
   assert.doesNotMatch(connectionCommand("codex"), /sudo|--with-api-key/);
+});
+
+test("sign-out runs the CLI's own logout with the detected path", async (t) => {
+  const folder = await mkdtemp(join(tmpdir(), "devden-signout-"));
+  t.after(() => rm(folder, { recursive: true, force: true }));
+  // The shim records its argv (and ZCode's config env) beside itself.
+  const shim = await (async (id) => {
+    const bin = join(folder, id);
+    await writeFile(
+      bin,
+      '#!/bin/sh\nprintf \'%s\\n\' "$@" > "$0.args"\nprintf \'zcode_env=%s\\n\' "$ZCODE_BUILTIN_PROVIDER_CONFIG_FILE" >> "$0.args"\n',
+      { mode: 0o755 },
+    );
+    return bin;
+  })("claude");
+  assert.equal((await signOutBackend("claude", { id: "claude", path: shim })).ok, true);
+  assert.equal(
+    await readFile(`${shim}.args`, "utf8"),
+    "auth\nlogout\nzcode_env=\n",
+  );
+  // Codex/grok/ZCode use the bare `logout` subcommand.
+  for (const id of ["codex", "grok", "zcode"]) {
+    const bin = join(folder, id);
+    await writeFile(
+      bin,
+      '#!/bin/sh\nprintf \'%s\\n\' "$@" > "$0.args"\nprintf \'zcode_env=%s\\n\' "$ZCODE_BUILTIN_PROVIDER_CONFIG_FILE" >> "$0.args"\n',
+      { mode: 0o755 },
+    );
+    assert.equal((await signOutBackend(id, { id, path: bin })).ok, true, id);
+    const recorded = await readFile(`${bin}.args`, "utf8");
+    assert.match(recorded, /^logout\n/);
+    if (id === "zcode") assert.match(recorded, /zcode_env=.+/);
+  }
+  // No CLI, no destructive surprise; unknown ids are refused outright.
+  assert.equal((await signOutBackend("claude", { id: "claude" })).ok, false);
+  assert.equal((await signOutBackend("nope", { id: "nope", path: shim })).ok, false);
+});
+
+test("pi sign-out drops only oauth credentials", async (t) => {
+  const folder = await mkdtemp(join(tmpdir(), "devden-pi-signout-"));
+  t.after(() => rm(folder, { recursive: true, force: true }));
+  const state = join(folder, "pi-state");
+  await mkdir(state);
+  await writeFile(
+    join(state, "auth.json"),
+    JSON.stringify({
+      anthropic: { type: "oauth", access: "a", refresh: "r" },
+      openai: { type: "api_key", key: "keep" },
+    }),
+  );
+  assert.equal((await signOutPiCredentials(state)).ok, true);
+  const left = JSON.parse(await readFile(join(state, "auth.json"), "utf8"));
+  assert.deepEqual(Object.keys(left), ["openai"]);
+  // Only-oauth files and missing files both answer, never throw.
+  await writeFile(join(state, "auth.json"), JSON.stringify({ x: { type: "oauth", access: "a" } }));
+  assert.equal((await signOutPiCredentials(state)).ok, true);
+  assert.deepEqual(JSON.parse(await readFile(join(state, "auth.json"), "utf8")), {});
+  assert.match((await signOutPiCredentials(join(folder, "nowhere").toString())).error, /not signed in/i);
 });
 
 test("detection does not report API-key accounts as connected subscriptions", async (t) => {

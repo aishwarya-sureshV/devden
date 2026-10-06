@@ -3,9 +3,11 @@ import {
   useCallback,
   useEffect,
   useRef,
+  useState,
 } from "react";
 import {
   api,
+  type AgentBackend,
   type RewindFilesResult,
 } from "../lib/api";
 import type {
@@ -49,6 +51,9 @@ import { useSessionStatus } from "./useSessionStatus";
 import { useComposerMenus } from "./useComposerMenus";
 import { useSessionSync } from "./useSessionSync";
 import { useUsageRefresh } from "./useUsageRefresh";
+import { useAgentIssue } from "./useAgentIssue";
+import { AgentConnect } from "./AgentConnect";
+import { composeUsageStatus } from "../lib/backendUsage.ts";
 import { useWorkspacePane } from "./useWorkspacePane";
 import { useModelMetadata } from "./useModelMetadata";
 import { useTimelineRows } from "./useTimelineRows";
@@ -59,6 +64,8 @@ import { useComposerOverlays } from "./useComposerOverlays";
 import { useFileDrop } from "./useFileDrop";
 import { useConversationState } from "./useConversationState";
 import { ConversationPane } from "./ConversationPane";
+import { useEffortFloor, useProsecutorCase } from "./useProsecutorCase";
+import { effortFloor as floorFor } from "../lib/prosecutorEffort";
 
 export function Conversation({
   tab,
@@ -140,11 +147,12 @@ export function Conversation({
     setModelIndex, setAgentNote, modelSearchRef, backendIds, setPickerBackend,
     setForkingId, openForkedConversation, narrow, workspacePickerRef,
     dragActive, queued, fileInputRef, effortHover, setEffortHover,
-    backendUsage, currentReset, workspaceMounted, workspacePlacement,
+    backendUsage, backendUsageFetchedAt, currentReset, workspaceMounted, workspacePlacement,
     workspaceTab, boardOpen, setBoardOpen, awaitingKeys, sessionDetailsOpen,
     setSessionDetailsOpen, setRenameDraft, setRenaming, renameDraft, renaming,
     conversationView, setConversationView, openRoleId, viewer, turnOpen,
-    reviews, revealConversation, remoteQr,
+    reviews, revealConversation, remoteQr, backendCatalog, defaultBackend,
+    refreshBackendCatalog,
   } = useConversationState({
     tab, visible,
   });
@@ -173,7 +181,8 @@ export function Conversation({
     estimated, exactContext, firstUserItem, chatTurns, latestChangedTurn,
   } = useSessionView({
     timeline, state, tab, resumeSessions, split, density, setModelMenuOpen,
-    configuring, setDefaultBackend, setConversationBackend, reviewStarting,
+    configuring, setDefaultBackend, setConversationBackend,
+    setConversationSessionPath, reviewStarting,
     setReviewStarting, setReviews, openConversation, closeConversation,
     setDraft, conversationRef, setNarrow, providerUsage, showThinking,
     setTurnOpen,
@@ -313,12 +322,43 @@ export function Conversation({
   }, [tab.key, timeline]);
 
   const {
-    refreshUsage, resumeFromLimit,
+    refreshUsage, resumeFromLimit, usageMeta,
   } = useUsageRefresh({
     usageRequestRef, tab, timeline, setProviderUsage, visible, limitTurn,
     accessMode, streaming, limitWindow, state, agentMode, status,
     usageRefreshPendingRef,
   });
+
+  // This session's agent can't run (missing, signed out, switched off): one
+  // card above the composer offering Reconnect and — when another agent can
+  // take over — the same transcript handoff a manual backend switch uses.
+  const { issue: agentIssue, dismiss: dismissAgentIssue } = useAgentIssue({
+    backend: tab.backend,
+    catalog: backendCatalog,
+    hasItems,
+    preferred: defaultBackend,
+  });
+  const [reconnectBackend, setReconnectBackend] = useState<AgentBackend | null>(
+    null,
+  );
+  // Remounts the dialog on every Reconnect click so autoOpen fires again
+  // after a cancelled attempt.
+  const [reconnectNonce, setReconnectNonce] = useState(0);
+  const openAgentReconnect = () => {
+    setReconnectBackend(tab.backend);
+    setReconnectNonce((value) => value + 1);
+  };
+  const handoffToAgent = (next: AgentBackend) => {
+    // Dismiss only once the switch landed: a failed transcript save must
+    // leave the card up so the user can retry (so must a blocked no-op).
+    switchBackend(next).then((switched) => switched && dismissAgentIssue(), () => {});
+  };
+  const usageStatus = composeUsageStatus(
+    usageMeta,
+    providerUsage !== null,
+    backendUsage[tab.backend],
+    backendUsageFetchedAt,
+  );
 
   useSessionSync({
     queueFromEventRef, setQueued, state, tab, visible, caps, streaming,
@@ -498,18 +538,25 @@ export function Conversation({
     editingMessageId, setEditingMessageId, thin,
   });
 
+  const prosecutorCase = useProsecutorCase(
+    tab.key,
+    agentMode === "prosecutor",
+    tab.sessionPath ?? tab.timeline.state?.sessionFile,
+  );
+  const effortFloor = floorFor(agentMode, prosecutorCase);
   const {
     browseBackend, currentModelLabel, effort, trackLevels, supportedLevels,
     visibleOptions,
     currentModel, pickListedModel, setEffort, onModelMenuKey,
     contextChoices, currentContext, defaultContext, onContext,
   } = useModelPicker({
-    models, tab, state, timeline, setLevels, setPreferredModel, refreshUsage,
+    effortFloor, models, tab, state, timeline, setLevels, setPreferredModel, refreshUsage,
     pickerBackend, pickerModels, modelQuery, levels, pickerLevels, modelIndex,
     setModelMenuOpen, pendingModelRef, pendingBackendRef, switchBackend,
     modelMenuOpen, setPickerModels, setPickerLevels, setModelQuery,
     setModelIndex, setAgentNote, modelSearchRef, backendIds, setPickerBackend,
   });
+  useEffortFloor(effortFloor, levels, effort, setEffort);
 
   const interrupt = useCallback(() => {
     void stopTurn(tab.key, timeline);
@@ -568,7 +615,7 @@ export function Conversation({
         setCaret, commandMenuOpen, autoGrow, onKeyDown, onPasteImage,
         modelMenuRef, modelSearchRef, modelMenuOpen, browseBackend,
         backendIds, currentModelLabel, effort, trackLevels, supportedLevels,
-        effortHover,
+        effortHover, effortFloor, prosecutorCase,
         visibleOptions, modelIndex, modelQuery, currentModel, setUsageOpen,
         setModeMenuOpen, setModelMenuOpen, setPickerBackend, setModelQuery,
         setModelIndex, pickListedModel, setEffort, setEffortHover,
@@ -576,6 +623,9 @@ export function Conversation({
         onModelMenuKey, loadModelMetadata, modeMenuRef, modeMenuOpen,
         switchAgentMode, dismissRoutePick, usagePopRef, usageOpen,
         providerUsage, backendUsage, currentReset, agentBusy,
+        agentIssue, onAgentIssueReconnect: openAgentReconnect,
+        onAgentIssueHandoff: handoffToAgent, onAgentIssueDismiss: dismissAgentIssue,
+        usageStatus,
       }}
     />
   );
@@ -741,6 +791,22 @@ export function Conversation({
       </div>
 
       {viewer && <FileViewer view={viewer} onClose={() => setViewer(null)} />}
+      {reconnectBackend &&
+        (() => {
+          const row = backendCatalog.find(
+            (entry) => entry.id === reconnectBackend,
+          );
+          if (!row) return null;
+          return (
+            <AgentConnect
+              key={`${reconnectBackend}:${reconnectNonce}`}
+              agent={row}
+              autoOpen
+              hideButton
+              onConnected={(backends) => void refreshBackendCatalog(backends)}
+            />
+          );
+        })()}
       {remoteQr && (
         <div className="viewer" onClick={() => setRemoteQr(null)}>
           <div

@@ -30,7 +30,8 @@
  *   POST /api/:sessionKey/set-thinking     { level }
  *   GET  /api/:sessionKey/route            -> saved composer route (no chain)
  *   PUT  /api/:sessionKey/route            { route, sessionFile? }
- *   PUT  /api/:sessionKey/prosecutor       { backend, model? } | { off: true }
+ *   PUT  /api/:sessionKey/prosecutor       { backend, model?, effort?, sessionFile? } | { resume: true, sessionFile? } | { off: true }
+ *   GET  /api/:sessionKey/prosecutor       armed case state (round, paused, interrupted). ?sessionFile= reattaches a case after a restart
  *   GET  /api/:sessionKey/git-changes?cwd=  -> branch, remote, per-file working-tree changes
  *   GET  /api/:sessionKey/git-changes?cwd=&file= -> one file's diff vs HEAD
  *   GET  /api/:sessionKey/changes?scope=turn|session&sessionPath=&turn=
@@ -115,8 +116,14 @@ import {
   capabilitiesFor,
   listBackends,
   sessionScope,
+  setBackendEnabled,
 } from "./agent-registry.js";
-import { clearDetectionCache } from "./agent-detect.js";
+import {
+  clearDetectionCache,
+  detectBuiltins,
+  signOutBackend,
+} from "./agent-detect.js";
+import { isAuthErrorText } from "./auth-events.js";
 import { readHarnessUpdates, runHarnessUpdate } from "./harness-update.js";
 import { cachedModels, clearModelCatalogs } from "./model-catalog.js";
 import { devdenHome, readSetup, writeSetup } from "./setup-state.js";
@@ -187,15 +194,28 @@ import {
   safeTranscriptName,
 } from "./workspace-paths.js";
 import { findDefinition, grepWorkspace } from "./workspace-search.js";
-import { saveDisplayOverlay, withDisplayHistory } from "./display-history.js";
+import {
+  loadDisplayOverlay,
+  saveDisplayOverlay,
+  withDisplayHistory,
+} from "./display-history.js";
 import { loadRoute, saveRoute } from "./session-route.js";
-import { createProsecutor } from "./prosecutor.js";
+import { createProsecutor, EFFORTS as PROSECUTOR_EFFORTS } from "./prosecutor.js";
+import { createProsecutorStore } from "./prosecutor-store.js";
+import { normalizeConfig as normalizeProsecutorConfig } from "./prosecutor-checks.js";
+import { docGet, docSet } from "./db.js";
 import {
   startRemoteTunnel,
   stopRemoteTunnel,
   getRemoteTunnel,
 } from "./remote-tunnel.js";
 import qrcode from "qrcode";
+import { reapOrphanAgents } from "./agent-pids.js";
+
+// First, before anything can spawn or recover a session: kill agents a
+// hard-killed previous instance left running (they could still edit a
+// workspace that recovery promises is untouched).
+reapOrphanAgents();
 
 const __dirname = fileURLToPath(new URL(".", import.meta.url));
 const ROOT = join(__dirname, "..");
@@ -426,12 +446,29 @@ const pruneChangeHistory = () => {
 pruneChangeHistory();
 setInterval(pruneChangeHistory, 6 * 60 * 60_000).unref();
 
-/** Prosecutor mode (prosecutor.js): rounds run off the executor's events. */
+/** Prosecutor mode (prosecutor.js): rounds run off the executor's events.
+ *  Open cases are stored by session file so a restart can offer resume. */
 const prosecutor = createProsecutor({
   poolFor: (backend) => poolFor(backend),
   publish: (sessionKey, event) =>
     publishRuntimeEvent(sessionKey, "server", event),
+  store: createProsecutorStore(),
+  sessionInfo: (sessionKey) => {
+    const backend = sessionBackends.get(sessionKey);
+    const agent = backend ? poolFor(backend).agents.get(sessionKey) : undefined;
+    const model = agent?.lastState?.model ?? agent?.model ?? null;
+    return {
+      sessionId: sessionPathOf(agent),
+      cwd: agent?.cwd ?? agent?.lastState?.cwd ?? "",
+      executorBackend: backend ?? "",
+      executorModel: model && typeof model === "object" ? model : null,
+    };
+  },
+  // Gate commands are the user's, kept in DevDen's database -- not in the
+  // repo the agents write.
+  configFor: (cwd) => docGet("prosecutor-config", resolve(String(cwd))),
 });
+void prosecutor.recover().catch((error) => logFault("prosecutor-recover", error));
 
 const BUILD_ID = existsSync(join(DIST, "index.html"))
   ? createHash("sha256")
@@ -811,6 +848,27 @@ function publishRuntimeEvent(sessionKey, source, event) {
     if (target !== sessionKey) continue;
     broadcast({ ...payload, sessionKey: alias });
   }
+  // An auth-shaped failure mid-turn (expired token, revoked login) is the
+  // one error whose fix is a sign-in rather than a retry, so raise it beyond
+  // the notice: a backend_auth event lets the UI offer Reconnect inline.
+  // Adapters report turn failures two ways — an error notice (Codex, Grok,
+  // server-synthesized) or message_end.errorMessage (pi, Claude) — so both
+  // shapes are checked. `source` is the backend for adapter events;
+  // server-synthesized ones fall back to the session's bound backend.
+  const authText =
+    event?.type === "notice" && event?.tone === "error"
+      ? String(event.message ?? "")
+      : event?.type === "message_end"
+        ? String(event?.message?.errorMessage ?? "")
+        : "";
+  if (isAuthErrorText(authText))
+    emitBackendAuth(
+      AGENT_BACKENDS.includes(source)
+        ? source
+        : sessionBackends.get(sessionKey),
+      authText,
+    );
+  if (event?.type === "agent_start") authAlerts.delete(sessionKey);
   if (
     event?.type === "agent_end" ||
     event?.type === "agent_settled" ||
@@ -825,6 +883,36 @@ function publishRuntimeEvent(sessionKey, source, event) {
     );
   }
   return entry;
+}
+
+/** Sessions already carrying a backend_auth alert this streak. Re-arming on
+ *  agent_start keeps a recovered session from re-alerting on every turn
+ *  while a still-broken one re-alerts only after the next failed turn. */
+const authAlerts = new Set();
+
+/**
+ * Tell the UI an agent's sign-in is gone: one sessionless broadcast for any
+ * page (the store refreshes its agent catalog on it) plus a logged event for
+ * every live session on that backend, so the conversation can offer an
+ * inline Reconnect that survives its own runtime-log replay.
+ */
+function emitBackendAuth(backend, error) {
+  if (!backend) return;
+  const message = String(error ?? "").slice(0, 500);
+  broadcast({ type: "backend_auth", backend, ok: false, error: message });
+  // Fresh auth reads matter more than the cached ones: the next
+  // /api/backends must see the sign-in is really gone.
+  clearDetectionCache();
+  for (const [key, bound] of sessionBackends) {
+    if (bound !== backend || authAlerts.has(key)) continue;
+    authAlerts.add(key);
+    publishRuntimeEvent(key, "server", {
+      type: "backend_auth",
+      backend,
+      ok: false,
+      error: message,
+    });
+  }
 }
 
 // Set while the process is tearing down, so the "stopped" events our own
@@ -886,10 +974,15 @@ function trackTurnChanges(sessionKey, event) {
           sessionPath: event.state?.sessionFile,
         });
         return;
-      case "agent_start":
-        noteSessionActivity(sessionKey);
+      case "agent_start": {
+        const backend = sessionBackends.get(sessionKey);
+        noteSessionActivity(
+          sessionKey,
+          sessionPathOf(backend && poolFor(backend).agents.get(sessionKey)),
+        );
         beginTurn({ sessionKey, takeSnapshot });
         return;
+      }
       case "tool_execution_start":
         beginTurn({ sessionKey, takeSnapshot });
         noteToolCall(sessionKey, event.toolName, event.args);
@@ -1185,6 +1278,26 @@ function adoptLiveAgent(sessionKey, backend, sessionPath) {
   return undefined;
 }
 
+
+const HANDOFF_BLOCK = /\n*<handoff from="[^"]*" to="[^"]*">\n[\s\S]*\n<\/handoff>\s*$/;
+
+/**
+ * After a backend switch the new agent's session file starts at the handoff,
+ * so a reload would show only its turns. Seed its display history with the
+ * previous session's (which carries its own predecessors), once.
+ */
+async function carryDisplayHistory(fromPath, agent) {
+  const toPath = agent.sessionFile ?? agent.lastState?.sessionFile;
+  if (typeof fromPath !== "string" || !fromPath || !toPath || toPath === fromPath)
+    return;
+  if (await loadDisplayOverlay(toPath)) return;
+  const prior = await readSessionMessages(fromPath);
+  if (!prior.ok) return;
+  await saveDisplayOverlay(toPath, {
+    before: await withDisplayHistory(fromPath, prior.messages),
+    after: [],
+  });
+}
 
 function watch(sessionKey, requestedBackend, bind = true) {
   // An adopted-away key still routes here (old tab sending a command):
@@ -1860,6 +1973,31 @@ async function route(req, res) {
   }
 
   if (pathname === "/api/backends/recheck" && req.method === "POST") {
+    clearDetectionCache();
+    return sendJson(res, 200, { ok: true, backends: await listBackends() });
+  }
+
+  // Agent lifecycle from Settings: hide a stopped subscription from the
+  // pickers, or sign out so Connect can run with a fresh account. Both answer
+  // with the full catalog so every open page can update in one round-trip.
+  if (pathname === "/api/backends/enabled" && req.method === "POST") {
+    const body = await readBody(req);
+    const requested = String(body?.backend ?? "");
+    if (!AGENT_BACKENDS.includes(requested))
+      return sendJson(res, 400, { ok: false, error: "Unknown agent." });
+    setBackendEnabled(requested, body?.enabled !== false);
+    return sendJson(res, 200, { ok: true, backends: await listBackends() });
+  }
+
+  if (pathname === "/api/backends/logout" && req.method === "POST") {
+    const body = await readBody(req);
+    const requested = String(body?.backend ?? "");
+    if (!AGENT_BACKENDS.includes(requested))
+      return sendJson(res, 400, { ok: false, error: "Unknown agent." });
+    const detected = (await detectBuiltins()).find((row) => row.id === requested);
+    const result = await signOutBackend(requested, detected);
+    if (!result?.ok)
+      return sendJson(res, 400, { ok: false, error: result?.error ?? "Sign-out failed." });
     clearDetectionCache();
     return sendJson(res, 200, { ok: true, backends: await listBackends() });
   }
@@ -2631,6 +2769,9 @@ async function route(req, res) {
     const body = await readBody(req);
     addWorkspaceRoot(body.cwd);
     const message = String(body.message ?? "");
+    // A backend switch's handoff block (src/lib/handoffBlock.ts) is for the
+    // agent; labels, titles and the prosecutor's task get the user's words.
+    const visibleMessage = message.replace(HANDOFF_BLOCK, "");
     const images = Array.isArray(body.images) ? body.images : undefined;
     if (isUsageShortcut(message, images)) {
       const result = await runLoggedCommand(sessionKey, "usage", {}, () =>
@@ -2662,6 +2803,7 @@ async function route(req, res) {
         ),
       );
       if (!started.ok) return sendJson(res, 500, started);
+      await carryDisplayHistory(body.handoffFrom, promptAgent).catch(() => {});
     }
     // Snapshot the tree before the agent touches it, so "restore files to
     // this point" works on every backend and not just the one CLI that
@@ -2670,14 +2812,14 @@ async function route(req, res) {
     const turnCwd = String(body.cwd || promptAgent.cwd || process.cwd());
     const snapshot = takeSnapshot(
       turnCwd,
-      message,
+      visibleMessage,
       sessionPathOf(promptAgent) || sessionKey,
     ).catch(() => ({
       ok: false,
     }));
     // The same snapshot is this turn's "before" for the Changes views.
-    beginTurn({ sessionKey, cwd: turnCwd, label: message, snapshot });
-    prosecutor.noteTask(sessionKey, message, snapshot);
+    beginTurn({ sessionKey, cwd: turnCwd, label: visibleMessage, snapshot });
+    prosecutor.noteTask(sessionKey, visibleMessage, snapshot);
     // A tab whose `streaming` flag lost sync (laptop wake, SSE reconnect, an
     // auto-resume that started under another key) used to POST /prompt into a
     // busy agent and have the message rejected outright. enqueue sends
@@ -2729,7 +2871,9 @@ async function route(req, res) {
     // the same case: it is waiting, not running.
     if (!result.ok || result.data?.queued) noteTurnSettled(sessionKey);
     if (promptBackend === "pi")
-      maybeGeneratePiTitle(sessionKey, promptAgent, message);
+      maybeGeneratePiTitle(sessionKey, promptAgent, visibleMessage);
+    // pi and grok only name their session file once the turn has run.
+    await carryDisplayHistory(body.handoffFrom, promptAgent).catch(() => {});
     // The agent only ever reveals its session file through getState(), and
     // neither pi nor grok puts it on an event, so a lazily-started tab had no
     // path at all. The sidebar matches saved rows by path, so such a tab's own
@@ -3300,14 +3444,48 @@ async function route(req, res) {
     );
     return sendJson(res, result.ok ? 200 : 500, result);
   }
-  // Prosecutor mode: { backend, model? } arms it for this key, { off: true }
-  // disarms it. The composer re-sends this whenever the mode is shown.
+  // Prosecutor mode: { backend, model?, effort? } arms it for this key (a
+  // different pick mid-case switches the prosecutor and keeps the case),
+  // { resume: true } continues a paused case, { off: true } disarms it.
+  // The composer re-sends the pick whenever the mode is shown.
+  // { cwd, config } saves the workspace's acceptance gate + test patterns.
+  if (req.method === "GET" && action === "prosecutor") {
+    const cwd = url.searchParams.get("cwd");
+    return sendJson(res, 200, {
+      ok: true,
+      ...prosecutor.state(sessionKey, url.searchParams.get("sessionFile") || ""),
+      ...(cwd
+        ? { config: normalizeProsecutorConfig(docGet("prosecutor-config", resolve(cwd))) }
+        : {}),
+    });
+  }
   if (req.method === "PUT" && action === "prosecutor") {
     const body = await readBody(req);
+    if (body.config) {
+      if (typeof body.cwd !== "string" || !body.cwd)
+        return sendJson(res, 400, { ok: false, error: "cwd required" });
+      const config = normalizeProsecutorConfig(body.config);
+      docSet("prosecutor-config", resolve(body.cwd), config);
+      return sendJson(res, 200, { ok: true, config });
+    }
+    const sessionFile = typeof body.sessionFile === "string" ? body.sessionFile : "";
     if (body.off) {
       prosecutor.disarm(sessionKey);
       return sendJson(res, 200, { ok: true });
     }
+    if (body.resume) {
+      const backend = sessionBackends.get(sessionKey);
+      const result = await Promise.resolve(
+        prosecutor.resume(
+          sessionKey,
+          backend ? poolFor(backend).agents.get(sessionKey) : undefined,
+          sessionFile,
+        ),
+      );
+      return sendJson(res, result.ok ? 200 : 409, result);
+    }
+    if (body.effort != null && !PROSECUTOR_EFFORTS.includes(body.effort))
+      return sendJson(res, 400, { ok: false, error: "unknown effort" });
     if (!allBackendIds().includes(body.backend))
       return sendJson(res, 400, { ok: false, error: "unknown backend" });
     prosecutor.arm(sessionKey, {
@@ -3319,8 +3497,10 @@ async function route(req, res) {
               id: String(body.model.id),
             }
           : null,
+      effort: body.effort ?? null,
+      sessionFile,
     });
-    return sendJson(res, 200, { ok: true });
+    return sendJson(res, 200, { ok: true, ...prosecutor.state(sessionKey) });
   }
   // Recorded changes (changes.js): this session's latest turn, a given
   // `turn`, or the whole session. Reads only DevDen's own database.
@@ -4564,7 +4744,19 @@ server.listen(PORT, HOST, () => {
   // Turns cut off by the last restart are not auto-resumed (that cost a
   // prompt); drop their records so nothing reports them as running.
   takeInterruptedTurns();
-  startClaudeAuthKeepalive();
+  // The keepalive's failure is the earliest sign a Claude login died while
+  // nobody was watching. Only raise it when Claude was actually signed in
+  // when this server started, and only when the CLI says something auth-
+  // shaped — a network blip is not a sign-in problem.
+  const claudeSignedInAtBoot = detectBuiltins()
+    .then((rows) => rows.find((row) => row.id === "claude")?.auth === "ok")
+    .catch(() => false);
+  // A ping that succeeded since boot also counts: Connect after startup.
+  startClaudeAuthKeepalive(async (error, sawOk) => {
+    if (!isAuthErrorText(String(error))) return false;
+    if (!sawOk && !(await claudeSignedInAtBoot)) return;
+    emitBackendAuth("claude", error);
+  });
   listOllamaModels()
     .then((models) => syncOllamaModelsJson(models))
     .catch(() => {});

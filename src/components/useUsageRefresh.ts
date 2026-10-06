@@ -1,7 +1,7 @@
 // Provider usage for Conversation: refresh on load, poll while running, recheck
 // when a usage limit lands, and resume once the window resets.
 import type * as React from "react";
-import { useCallback, useEffect } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
   api,
   type ProviderUsage,
@@ -9,6 +9,7 @@ import {
   type SessionState,
   type RunStatus,
 } from "../lib/api";
+import type { UsageStatus } from "../lib/backendUsage.ts";
 import { resumeFromLimit as resumeFromLimitImpl } from "./conversationSend";
 import {
   USAGE_RUNNING_REFRESH_INTERVAL_MS,
@@ -36,6 +37,14 @@ export type UseUsageRefreshArgs = {
   usageRefreshPendingRef: React.RefObject<boolean>;
 };
 
+/** When the usage data was actually current — the provider's own stamp
+ *  when it has one (a server-side cache can serve minutes-old numbers),
+ *  else the fetch time. */
+function dataTime(usage: ProviderUsage): number {
+  const stamped = usage?.updatedAt ? Date.parse(usage.updatedAt) : NaN;
+  return Number.isFinite(stamped) ? stamped : Date.now();
+}
+
 export function useUsageRefresh({
   usageRequestRef,
   tab,
@@ -51,6 +60,12 @@ export function useUsageRefresh({
   status,
   usageRefreshPendingRef,
 }: UseUsageRefreshArgs) {
+  // Last outcome of this session's own usage fetch, so the widget can say
+  // "fetch failed — updated HH:MM" instead of just going blank.
+  const [usageMeta, setUsageMeta] = useState<UsageStatus>({
+    at: null,
+    error: null,
+  });
   const refreshUsage = useCallback(
     (force = false): Promise<boolean> => {
       if (usageRequestRef.current) return usageRequestRef.current;
@@ -63,12 +78,27 @@ export function useUsageRefresh({
         )
         .then((result) => {
           // A backend switch dropped this request: its numbers are the old agent's.
-          if (usageRequestRef.current === request)
+          if (usageRequestRef.current === request) {
             setProviderUsage(result.ok ? result.usage : null);
+            setUsageMeta(
+              result.ok
+                ? { at: dataTime(result.usage), error: null }
+                : (previous) => ({
+                    at: previous.at,
+                    error: result.error ?? "Usage is unavailable.",
+                  }),
+            );
+          }
           return result.ok;
         })
         .catch(() => {
-          if (usageRequestRef.current === request) setProviderUsage(null);
+          if (usageRequestRef.current === request) {
+            setProviderUsage(null);
+            setUsageMeta((previous) => ({
+              at: previous.at,
+              error: "Could not reach the devden server.",
+            }));
+          }
           return false;
         })
         .finally(() => {
@@ -85,6 +115,7 @@ export function useUsageRefresh({
   useEffect(() => {
     usageRequestRef.current = null;
     setProviderUsage(null);
+    setUsageMeta({ at: null, error: null });
   }, [tab.backend, tab.key]);
 
   // The percentages lag the failure (the poll runs every 30-60s), so ask now
@@ -175,5 +206,6 @@ export function useUsageRefresh({
   return {
     refreshUsage,
     resumeFromLimit,
+    usageMeta,
   };
 }

@@ -50,7 +50,9 @@ export function TurnCompleteBar({
   const menuRef = useAnchoredPopover<HTMLDivElement>(open, "end");
   const { backendCatalog } = useStore();
   const reviewers = (backendCatalog.length
-    ? backendCatalog.map((item) => item.id)
+    ? backendCatalog
+        .filter((item) => item.enabled !== false)
+        .map((item) => item.id)
     : [...AGENT_BACKENDS]
   ).filter((item) => item !== backend);
   const reviewer = pickReviewer(reviewers, remembered);

@@ -6,11 +6,15 @@ import { TerminalPage } from "./TerminalPage";
 import { AgentMascot, IconCopy } from "./icons";
 import "../styles/agentConnect.css";
 
-export function AgentConnect({ agent, onConnected }: {
+export function AgentConnect({ agent, onConnected, autoOpen = false, hideButton = false }: {
   agent: BackendInfo;
   onConnected: (agents: BackendInfo[]) => void;
+  /** Open the sign-in dialog without waiting for a click (post-sign-out). */
+  autoOpen?: boolean;
+  /** No trigger button — used when a parent opens the dialog itself. */
+  hideButton?: boolean;
 }) {
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(autoOpen);
   const [attempt, setAttempt] = useState(0);
   // Retry re-detects first: once an install lands, connectCommand flips from
   // install to login, so a stale prop would just reinstall.
@@ -29,9 +33,9 @@ export function AgentConnect({ agent, onConnected }: {
   }, [open]);
   if (!agent.connectCommand) return null;
   return <>
-    <button type="button" className="agent-connect__button" onClick={() => setOpen(true)}>
+    {!hideButton && <button type="button" className="agent-connect__button" onClick={() => setOpen(true)}>
       {agent.path ? "Connect" : "Install & connect"}
-    </button>
+    </button>}
     {open && <dialog ref={dialog} className="agent-connect" aria-labelledby="agent-connect-title" onCancel={() => setOpen(false)}>
       <TerminalRunsProvider key={attempt} onNeedOpen={() => {}}>
         <ConnectSession agent={current} onConnected={onConnected}

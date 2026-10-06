@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api, type BackendInfo } from "../lib/api";
 import { useStore } from "../lib/store";
 import { AgentConnect } from "./AgentConnect";
@@ -36,10 +36,21 @@ const STATUS: Record<
 };
 
 export function SettingsAgents() {
-  const { defaultBackend, setDefaultBackend } = useStore();
+  const { defaultBackend, setDefaultBackend, refreshBackendCatalog } = useStore();
+  // The server-confirmed catalog: the only thing the pickers ever see.
   const [agents, setAgents] = useState<BackendInfo[]>([]);
+  // Latest confirmed rows, for replies that land after an await.
+  const agentsRef = useRef(agents);
+  agentsRef.current = agents;
+  // Enabled clicks still being saved: shown here at once, but published to
+  // the pickers only when that agent's own save is confirmed.
+  const [pending, setPending] = useState<Record<string, boolean>>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [signingOut, setSigningOut] = useState<string | null>(null);
+  // The agent whose Connect dialog should open by itself — set after a
+  // sign-out so the next sign-in is one click away.
+  const [signedOut, setSignedOut] = useState<string | null>(null);
   const [onboarding, setOnboarding] = useState<{
     done: boolean;
     workspace: string | null;
@@ -57,6 +68,8 @@ export function SettingsAgents() {
           "Could not look up agents. Restart the devden server and re-check.",
         );
       setAgents(result.backends);
+      // Keep the store copy (pickers, banners) in step with this page.
+      void refreshBackendCatalog(result.backends);
     } catch (err) {
       setError(
         err instanceof Error && err.name === "TimeoutError"
@@ -81,7 +94,11 @@ export function SettingsAgents() {
       .catch(() => {});
   }, []);
 
-  const rows = [...agents].sort(
+  const rows = agents
+    .map((row) =>
+      row.id in pending ? { ...row, enabled: pending[row.id] } : row,
+    )
+    .sort(
     (a, b) =>
       (ROW_ORDER.indexOf(a.id) + 1 || ROW_ORDER.length + 1) -
         (ROW_ORDER.indexOf(b.id) + 1 || ROW_ORDER.length + 1) ||
@@ -107,6 +124,11 @@ export function SettingsAgents() {
 
   const makeDefault = async (id: string) => {
     setDefaultBackend(id);
+    // A hidden agent promoted to default returns to the pickers: a default
+    // nobody can select is a trap. A failed write still leaves the toggle.
+    const row = agents.find((agent) => agent.id === id);
+    // Same path as the toggle, so a later toggle can't resurrect "hidden".
+    if (row?.enabled === false) await saveEnabled(id, true);
     try {
       const saved = await api.saveOnboarding({
         done: onboarding?.done ?? true,
@@ -120,6 +142,92 @@ export function SettingsAgents() {
     } catch {
       // The store already persisted the choice locally; the server copy can
       // be updated from setup's Start screen.
+    }
+  };
+
+  /** Confirmed rows changed: update Settings and the pickers together. */
+  const confirm = (next: BackendInfo[]) => {
+    agentsRef.current = next;
+    setAgents(next);
+    void refreshBackendCatalog(next);
+  };
+
+  const handleConnected = (backends: BackendInfo[]) => {
+    setSignedOut(null);
+    confirm(backends);
+  };
+
+  // Each save is authoritative for its own agent only: its reply's other
+  // rows may predate a newer save of theirs, so they are ignored. A newer
+  // click on the same agent supersedes an older one's reply or failure.
+  const saveSeq = useRef(new Map<string, number>());
+
+  /** Save one agent's Enabled choice. Resolves true when it was saved. */
+  const saveEnabled = async (id: string, enabled: boolean) => {
+    const seq = (saveSeq.current.get(id) ?? 0) + 1;
+    saveSeq.current.set(id, seq);
+    const latest = () => saveSeq.current.get(id) === seq;
+    setPending((current) => ({ ...current, [id]: enabled }));
+    const settle = () =>
+      setPending((current) => {
+        const { [id]: _done, ...rest } = current;
+        return rest;
+      });
+    try {
+      const result = await api.setBackendEnabled(id, enabled);
+      if (!result.ok || !result.backends)
+        throw new Error(result.error ?? "Could not save that choice.");
+      if (!latest()) return false;
+      const saved = result.backends.find((row) => row.id === id);
+      settle();
+      if (saved && saved.enabled !== agentsRef.current.find((row) => row.id === id)?.enabled)
+        confirm(
+          agentsRef.current.map((row) =>
+            row.id === id ? { ...row, enabled: saved.enabled } : row,
+          ),
+        );
+      return true;
+    } catch (err) {
+      if (!latest()) return false;
+      // Nothing was confirmed, so the pickers never changed: only the
+      // optimistic row goes back.
+      settle();
+      setError(
+        err instanceof Error && err.name === "TimeoutError"
+          ? "Saving took too long. Check the devden server, then retry."
+          : err instanceof Error
+            ? err.message
+            : "Could not save that choice.",
+      );
+      return false;
+    }
+  };
+
+  /** Hide or show an agent everywhere it would be picked. */
+  const toggleEnabled = (agent: BackendInfo, enabled: boolean) =>
+    saveEnabled(agent.id, enabled);
+
+  /** Run the CLI's own logout, then reopen Connect so a different account
+   *  can sign straight back in. */
+  const signOut = async (id: string) => {
+    setSigningOut(id);
+    setError("");
+    try {
+      const result = await api.logoutBackend(id);
+      if (!result.ok || !result.backends)
+        throw new Error(result.error ?? "Sign-out failed.");
+      handleConnected(result.backends);
+      setSignedOut(id);
+    } catch (err) {
+      setError(
+        err instanceof Error && err.name === "TimeoutError"
+          ? "Sign-out timed out. Check the devden server, then retry."
+          : err instanceof Error
+            ? err.message
+            : "Sign-out failed.",
+      );
+    } finally {
+      setSigningOut(null);
     }
   };
 
@@ -169,6 +277,7 @@ export function SettingsAgents() {
           const kind = kindOf(agent);
           const look = STATUS[kind];
           const isDefault = defaultBackend === agent.id;
+          const hidden = agent.enabled === false;
           return (
             <div className="agents-settings__item" key={agent.id}>
               <div className="agents-settings__row">
@@ -186,10 +295,27 @@ export function SettingsAgents() {
                   <span>{agent.version ?? (agent.path ? "installed" : "not installed")}</span>
                   <span>{agent.pathLabel || agent.path || "not on PATH"}</span>
                 </div>
-                <span className={`agents-settings__status is-${kind}`}>
-                  {look.label}
+                <span className={`agents-settings__status is-${kind}${hidden ? " is-hidden" : ""}`}>
+                  {hidden ? "Hidden from pickers" : look.label}
                 </span>
                 <div className="agents-settings__buttons">
+                  <label
+                    className="agents-settings__toggle"
+                    title={
+                      hidden
+                        ? "Hidden from pickers; sessions on it still open."
+                        : "Shown in pickers."
+                    }
+                  >
+                    <input
+                      type="checkbox"
+                      checked={!hidden}
+                      onChange={(event) =>
+                        void toggleEnabled(agent, event.target.checked)
+                      }
+                    />
+                    Enabled
+                  </label>
                   {kind === "ready" && !isDefault && (
                     <button
                       type="button"
@@ -198,7 +324,24 @@ export function SettingsAgents() {
                       Make default
                     </button>
                   )}
-                  {kind !== "ready" && <AgentConnect agent={agent} onConnected={setAgents} />}
+                  {kind === "ready" && (
+                    <button
+                      type="button"
+                      disabled={signingOut !== null}
+                      onClick={() => void signOut(agent.id)}
+                    >
+                      {signingOut === agent.id
+                        ? "Signing out…"
+                        : "Sign out / switch account"}
+                    </button>
+                  )}
+                  {kind !== "ready" || signedOut === agent.id ? (
+                    <AgentConnect
+                      agent={agent}
+                      autoOpen={signedOut === agent.id}
+                      onConnected={handleConnected}
+                    />
+                  ) : null}
                 </div>
               </div>
             </div>

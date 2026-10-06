@@ -2,6 +2,7 @@
  * Timeline model: converts pi RPC events into renderable items, porting
  * AgentDeck's AgentWorkbench semantics (tool cards, rationale, streaming text).
  */
+import { handoffNotice, splitHandoff } from "./handoffBlock.ts";
 import type {
   AgentEvent,
   BackendLogEntry,
@@ -537,6 +538,14 @@ export class Timeline {
     });
   }
 
+  /** A user message as the agent got it: a handoff block becomes its notice. */
+  private appendAgentUser(raw: string, images: string[]) {
+    const { text, handoff } = splitHandoff(raw);
+    if (isEchoedUserMessage(this.items, text)) return;
+    if (handoff) this.appendNotice(handoffNotice(handoff), "info", undefined, handoff.record);
+    this.appendUser(text, images);
+  }
+
   appendUser(text: string, images?: string[]) {
     this.updateItems((current) => [
       ...current,
@@ -824,8 +833,7 @@ export class Timeline {
         // The in-flight turn's user message was never persisted, so it can't
         // be in the hydrated items — dedupe only guards the tiny race where
         // it already arrived live between SSE connect and this replay.
-        if (isEchoedUserMessage(this.items, text)) continue;
-        this.appendUser(text, images);
+        this.appendAgentUser(text, images);
         continue;
       }
       this.handle({
@@ -864,10 +872,18 @@ export class Timeline {
       const timestamp = historyTimestamp(message);
       if (role === "user") {
         const images = extractHistoryImages(message.content);
-        const text = extractHistoryText(
-          message.content,
-          images.length ? "" : "[Image attachment]",
+        const { text, handoff } = splitHandoff(
+          extractHistoryText(message.content, images.length ? "" : "[Image attachment]"),
         );
+        if (handoff)
+          items.push({
+            id: `history-handoff-${messageIndex}`,
+            kind: "notice",
+            text: handoffNotice(handoff),
+            tone: "info",
+            timestamp,
+            detail: handoff.record,
+          });
         if (text || images.length)
           items.push({
             id: `history-user-${messageIndex}`,
@@ -1315,8 +1331,7 @@ export class Timeline {
       // Optimistic appendUser on send already put this bubble in; a queued
       // follow-up has no optimistic bubble and must appear only now, when
       // the previous turn has actually finished printing.
-      if (isEchoedUserMessage(this.items, text)) return;
-      this.appendUser(text, images);
+      this.appendAgentUser(text, images);
       return;
     }
 

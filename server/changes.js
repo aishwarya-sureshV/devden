@@ -105,8 +105,14 @@ export function noteSessionContext(sessionKey, { cwd, sessionPath } = {}) {
       .run(sessionPath, sessionKey);
 }
 
-/** An agent actually started a turn, rather than merely being opened. */
-export function noteSessionActivity(sessionKey) {
+/**
+ * An agent actually started a turn, rather than merely being opened.
+ * `sessionPath` is what the agent already knows: grok has its file from
+ * start() but sends no `state` until the turn ends, so a turn killed
+ * mid-way would otherwise never be recorded.
+ */
+export function noteSessionActivity(sessionKey, sessionPath) {
+  if (sessionPath) noteSessionContext(sessionKey, { sessionPath });
   const context = remember(sessionKey, {});
   context.awaitingSessionPath = !context.sessionPath;
   if (context.sessionPath) docSet("devden-sessions", context.sessionPath, "activity");

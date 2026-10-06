@@ -18,6 +18,7 @@ import {
 import { useMemo, useEffect, useCallback, type KeyboardEvent } from "react";
 import { useModelRefresh } from "./useModelRefresh";
 import { effortScale } from "../lib/effortStops";
+import { belowFloor } from "../lib/prosecutorEffort";
 import {
   api,
   cachedCatalog,
@@ -32,6 +33,8 @@ const EMPTY_LEVELS: string[] = [];
 const EMPTY_MODELS: ModelInfo[] = [];
 
 export type UseModelPickerArgs = {
+  /** Prosecutor round 1: levels below this can't be picked (prosecutorEffort.ts). */
+  effortFloor: string | null;
   models: ModelInfo[];
   tab: ConversationTab;
   state: SessionState | null;
@@ -52,7 +55,7 @@ export type UseModelPickerArgs = {
   setModelMenuOpen: React.Dispatch<React.SetStateAction<boolean>>;
   pendingModelRef: React.RefObject<ModelInfo | null>;
   pendingBackendRef: React.RefObject<AgentBackend | null>;
-  switchBackend: (next: AgentBackend) => Promise<void>;
+  switchBackend: (next: AgentBackend) => Promise<unknown>;
   modelMenuOpen: boolean;
   setPickerModels: React.Dispatch<
     React.SetStateAction<Partial<Record<AgentBackend, ModelInfo[]>>>
@@ -69,6 +72,7 @@ export type UseModelPickerArgs = {
 };
 
 export function useModelPicker({
+  effortFloor,
   models,
   tab,
   state,
@@ -276,7 +280,10 @@ export function useModelPicker({
       event,
     );
 
-  const setEffort = (level: string) => setEffortImpl({ tab, timeline }, level);
+  // Every effort change (menu, Alt+arrows) funnels through here.
+  const setEffort = (level: string) => {
+    if (!belowFloor(level, effortFloor)) setEffortImpl({ tab, timeline }, level);
+  };
 
   // Context-window chooser: only backends that can actually take the value
   // (pi via its session model, codex via thread config), and only while browsing

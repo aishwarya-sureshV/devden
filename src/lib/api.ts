@@ -22,6 +22,8 @@ export interface BackendInfo {
   installCommand: string | null;
   loginCommand: string | null;
   connectCommand?: string;
+  /** False when the user switched this agent off in Settings; pickers hide it. */
+  enabled?: boolean;
   capabilities: import("./agentCapabilities").AgentCapabilities;
 }
 
@@ -130,6 +132,10 @@ export interface ProviderUsage {
     total: number;
   };
   updatedAt?: string;
+  /** Client-side: the last shared refresh failed; these numbers are stale. */
+  error?: string;
+  /** Client-side: when this backend last returned usable numbers. */
+  okAt?: number;
 }
 
 export interface ResumeSession {
@@ -533,6 +539,51 @@ export interface PiCatalogResponse {
   error?: string;
 }
 
+export type ProsecutorEffort = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
+
+/** Server-side prosecutor case (server/prosecutor.js state()). */
+export interface ProsecutorState {
+  armed: boolean;
+  backend?: AgentBackend;
+  model?: { provider: string; id: string } | null;
+  round?: number;
+  open?: boolean;
+  effort?: ProsecutorEffort | null;
+  paused?: {
+    side: "executor" | "prosecutor";
+    reason: string;
+    round: number;
+    note?: string;
+  } | null;
+  phase?: string | null;
+  /** Set when a restart interrupted the case. Resume is explicit. */
+  interrupted?: boolean;
+  /** `git diff --name-status` since the baseline. Empty means nothing changed. */
+  changes?: string | null;
+  status?: "fixing" | "reviewing" | "verifying" | "verified" | "stopped" | "inconclusive";
+  /** The server-run acceptance gate's last result. */
+  gate?: {
+    state: "verification_pending" | "verified" | "gate_failed" | "not_configured";
+    configured?: boolean;
+    ok?: boolean;
+    round?: number;
+    results?: { command: string; ok: boolean; exitCode: number | null; timedOut: boolean; ms: number; output: string }[];
+  } | null;
+  findings?: { id: string; requirement?: string; test?: string; command?: string; objection?: string }[];
+  /** Integrity flags (executor edited the prosecutor's tests) and boundary breaches. */
+  flags?: { round: number; side: "executor" | "prosecutor"; text: string }[];
+  owned?: string[];
+  /** Bumped per task (server noteTask); keys the round-1 floor and the nudge. */
+  caseId?: number;
+  verdict?: "guilty" | "acquitted" | null;
+}
+
+/** Per-workspace acceptance gate: user-configured only, never model-chosen. */
+export interface ProsecutorConfig {
+  testPatterns: string[];
+  commands: { run: string; timeoutSec: number }[];
+}
+
 export interface AgentEvent {
   type: string;
   sessionKey?: string;
@@ -887,6 +938,8 @@ export const api = {
       /** The ask card's submit: this message answers a pending ask, so the
        * server delivers it even though an ask still holds the queue. */
       answersAsk?: boolean;
+      /** Previous backend's session file, after a backend switch. */
+      handoffFrom?: string;
     },
   ) => {
     const body: Record<string, unknown> = {
@@ -900,6 +953,7 @@ export const api = {
     if (options?.thinkingLevel) body.thinkingLevel = options.thinkingLevel;
     if (options?.accessMode) body.accessMode = options.accessMode;
     if (options?.agentMode) body.agentMode = options.agentMode;
+    if (options?.handoffFrom) body.handoffFrom = options.handoffFrom;
     if (options?.answersAsk) body.answersAsk = true;
     return post<{ ok: boolean; error?: string; sessionPath?: string }>(
       `/api/${key}/prompt`,
@@ -1191,14 +1245,45 @@ export const api = {
       `/api/${key}/route`,
       { route, sessionFile },
     ),
-  /** Arm prosecutor mode for this session, or disarm it with `null`. */
+  /** Arm prosecutor mode for this session, or disarm it with `null`. A
+   *  different pick mid-case switches the prosecutor and keeps the case. */
   putProsecutor: (
     key: string,
-    prosecutor: { backend: AgentBackend; model?: { provider: string; id: string } } | null,
+    prosecutor: {
+      backend: AgentBackend;
+      model?: { provider: string; id: string };
+      effort?: ProsecutorEffort;
+    } | null,
+    sessionFile?: string,
   ) =>
-    put<{ ok: boolean; error?: string }>(
+    put<{ ok: boolean; error?: string } & Partial<ProsecutorState>>(
       `/api/${key}/prosecutor`,
-      prosecutor ?? { off: true },
+      prosecutor
+        ? { ...prosecutor, ...(sessionFile ? { sessionFile } : {}) }
+        : { off: true },
+    ),
+  /** `sessionFile` reattaches a case after a restart; `cwd` also returns
+   *  that workspace's acceptance-gate config. */
+  prosecutorState: (key: string, sessionFile?: string, cwd?: string) => {
+    const q = new URLSearchParams();
+    if (sessionFile) q.set("sessionFile", sessionFile);
+    if (cwd) q.set("cwd", cwd);
+    const qs = q.toString();
+    return get<{ ok: boolean; config?: ProsecutorConfig } & ProsecutorState>(
+      `/api/${key}/prosecutor${qs ? `?${qs}` : ""}`,
+    );
+  },
+  putProsecutorConfig: (key: string, cwd: string, config: ProsecutorConfig) =>
+    put<{ ok: boolean; config?: ProsecutorConfig; error?: string }>(
+      `/api/${key}/prosecutor`,
+      { cwd, config },
+    ),
+  /** Continue a paused case. Executor side: `prompt` is the message to send
+   *  it through the normal composer path (so a switched backend starts). */
+  resumeProsecutor: (key: string, sessionFile?: string) =>
+    put<{ ok: boolean; side?: "executor" | "prosecutor"; prompt?: string; error?: string }>(
+      `/api/${key}/prosecutor`,
+      { resume: true, ...(sessionFile ? { sessionFile } : {}) },
     ),
   stop: (key: string) =>
     post<{ ok: boolean; error?: string }>(`/api/${key}/stop`, {}),
@@ -1305,6 +1390,20 @@ export const api = {
     post<{ ok: boolean; backends?: BackendInfo[]; error?: string }>("/api/zcode/ollama", {}, 15_000),
   recheckBackends: () =>
     post<{ ok: boolean; backends: BackendInfo[] }>("/api/backends/recheck", {}, 30_000),
+  /** Hide or show an agent in every picker; the server persists the choice. */
+  setBackendEnabled: (backend: string, enabled: boolean) =>
+    post<{ ok: boolean; backends?: BackendInfo[]; error?: string }>(
+      "/api/backends/enabled",
+      { backend, enabled },
+      30_000,
+    ),
+  /** Run the CLI's own logout so Connect can sign in a different account. */
+  logoutBackend: (backend: string) =>
+    post<{ ok: boolean; backends?: BackendInfo[]; error?: string }>(
+      "/api/backends/logout",
+      { backend },
+      30_000,
+    ),
   harnessUpdates: () =>
     get<{
       ok: boolean;

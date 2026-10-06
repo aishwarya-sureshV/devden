@@ -5,7 +5,7 @@ import { IconChevronDown } from "./icons";
 /** Pseudo-option: every question also offers a free-text answer. */
 const OTHER = "__other__";
 
-function IconClose({ size = 14 }: { size?: number }) {
+export function IconClose({ size = 14 }: { size?: number }) {
   return (
     <svg
       viewBox="0 0 14 14"

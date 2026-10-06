@@ -18,6 +18,7 @@ import {
 } from "./conversationHelpers";
 import { isUnstartedTab, type ConversationTab } from "../lib/store";
 import type { Timeline } from "../lib/timeline";
+import { planSwitch, type PendingHandoff } from "../lib/exportSession";
 import type { SessionRoute } from "../lib/route";
 
 export type SetModelCtx = {
@@ -148,7 +149,7 @@ export type PickListedModelCtx = {
     cwd: string,
     model: ModelInfo | null,
   ) => void;
-  switchBackend: (next: AgentBackend) => Promise<void>;
+  switchBackend: (next: AgentBackend) => Promise<unknown>;
 };
 
 export function pickListedModel(ctx: PickListedModelCtx, option: ModelOption) {
@@ -507,14 +508,16 @@ export type SwitchBackendCtx = {
   usageSinceRef: React.RefObject<number>;
   saveTranscript: () => Promise<string | null>;
   setConversationBackend: (key: string, backend: AgentBackend) => void;
-  pendingHandoffRef: React.RefObject<{
-    path: string;
-    from: AgentBackend;
-  } | null>;
+  pendingHandoffRef: React.RefObject<PendingHandoff | null>;
+  setConversationSessionPath: (key: string, path?: string) => void;
   timeline: Timeline;
 };
 
-export async function switchBackend(ctx: SwitchBackendCtx, next: AgentBackend) {
+/** Resolves true once the session is on `next`; false when it was a no-op. */
+export async function switchBackend(
+  ctx: SwitchBackendCtx,
+  next: AgentBackend,
+): Promise<boolean> {
   const {
     setModelMenuOpen,
     tab,
@@ -526,28 +529,38 @@ export async function switchBackend(ctx: SwitchBackendCtx, next: AgentBackend) {
     saveTranscript,
     setConversationBackend,
     pendingHandoffRef,
+    setConversationSessionPath,
     timeline,
   } = ctx;
   setModelMenuOpen(false);
-  if (next === tab.backend || streaming || configuring) return;
+  if (next === tab.backend || streaming || configuring) return false;
   if (isUnstartedTab(tab)) {
     setDefaultBackend(next);
-    return;
+    return true;
   }
   const from = transcriptBackendRef.current;
-  // Switching back before a prompt means the transcript is still `from`.
-  usageSinceRef.current = next === from ? 0 : Date.now();
-  // Save now rather than trust the last write: the brief must point at a
-  // file that holds every turn so far.
-  const path = await saveTranscript();
+  const { back, sessionPath } = planSwitch(
+    pendingHandoffRef.current,
+    from,
+    next,
+    tab.sessionPath ?? tab.timeline.state?.sessionFile,
+  );
+  usageSinceRef.current = back ? 0 : Date.now();
+  // Save now rather than trust the last write: the brief points at it.
+  const path = back ? null : await saveTranscript();
   // Free the old agent's process; the new one starts on the next prompt.
   await api.stop(tab.key);
   setConversationBackend(tab.key, next);
-  pendingHandoffRef.current = path ? { path, from } : null;
-  timeline.appendNotice(
-    next === from
-      ? `Switched back to ${backendLabel(from)}.`
-      : `Switched from ${backendLabel(from)} to ${backendLabel(next)}. Your next message hands it this conversation's transcript.`,
-    "info",
-  );
+  // setConversationBackend drops the session file; switching straight back
+  // resumes it (native context and prompt cache) instead of a blank session.
+  if (back && sessionPath) setConversationSessionPath(tab.key, sessionPath);
+  pendingHandoffRef.current = back ? null : { path, from, sessionPath };
+  // A forward switch gets its "Handed off from … to …" marker on the next
+  // send; a switch back sends no handoff, so it is the one that needs a notice.
+  if (back)
+    timeline.appendNotice(
+      `Switched back to ${backendLabel(from)}${sessionPath ? ", resuming its session" : ""}.`,
+      "info",
+    );
+  return true;
 }

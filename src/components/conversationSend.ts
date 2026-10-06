@@ -21,6 +21,7 @@ import {
   exportFilename,
   handoffPrompt,
 } from "../lib/exportSession";
+import { handoffNotice, wrapHandoff } from "../lib/handoffBlock";
 import { compactTokens, type ContextUsage } from "../lib/sessionMetrics";
 import type { TimelineItem, Timeline, MessageUsage } from "../lib/timeline";
 import {
@@ -38,6 +39,7 @@ import {
   type LimitTurn,
 } from "../lib/usageLimit";
 import type { AgentCapabilities } from "../lib/agentCapabilities";
+import type { PendingHandoff } from "../lib/exportSession";
 import type { SessionRoute } from "../lib/route";
 import type { AccessMode } from "./conversationHelpers";
 
@@ -86,10 +88,7 @@ export type SendCtx = {
   visibleItems: TimelineItem[];
   pendingBackendRef: React.RefObject<AgentBackend | null>;
   pendingModelRef: React.RefObject<ModelInfo | null>;
-  pendingHandoffRef: React.RefObject<{
-    path: string;
-    from: AgentBackend;
-  } | null>;
+  pendingHandoffRef: React.RefObject<PendingHandoff | null>;
   agentMode: AgentMode;
   transcriptBackendRef: React.RefObject<AgentBackend>;
   route: SessionRoute;
@@ -479,6 +478,31 @@ export async function send(
     // sit in the middle of the still-printing turn, then its reply arrived
     // after the handover. The queue chip is the affordance until the
     // previous turn settles; message_start then appends the bubble.
+    const promptBackend = pendingBackendRef.current ?? tab.backend;
+    const pendingHandoff = willQueue ? null : pendingHandoffRef.current;
+    // A handoff belongs on the message only when it actually lands on a
+    // backend other than the one that produced the transcript. Built from
+    // the turns before this message, so before its bubble goes in.
+    const handoff =
+      pendingHandoff && pendingHandoff.from !== promptBackend
+        ? {
+            from: backendLabel(pendingHandoff.from),
+            to: backendLabel(promptBackend),
+            record: handoffPrompt({
+              items: timeline.items,
+              from: backendLabel(pendingHandoff.from),
+              cwd: tab.cwd,
+              transcriptPath: pendingHandoff.path,
+              // Tool cards miss shell writes; the server's change record has them.
+              sessionFiles: (
+                await api.changes(tab.key, "session").catch(() => null)
+              )?.files?.map((file) => file.path),
+              message: outboundMessage,
+            }),
+          }
+        : null;
+    if (handoff)
+      timeline.appendNotice(handoffNotice(handoff), "info", undefined, handoff.record);
     if (!willQueue)
       timeline.appendUser(
         displayMessage,
@@ -495,6 +519,7 @@ export async function send(
     // aliases and provider prompts can make Luna claim to be Kimi. For this
     // narrow question, answer from the session state that Pi reports instead.
     if (
+      !handoff &&
       pickedAttachments.length === 0 &&
       state?.model &&
       isModelIdentityQuestion(message)
@@ -504,24 +529,15 @@ export async function send(
       return;
     }
 
-    const promptBackend = pendingBackendRef.current ?? tab.backend;
     const promptModel = pendingModelRef.current ?? state?.model ?? undefined;
     if (!willQueue) {
       pendingModelRef.current = null;
       pendingBackendRef.current = null;
     }
-    const pendingHandoff = willQueue ? null : pendingHandoffRef.current;
-    // A handoff belongs on the message only when it actually lands on a
-    // backend other than the one that produced the transcript. Switching
-    // away and back (e.g. pi→claude→pi) must not hand the transcript off.
-    const handoff =
-      pendingHandoff && pendingHandoff.from !== promptBackend
-        ? handoffPrompt(pendingHandoff.path, backendLabel(pendingHandoff.from))
-        : null;
     if (!willQueue) pendingHandoffRef.current = null;
-    if (handoff) {
-      outboundMessage = `${handoff}\n\n---\n\n${outboundMessage}`;
-    }
+    // The user's words first, the record after: the ask stays on top.
+    if (handoff)
+      outboundMessage = wrapHandoff(outboundMessage, handoff.record, handoff.from, handoff.to);
     const promptOptions = {
       images,
       cwd: tab.cwd,
@@ -531,6 +547,8 @@ export async function send(
       sessionPath: tab.sessionPath ?? state?.sessionFile ?? undefined,
       model: promptModel,
       thinkingLevel: state?.thinkingLevel ?? undefined,
+      // The server carries the old session's transcript into the new one's.
+      handoffFrom: handoff ? pendingHandoff?.sessionPath : undefined,
     };
     // Drop the same-tick lock before awaiting the turn so a follow-up can
     // queue; the 400ms same-text debounce still rejects the duplicate Enter.

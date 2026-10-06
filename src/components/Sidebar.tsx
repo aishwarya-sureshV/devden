@@ -13,7 +13,6 @@ import {
 import { useStore } from "../lib/store";
 import { createPortal } from "react-dom";
 import {
-  AGENT_BACKENDS,
   api,
   backendLabel,
   backendMark,
@@ -21,6 +20,7 @@ import {
   type ResumeSession,
   type SessionSearchResult,
 } from "../lib/api";
+import { pickerBackendIds } from "../lib/agentAvailability.ts";
 import type { WorkbenchView } from "../lib/navigation";
 import { formatRelativeTime } from "../lib/time";
 import { formatClaudeModelName, isClaudeModel } from "../lib/claudeModels";
@@ -274,9 +274,7 @@ export function Sidebar({
     setDefaultBackend,
     backendCatalog,
   } = useStore();
-  const backendIds = backendCatalog.length
-    ? backendCatalog.map((item) => item.id)
-    : [...AGENT_BACKENDS];
+  const backendIds = pickerBackendIds(backendCatalog);
   // The agent a NEW session starts on. Saved sessions always reopen on the
   // agent that wrote them, so the sidebar lists every backend at once.
   const currentBackend: AgentBackend = defaultBackend;

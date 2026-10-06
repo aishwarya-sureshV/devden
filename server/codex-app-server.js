@@ -5,6 +5,7 @@
  * read-only lookups (session listing, model catalog, rate limits) share the
  * lazily started connection behind codexRequest().
  */
+import { trackAgentProcess } from "./agent-pids.js";
 import { spawn } from "node:child_process";
 import { homedir } from "node:os";
 import { withHostGuardEnv } from "./host-guard.js";
@@ -74,6 +75,7 @@ export class CodexAppServer {
       },
     );
     this.child = child;
+    trackAgentProcess(child);
     this.buffer = "";
     this.stderr = "";
     child.stdin.on("error", (error) => { if (this.child === child) this.fail(error); });

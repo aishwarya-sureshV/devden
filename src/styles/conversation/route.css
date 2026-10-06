@@ -486,3 +486,111 @@
 .composer--tight .route-setup__hint {
  display: none;
 }
+
+/* Prosecutor case paused by a failed turn (usage limit): Resume continues it. */
+.route-setup__paused {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  border: 1px solid color-mix(in srgb, var(--warning, #d29922) 45%, transparent);
+  font-size: 12px;
+}
+.route-setup__paused span {
+  flex: 1 1 240px;
+}
+.route-setup__changes {
+  flex: 1 1 100%;
+  margin: 0;
+  max-height: 8.5em;
+  overflow: auto;
+  white-space: pre;
+  font-size: 11px;
+}
+
+/* Prosecutor case status + the server-run acceptance gate. */
+.route-setup__status.is-verified {
+ color: var(--pw-teal);
+}
+.route-setup__status.is-stopped,
+.route-setup__status.is-inconclusive {
+ color: var(--warning, #d29922);
+}
+.route-setup__gate-cmds {
+ flex: 1 1 auto;
+ min-width: 0;
+ overflow: hidden;
+ text-overflow: ellipsis;
+ white-space: nowrap;
+ font-family: var(--mono);
+ font-size: 11px;
+}
+.route-setup__link {
+ padding: 0;
+ border: 0;
+ background: none;
+ color: var(--pw-accent);
+ font: inherit;
+ font-size: 11px;
+ cursor: pointer;
+}
+.route-setup__gate-edit {
+ display: flex;
+ flex-direction: column;
+ gap: 6px;
+ margin-top: 8px;
+ padding: 6px 8px;
+ border: 1px solid var(--dsw-alias-border-l2);
+ border-radius: 7px;
+ font-size: 12px;
+}
+.route-setup__gate-edit label {
+ display: flex;
+ flex-direction: column;
+ gap: 4px;
+ color: var(--dsw-alias-label-caption);
+}
+.route-setup__gate-edit textarea,
+.route-setup__gate-edit input {
+ padding: 4px 6px;
+ border: 1px solid var(--dsw-alias-border-l2);
+ border-radius: 5px;
+ background: var(--dsw-alias-bg-layer-1);
+ color: inherit;
+ font-family: var(--mono);
+ font-size: 11px;
+}
+.route-setup__gate-timeout input {
+ width: 7em;
+}
+.route-setup__gate-actions {
+ display: flex;
+ justify-content: flex-end;
+ gap: 8px;
+}
+.route-setup__findings {
+ margin: 8px 0 0;
+ padding-left: 16px;
+ font-size: 12px;
+}
+.route-setup__findings em {
+ font-style: normal;
+ color: var(--dsw-alias-label-dimmed);
+}
+.route-setup__gate {
+ margin-top: 8px;
+ font-size: 12px;
+}
+.route-setup__gate .is-fail code {
+ color: var(--warning, #d29922);
+}
+.route-setup__gate pre {
+ max-height: 200px;
+ overflow: auto;
+ margin: 4px 0;
+ font-size: 11px;
+ white-space: pre-wrap;
+}

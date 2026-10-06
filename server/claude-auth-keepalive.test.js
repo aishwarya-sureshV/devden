@@ -47,6 +47,53 @@ test("a logged-out CLI warns with the fix", async () => {
   assert.match(warned, /\/login/);
 });
 
+test("a lost login is announced once, and re-armed by a recovery", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "devden-keepalive-cb-"));
+  const bin = join(dir, "claude");
+  const write = (body) => {
+    writeFileSync(bin, `#!/bin/sh\n${body}\n`);
+    chmodSync(bin, 0o755);
+  };
+  const announcements = [];
+  const original = console.warn;
+  console.warn = () => {};
+  const savedInterval = process.env.DEVDEN_CLAUDE_KEEPALIVE_MS;
+  process.env.DEVDEN_CLAUDE_BIN = bin;
+  let timer;
+  const waitFor = async (count) => {
+    for (let waited = 0; waited < 5000 && announcements.length < count; waited += 50)
+      await new Promise((resolve) => setTimeout(resolve, 50));
+  };
+  try {
+    write('echo "Invalid API key · Please run /login" >&2\nexit 1');
+    timer = startClaudeAuthKeepalive(
+      (error) => announcements.push(String(error)),
+      150,
+    );
+    await waitFor(1);
+    // The immediate ping announced the loss…
+    assert.equal(announcements.length, 1);
+    assert.match(announcements[0], /\/login|Invalid/);
+    // …and later failing pings in the same streak do not repeat it.
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    assert.equal(announcements.length, 1);
+    // A healthy ping re-arms the announcement…
+    write("exit 0");
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    assert.equal(announcements.length, 1);
+    // …so the next failure is news again.
+    write('echo "Not logged in" >&2\nexit 1');
+    await waitFor(2);
+    assert.equal(announcements.length, 2);
+    assert.match(announcements[1], /Not logged in/);
+  } finally {
+    clearInterval(timer);
+    console.warn = original;
+    if (savedInterval === undefined) delete process.env.DEVDEN_CLAUDE_KEEPALIVE_MS;
+    else process.env.DEVDEN_CLAUDE_KEEPALIVE_MS = savedInterval;
+  }
+});
+
 test("subscriptionEnvironment strips Claude Desktop host-auth", () => {
   const keys = [
     "CLAUDE_CODE_SDK_HAS_HOST_AUTH_REFRESH",

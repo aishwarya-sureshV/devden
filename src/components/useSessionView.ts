@@ -30,6 +30,7 @@ import type {
   ProviderUsage,
 } from "../lib/api";
 import { switchBackend as switchBackendImpl } from "./conversationModel";
+import type { PendingHandoff } from "../lib/exportSession";
 import { estimateContext, type ContextUsage } from "../lib/sessionMetrics";
 import type { TimelineItem, Timeline } from "../lib/timeline";
 import {
@@ -55,6 +56,7 @@ export type UseSessionViewArgs = {
   configuring: boolean;
   setDefaultBackend: (backend: AgentBackend) => void;
   setConversationBackend: (key: string, backend: AgentBackend) => void;
+  setConversationSessionPath: (key: string, path?: string) => void;
   reviewStarting: AgentBackend | null;
   setReviewStarting: React.Dispatch<React.SetStateAction<AgentBackend | null>>;
   setReviews: React.Dispatch<
@@ -93,6 +95,7 @@ export function useSessionView({
   configuring,
   setDefaultBackend,
   setConversationBackend,
+  setConversationSessionPath,
   reviewStarting,
   setReviewStarting,
   setReviews,
@@ -178,10 +181,7 @@ export function useSessionView({
   // `from` is the backend that actually produced the transcript — not the
   // picker selection being switched away from — so a pi→claude→pi round trip
   // that never sends a message does not claim the transcript came from Claude.
-  const pendingHandoffRef = useRef<{
-    path: string;
-    from: AgentBackend;
-  } | null>(null);
+  const pendingHandoffRef = useRef<PendingHandoff | null>(null);
   // Stamps from the previous backend stay on the transcript. The card only
   // counts usage that happened after the switch.
   const usageSinceRef = useRef(0);
@@ -199,6 +199,7 @@ export function useSessionView({
         saveTranscript,
         setConversationBackend,
         pendingHandoffRef,
+        setConversationSessionPath,
         timeline,
       },
       next,

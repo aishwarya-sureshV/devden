@@ -1,13 +1,13 @@
 import { useEffect, useState } from "react";
 import { useModelRefresh } from "./useModelRefresh";
 import {
-  AGENT_BACKENDS,
   api,
   backendLabel,
   backendMark,
   type AgentBackend,
   type ModelInfo,
 } from "../lib/api";
+import { pickerBackendIds } from "../lib/agentAvailability.ts";
 import { useStore } from "../lib/store";
 import {
   firstEnabled,
@@ -41,9 +41,7 @@ export function RouteSetup({
   onChangeRoute: () => void;
 }) {
   const { backendCatalog } = useStore();
-  const backendIds = backendCatalog.length
-    ? backendCatalog.map((item) => item.id)
-    : [...AGENT_BACKENDS];
+  const backendIds = pickerBackendIds(backendCatalog);
   const [models, setModels] = useState<Partial<Record<AgentBackend, ModelInfo[]>>>(
     {},
   );

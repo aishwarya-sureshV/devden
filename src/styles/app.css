@@ -2026,6 +2026,29 @@ body[data-glass] .session-grid.is-split {
 .agents-settings__buttons button:hover {
  background: var(--dsw-alias-interactive-bg-hover);
 }
+.agents-settings__status.is-hidden {
+ color: var(--dsw-alias-label-caption);
+}
+.agents-settings__toggle {
+ display: inline-flex;
+ align-items: center;
+ gap: 7px;
+ min-height: 32px;
+ padding: 0 6px;
+ color: var(--dsw-alias-label-secondary);
+ font-size: 11.5px;
+ user-select: none;
+}
+.agents-settings__toggle input {
+ accent-color: var(--pw-teal);
+ width: 15px;
+ height: 15px;
+ margin: 0;
+}
+.agents-settings__toggle input:disabled {
+ opacity: 0.4;
+ cursor: not-allowed;
+}
 .agents-settings__steps {
  display: grid;
  gap: 12px;

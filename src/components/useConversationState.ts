@@ -8,7 +8,6 @@ import {
   type ConversationTab,
 } from "../lib/store";
 import {
-  AGENT_BACKENDS,
   type SlashCommand,
   type ModelInfo,
   type AgentBackend,
@@ -18,10 +17,11 @@ import {
   api,
   cachedCatalog,
 } from "../lib/api";
+import { pickerBackendIds } from "../lib/agentAvailability.ts";
 import { useState, useRef, useEffect } from "react";
 import type { ToolFileView } from "../lib/toolCards";
 import { CLAUDE_MODELS, CLAUDE_EFFORT_LEVELS } from "../lib/claudeModels";
-import { useBackendUsage, usagePair } from "../lib/backendUsage";
+import { useBackendUsage, useBackendUsageFetchedAt, usagePair } from "../lib/backendUsage.ts";
 import type { AccessMode, AgentMode } from "./conversationHelpers";
 import { type SessionRoute, emptyRoute } from "../lib/route";
 import { capabilitiesFor } from "../lib/agentCapabilities";
@@ -54,13 +54,13 @@ export function useConversationState({
     closeConversation,
     revealConversation,
     backendCatalog,
+    defaultBackend,
+    refreshBackendCatalog,
     setDefaultBackend,
     setConversationBackend,
     resumeSessions,
   } = useStore();
-  const backendIds = backendCatalog.length
-    ? backendCatalog.map((item) => item.id)
-    : [...AGENT_BACKENDS];
+  const backendIds = pickerBackendIds(backendCatalog);
   const [draft, setDraft] = useState("");
   // The draft survives page reloads: keyed by conversation identity (the
   // session file once it exists, else this fresh tab's own slot). It used
@@ -152,6 +152,7 @@ export function useConversationState({
   const pendingBackendRef = useRef<AgentBackend | null>(null);
   const usagePopRef = useRef<HTMLDivElement | null>(null);
   const backendUsage = useBackendUsage();
+  const backendUsageFetchedAt = useBackendUsageFetchedAt();
   // Reset countdown for the active backend's nearest limit window, shown
   // under the composer's tool row (only while that window is in flight).
   const currentReset = usagePair(backendUsage[tab.backend]).reset;
@@ -404,6 +405,9 @@ export function useConversationState({
     setAgentNote,
     modelSearchRef,
     backendIds,
+    backendCatalog,
+    defaultBackend,
+    refreshBackendCatalog,
     setPickerBackend,
     setForkingId,
     openForkedConversation,
@@ -415,6 +419,7 @@ export function useConversationState({
     effortHover,
     setEffortHover,
     backendUsage,
+    backendUsageFetchedAt,
     currentReset,
     workspaceMounted,
     workspacePlacement,

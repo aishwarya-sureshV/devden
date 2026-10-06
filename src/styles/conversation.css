@@ -24,3 +24,5 @@
 @import "./conversation/dock-chrome.css";
 @import "./conversation/pane-chrome.css";
 @import "./conversation/split-fit.css";
+@import "./conversation/prosecutor-nudge.css";
+@import "./conversation/agent-issue.css";

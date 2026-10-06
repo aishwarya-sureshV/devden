@@ -6,6 +6,7 @@
  * over Server-Sent Events. One process = one session at a time; `new_session`
  * and `switch_session` rebind the process to a fresh conversation.
  */
+import { trackAgentProcess } from "./agent-pids.js";
 import { spawn } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
@@ -574,6 +575,7 @@ export class PiAgentProcess {
     child.stdin.on("error", () => {});
     this.process = child;
     this.sessionContextChoice = undefined;
+    trackAgentProcess(child);
     child.stdout.on("data", (chunk) => this.readStdout(chunk));
     child.stderr.on("data", (chunk) => {
       const message = chunk.toString("utf8").trim();

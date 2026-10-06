@@ -7,8 +7,31 @@
  */
 
 import { connectionCommand, detectBuiltins } from "./agent-detect.js";
+import { docGet, docSet } from "./db.js";
 
 export const AGENT_BACKENDS = ["pi", "claude", "grok", "codex", "zcode"];
+
+/**
+ * Agents the user switched off in Settings: hidden from pickers, never
+ * auto-started. Persisted as the disabled set so a missing row means enabled
+ * (pre-toggle installs and old payloads stay untouched).
+ */
+export function readDisabledBackends() {
+  const raw = docGet("setup", "agents");
+  const disabled = Array.isArray(raw?.disabled) ? raw.disabled : [];
+  return new Set(disabled.filter((id) => AGENT_BACKENDS.includes(id)));
+}
+
+/** Toggle one agent. `id` is coerced through backendName, so a client can
+ *  never plant an arbitrary doc-store key. Returns the fresh disabled set. */
+export function setBackendEnabled(id, enabled) {
+  const name = backendName(id);
+  const disabled = readDisabledBackends();
+  if (enabled) disabled.delete(name);
+  else disabled.add(name);
+  docSet("setup", "agents", { disabled: [...disabled] });
+  return [...disabled];
+}
 
 export function backendName(value) {
   if (value === "claude" || value === "grok" || value === "codex" || value === "pi" || value === "zcode")
@@ -105,6 +128,7 @@ export function capabilitiesFor(backend) {
 
 export async function listBackends() {
   const detected = await detectBuiltins();
+  const disabled = readDisabledBackends();
   const byId = new Map(detected.map((row) => [row.id, row]));
   const builtins = AGENT_BACKENDS.map((id) => {
     const row = byId.get(id);
@@ -120,6 +144,7 @@ export async function listBackends() {
       installCommand: row?.installCommand ?? null,
       loginCommand: row?.loginCommand ?? null,
       connectCommand: connectionCommand(id, row?.path),
+      enabled: !disabled.has(id),
       capabilities: capabilitiesFor(id),
     };
   });

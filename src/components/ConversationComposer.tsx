@@ -18,8 +18,11 @@ import {
   type QueuedMessage,
   type UsageWindow,
   type ProviderUsage,
+  type ProsecutorState,
 } from "../lib/api";
 import { LimitBanner } from "./LimitBanner";
+import { AgentIssueCard } from "./AgentIssueCard";
+import type { AgentIssue } from "./useAgentIssue";
 import { limitScope } from "../lib/usageLimit";
 import type { FormEvent } from "react";
 import { IconFile, IconPlus, IconStop, IconArrowUp } from "./icons";
@@ -115,6 +118,9 @@ export type ConversationComposerProps = {
   trackLevels: string[];
   supportedLevels: string[];
   effortHover: number | null;
+  /** Prosecutor round 1: levels below it are shown disabled. */
+  effortFloor: string | null;
+  prosecutorCase: ProsecutorState | null;
   visibleOptions: ModelOption[];
   modelIndex: number;
   modelQuery: string;
@@ -145,6 +151,13 @@ export type ConversationComposerProps = {
   backendUsage: Partial<Record<AgentBackend, ProviderUsage>>;
   currentReset: string | undefined;
   agentBusy: boolean;
+  /** This session's agent can't run: gone, signed out, or switched off. */
+  agentIssue: AgentIssue | null;
+  onAgentIssueReconnect: () => void;
+  onAgentIssueHandoff: (backend: AgentBackend) => void;
+  onAgentIssueDismiss: () => void;
+  /** Fetch outcome + when the shown usage numbers were last good. */
+  usageStatus: { at: number | null; error: string | null };
 };
 
 export function ConversationComposer({ contextUsage,
@@ -216,6 +229,8 @@ export function ConversationComposer({ contextUsage,
   trackLevels,
   supportedLevels,
   effortHover,
+  effortFloor,
+  prosecutorCase,
   visibleOptions,
   modelIndex,
   modelQuery,
@@ -245,6 +260,11 @@ export function ConversationComposer({ contextUsage,
   backendUsage,
   currentReset,
   agentBusy,
+  agentIssue,
+  onAgentIssueReconnect,
+  onAgentIssueHandoff,
+  onAgentIssueDismiss,
+  usageStatus,
 }: ConversationComposerProps) {
   return (
     <div
@@ -319,8 +339,15 @@ export function ConversationComposer({ contextUsage,
       {agentMode === "prosecutor" && (
         <ProsecutorSetup
           sessionKey={tab.key}
+          sessionPath={tab.sessionPath ?? tab.timeline.state?.sessionFile}
+          cwd={tab.cwd}
           executorBackend={tab.backend}
           executorModel={currentModelLabel}
+          caseState={prosecutorCase}
+          effort={effort}
+          levels={trackLevels}
+          onEffort={setEffort}
+          onSend={(text) => void send(text)}
         />
       )}
       {editingMessageId !== null && (
@@ -547,6 +574,14 @@ export function ConversationComposer({ contextUsage,
           ))}
         </div>
       )}
+      {agentIssue && (
+        <AgentIssueCard
+          issue={agentIssue}
+          onReconnect={onAgentIssueReconnect}
+          onHandoff={onAgentIssueHandoff}
+          onDismiss={onAgentIssueDismiss}
+        />
+      )}
       {limitVisible && (
         <LimitBanner
           scope={limitScope(limitWindow?.label ?? "")}
@@ -689,6 +724,7 @@ export function ConversationComposer({ contextUsage,
               levels={trackLevels}
               supported={supportedLevels}
               effortHover={effortHover}
+              effortFloor={effortFloor}
               options={visibleOptions}
               highlight={modelIndex}
               query={modelQuery}
@@ -771,6 +807,7 @@ export function ConversationComposer({ contextUsage,
               usage={{ ...backendUsage, ...(providerUsage ? { [tab.backend]: providerUsage } : {}) }}
               context={contextUsage}
               reset={currentReset}
+              status={usageStatus}
               onToggle={() => {
                 setModelMenuOpen(false);
                 setModeMenuOpen(false);

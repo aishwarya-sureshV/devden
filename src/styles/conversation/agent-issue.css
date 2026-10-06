@@ -1,0 +1,75 @@
+/* "This session's agent can't run" card, pinned above the composer next to
+   the limit strip. Reconnect (sign back in) or hand the transcript to
+   another agent. */
+.agent-issue {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0 auto 6px;
+  width: 100%;
+  max-width: calc(var(--pw-chat-content-width) - 48px);
+  box-sizing: border-box;
+  padding: 7px 12px;
+  border: 1px solid var(--pw-accent-line);
+  border-radius: 8px;
+  background: var(--pw-accent-tint-2);
+  color: var(--pw-accent);
+  font-size: 12px;
+  line-height: 1.35;
+}
+.agent-issue__body {
+  flex: 1;
+  min-width: 0;
+  display: grid;
+  gap: 1px;
+}
+.agent-issue__body strong {
+  font-weight: 600;
+}
+.agent-issue__detail {
+  color: var(--pw-accent-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agent-issue__actions {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+.agent-issue__actions button {
+  flex: none;
+  padding: 3px 10px;
+  border: 1px solid var(--pw-accent-line);
+  border-radius: 6px;
+  background: var(--pw-card);
+  color: var(--pw-accent);
+  font-size: 11px;
+  line-height: 1.2;
+  cursor: pointer;
+}
+.agent-issue__actions button:hover {
+  background: var(--pw-accent-tint);
+}
+.agent-issue__primary {
+  font-weight: 600;
+}
+.agent-issue__dismiss {
+  padding: 3px 7px !important;
+  border: 0 !important;
+  background: none !important;
+  color: var(--pw-accent-dim);
+  font-size: 14px;
+}
+.agent-issue__dismiss:hover {
+  color: var(--pw-accent);
+}
+@media (max-width: 640px) {
+  .agent-issue {
+    flex-wrap: wrap;
+  }
+  .agent-issue__detail {
+    white-space: normal;
+  }
+}

@@ -7,6 +7,9 @@ import {
 } from "../lib/api";
 import { useAnchoredPopover } from "../lib/anchoredPopover";
 import { effortEstimate, effortLabel } from "../lib/effortStops";
+import { belowFloor } from "../lib/prosecutorEffort";
+
+const FLOOR_REASON = "Prosecutor round 1 builds at High or above";
 import { BackendLogo, IconChevronDown, IconSearch, ModelName } from "./icons";
 
 export type ModelOption = {
@@ -57,11 +60,13 @@ function formatContext(tokens?: number): string {
   return String(tokens);
 }
 
-export function UsageChip({ popRef, open, hour, week, current, usage, reset, onToggle, context }: {
+export function UsageChip({ popRef, open, hour, week, current, usage, reset, onToggle, context, status }: {
   popRef: RefObject<HTMLDivElement | null>; open: boolean; split: boolean;
   hour: number | null; week: number | null; current: AgentBackend;
   usage: Partial<Record<AgentBackend, ProviderUsage>>; reset?: string | null;
   onToggle: () => void; context: { percent: number | null; label: string };
+  /** Fetch outcome + when the shown numbers were last good. */
+  status?: { at: number | null; error: string | null };
 }) {
   const used = (left: number | null) => left === null ? null : Math.max(0, Math.min(100, 100 - left));
   const h = used(hour), w = used(week);
@@ -77,14 +82,25 @@ export function UsageChip({ popRef, open, hour, week, current, usage, reset, onT
     { label: "This week", percent: w, detail: resetFor(/week|7d/i) },
     { label: "Context window", percent: context.percent, detail: context.label },
   ];
+  const updatedText = status?.at != null
+    ? `Updated ${new Date(status.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`
+    : null;
+  const failed = Boolean(status?.error);
+  const title = failed
+    ? `Usage fetch failed${updatedText ? ` · last updated ${updatedText.replace("Updated ", "")}` : ""}${status?.error ? ` · ${status.error}` : ""}`
+    : reset ? `Usage used · resets ${reset}` : "Usage used";
   return <div ref={popRef} className="composer__usage-wrap">
-    <button type="button" className={`composer__usage${open ? " is-open" : ""}`} aria-haspopup="dialog" aria-expanded={open} aria-label={`Usage: 5-hour ${h === null ? "unavailable" : `${h}% used`}, week ${w === null ? "unavailable" : `${w}% used`}`} title={reset ? `Usage used · resets ${reset}` : "Usage used"} onClick={onToggle}>
+    <button type="button" className={`composer__usage${open ? " is-open" : ""}`} aria-haspopup="dialog" aria-expanded={open} aria-label={`Usage: 5-hour ${h === null ? "unavailable" : `${h}% used`}, week ${w === null ? "unavailable" : `${w}% used`}`} title={title} onClick={onToggle}>
       <span className="usage-bars">{[["5h", h], ["wk", w]].map(([label, n]) => <span key={String(label)}><small>{label}</small><i><b style={{ width: `${n ?? 0}%`, background: color(n as number | null) }} /></i><small>{n === null ? "—" : `${n}%`}</small></span>)}</span>
       <span className="usage-rings"><svg viewBox="0 0 22 22" width="20" height="20" aria-hidden="true">{[h, w].map((n, i) => <g key={i}><circle cx="11" cy="11" r={i ? 5 : 9} fill="none" stroke="currentColor" opacity=".15" strokeWidth="2.2" /><circle cx="11" cy="11" r={i ? 5 : 9} fill="none" stroke={color(n)} strokeWidth="2.2" pathLength="100" strokeDasharray={`${n ?? 0} 100`} transform="rotate(-90 11 11)" /></g>)}</svg><small style={{ color: color(h === null && w === null ? null : Math.max(h ?? 0, w ?? 0)) }}>{h === null && w === null ? "—" : `${Math.max(h ?? 0, w ?? 0)}%`}</small></span>
     </button>
     {open && <div ref={popoverRef} className="usage-pop" role="dialog" aria-label="Usage">
       <div className="usage-pop__row-head"><strong>{backendLabel(current)} usage</strong><span>% used</span></div>
       {rows.map(row => <div className="usage-pop__card" key={row.label}><div className="usage-pop__row-head"><strong>{row.label}</strong><span>{row.percent === null ? "—" : `${row.percent}% used`}</span></div><div className="usage-pop__meter"><b><i style={{ width: `${row.percent ?? 0}%`, background: color(row.percent) }} /></b></div><small>{row.detail}</small></div>)}
+      {(failed || updatedText) && <div className={`usage-pop__foot${failed ? " is-error" : ""}`} title={status?.error ?? undefined}>
+        {failed ? "Couldn't refresh usage — showing the last known numbers." : "Live numbers from this agent."}
+        {updatedText && <span className="usage-pop__updated">{updatedText}</span>}
+      </div>}
     </div>}
   </div>;
 }
@@ -105,6 +121,7 @@ export function ModelChip({
   levels,
   supported,
   effortHover,
+  effortFloor = null,
   options,
   highlight,
   query,
@@ -138,6 +155,8 @@ export function ModelChip({
   /** Levels the highlighted model accepts. Missing means the whole ladder. */
   supported?: string[];
   effortHover: number | null;
+  /** Prosecutor round 1: levels below this show disabled, with the reason. */
+  effortFloor?: string | null;
   options: ModelOption[];
   highlight: number;
   query: string;
@@ -306,8 +325,10 @@ export function ModelChip({
               <div className="compact-picker__setting" onMouseLeave={() => onEffortHover(null)}><span>Thinking</span>
                 <div className="compact-picker__thinking" role="group" aria-label="Thinking effort">
                   {levels.map((level, index) => {
-                    const offered = browseBackend === backend && (!supported?.length || supported.includes(level) || level === effort);
+                    const floored = belowFloor(level, effortFloor);
+                    const offered = !floored && browseBackend === backend && (!supported?.length || supported.includes(level) || level === effort);
                     return <button type="button" key={level} disabled={!offered} aria-label={effortLabel(level)} aria-pressed={level === effort}
+                      title={floored ? FLOOR_REASON : undefined}
                       className={`${index === effortIndex ? "is-current" : ""} ${index <= effortIndex ? "is-on" : ""}`}
                       onMouseEnter={() => { if (offered) onEffortHover(index); }} onClick={() => onEffort(level)}>
                       <span className="compact-picker__stop" aria-hidden="true"><i className={index > 0 && index <= effortIndex ? "is-on" : ""} /><b /><i className={index < levels.length - 1 && index < effortIndex ? "is-on" : ""} /></span>
@@ -317,6 +338,7 @@ export function ModelChip({
                 </div>
               </div>
               <div className="compact-picker__eta" title="Approximate thinking time; actual reply time varies"><span>{effortEstimate(shownLevel)}</span> per reply</div>
+              {effortFloor && <div className="compact-picker__eta compact-picker__floor">{FLOOR_REASON}</div>}
             </>}
 
           </div>}

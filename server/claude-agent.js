@@ -6,6 +6,7 @@
  * consumed by devden's Timeline, while exposing the same public surface as
  * PiAgentProcess.
  */
+import { trackAgentProcess } from "./agent-pids.js";
 import { execFile, execFileSync, spawn } from "node:child_process";
 import {
   existsSync,
@@ -641,11 +642,22 @@ const AUTH_KEEPALIVE_MS = (() => {
   return Number.isFinite(ms) && ms > 0 ? ms : 6 * 60 * 60 * 1000;
 })();
 
-export function startClaudeAuthKeepalive() {
+export function startClaudeAuthKeepalive(onAuthLost, intervalMs = AUTH_KEEPALIVE_MS) {
+  // Fire the callback only on the ok→fail transition: a dead login keeps
+  // failing every ping, and re-announcing it every six hours adds noise, not
+  // information. A later success re-arms it. The callback may return false
+  // to decline a failure (e.g. a network blip) so it doesn't consume the
+  // announcement; it also learns whether any ping has succeeded yet.
+  let lost = false;
+  let sawOk = false;
   const ping = () =>
     loadClaudeUsage().then(
-      (result) => {
-        if (result?.ok) return;
+      async (result) => {
+        if (result?.ok) {
+          lost = false;
+          sawOk = true;
+          return;
+        }
         console.warn(
           `[claude] auth keepalive failed: ${result?.error || "unknown error"}`,
         );
@@ -654,11 +666,19 @@ export function startClaudeAuthKeepalive() {
             " ANTHROPIC_API_KEY and Claude Desktop host-auth, so there is" +
             " no fallback credential.",
         );
+        if (!lost) {
+          lost = true;
+          lost =
+            (await onAuthLost?.(
+              result?.error || "Claude sign-in expired",
+              sawOk,
+            )) !== false;
+        }
       },
       () => {},
     );
   void ping();
-  return setInterval(ping, AUTH_KEEPALIVE_MS).unref();
+  return setInterval(ping, intervalMs).unref();
 }
 
 function resolveClaudeExecutable() {
@@ -1246,6 +1266,7 @@ export class ClaudeAgentProcess {
     // exit handler already reports the death.
     child.stdin.on("error", () => {});
     this.process = child;
+    trackAgentProcess(child);
     this.intentionalExit = false;
     child.stdout.on("data", (chunk) => this.readStdout(chunk));
     child.stderr.on("data", (chunk) => {

@@ -152,6 +152,9 @@ interface StoreValue {
   finishSetup: (workspace?: string) => void;
   /** Built-ins plus saved CLIs, from /api/backends. Empty until that returns. */
   backendCatalog: BackendInfo[];
+  /** Re-fetch /api/backends and update the store copy (accepts an already-
+   *  fetched list so Settings can share its recheck). */
+  refreshBackendCatalog: (list?: BackendInfo[]) => Promise<void>;
   /** Every workspace this browser knows about: open tabs + saved sessions of every agent. */
   knownWorkspaces: string[];
   setPreferredModel: (
@@ -438,6 +441,26 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   );
   const setupWorkspace = useRef("");
   const [backendCatalog, setBackendCatalog] = useState<BackendInfo[]>([]);
+  const installCatalog = useCallback((backends: BackendInfo[]) => {
+    installBackendCatalog(backends);
+    installCapabilityOverrides(backends);
+    setBackendCatalog(backends);
+  }, []);
+  const refreshBackendCatalog = useCallback(
+    (list?: BackendInfo[]) => {
+      if (list) {
+        installCatalog(list);
+        return Promise.resolve();
+      }
+      return api
+        .backends()
+        .then((result) => {
+          if (result?.backends) installCatalog(result.backends);
+        })
+        .catch(() => {});
+    },
+    [installCatalog],
+  );
   const finishSetup = useCallback((workspace?: string) => {
     if (workspace) setupWorkspace.current = workspace;
     setSetup("done");
@@ -460,15 +483,13 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       .backends()
       .then((result) => {
         if (cancelled || !result?.backends) return;
-        installBackendCatalog(result.backends);
-        installCapabilityOverrides(result.backends);
-        setBackendCatalog(result.backends);
+        installCatalog(result.backends);
       })
       .catch(() => {});
     return () => {
       cancelled = true;
     };
-  }, [setDefaultBackend]);
+  }, [installCatalog, setDefaultBackend]);
   const didOpenInitialSession = useRef(false);
   const didRenderRestoredSessions = useRef(false);
   /** Bumped when the page becomes visible, so the snapshot persist effect
@@ -596,8 +617,21 @@ export function StoreProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     refreshSessions();
+    // backend_auth arrives once per live session plus one broadcast; one
+    // burst must not trigger N full detections.
+    const authRefreshTimer = { current: undefined as number | undefined };
     const unsubscribe = subscribeEvents(
       (event: AgentEvent) => {
+        // An agent's sign-in died while the page was open (keepalive or a
+        // failed turn): the catalog's cached auth is now stale, so re-detect.
+        // Sessionless, so this must run before the sessionKey guard below.
+        if (event.type === "backend_auth") {
+          window.clearTimeout(authRefreshTimer.current);
+          authRefreshTimer.current = window.setTimeout(
+            () => void refreshBackendCatalog(),
+            250,
+          );
+        }
         const key = event.sessionKey;
         if (!key) return;
         lastEventAt.current.set(key, Date.now());
@@ -683,8 +717,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         }
       },
     );
-    return unsubscribe;
-  }, [refreshSessions, restoreLiveTurn]);
+    return () => {
+      unsubscribe();
+      window.clearTimeout(authRefreshTimer.current);
+    };
+  }, [refreshBackendCatalog, refreshSessions, restoreLiveTurn]);
 
   // The event feed is push-only and the page never asks anything on its own,
   // so a turn whose ending never arrives spins forever: the composer stays on
@@ -1778,6 +1815,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     setup,
     finishSetup,
     backendCatalog,
+    refreshBackendCatalog,
     knownWorkspaces,
     setPreferredModel,
     workspaceReveal,

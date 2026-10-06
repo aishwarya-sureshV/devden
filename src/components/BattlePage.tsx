@@ -9,6 +9,7 @@ import {
   type AgentBackend,
   type ModelInfo,
 } from "../lib/api";
+import { pickerBackendIds } from "../lib/agentAvailability.ts";
 import {
   candidateTests,
   loadRaces,
@@ -58,9 +59,7 @@ export function BattlePage({
     closeConversation,
     backendCatalog,
   } = useStore();
-  const backendIds = backendCatalog.length
-    ? backendCatalog.map((item) => item.id)
-    : [...AGENT_BACKENDS];
+  const backendIds = pickerBackendIds(backendCatalog);
   const [races, setRaces] = useState<RaceRecord[]>(() => loadRaces());
   const [task, setTask] = useState("");
   const [starting, setStarting] = useState(false);

@@ -10,6 +10,9 @@ const RANK: Record<string, number> = {
  ultra: 7,
 };
 
+/** Rank of a thinking level; unknown levels rank last. */
+export const effortRank = (level: string) => RANK[level] ?? 99;
+
 /**
  * Full per-model ladder (synara-style): show every level the selected model
  * supports, up to xhigh/max -- no truncation to the first four. Grok's catalog
