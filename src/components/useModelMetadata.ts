@@ -5,6 +5,7 @@ import { useCallback, useEffect, useRef } from "react";
 import { useModelRefresh } from "./useModelRefresh";
 import {
   api,
+  cachedCatalog,
   type RunStatus,
   type ModelInfo,
   type SessionState,
@@ -108,8 +109,8 @@ export function useModelMetadata({
     // Free the slot: an in-flight fetch for the old backend is still
     // tracked, and its response is dropped by the generation stamp above.
     modelMetadataRequestRef.current = null;
-    setModels([]);
-    setLevels([]);
+    setModels(cachedCatalog("models", tab.backend) ?? []);
+    setLevels(cachedCatalog("levels", tab.backend) ?? []);
   }, [tab.backend]);
 
   // Warm the model list as soon as the session is usable. The server caches

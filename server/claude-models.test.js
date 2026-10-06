@@ -1,6 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { ClaudeAgentProcess, parseClaudeModelIds } from "./claude-agent.js";
+import {
+  ClaudeAgentProcess,
+  claudeModelInfo,
+  parseClaudeModelIds,
+  setClaudeModelsForTesting,
+} from "./claude-agent.js";
 
 test("claude's model list stays Claude-only", async () => {
   const agent = new ClaudeAgentProcess("test-session");
@@ -41,4 +46,16 @@ test("catalog whitelist wins over dead loose ids", () => {
     'r==="claude-opus-5-5"||r==="claude-haiku-4-5" junk claude-sonnet-3-7',
   );
   assert.deepEqual(ids, ["claude-opus-5-5", "claude-haiku-4-5"]);
+});
+
+test("point releases keep their id; only date stamps fold onto a known model", () => {
+  // The scanned list can lag the CLI: it knows claude-sonnet-5, not 5-5.
+  setClaudeModelsForTesting(["claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5"]);
+  assert.equal(claudeModelInfo("claude-sonnet-5-5").id, "claude-sonnet-5-5");
+  assert.equal(claudeModelInfo("claude-sonnet-5-6").id, "claude-sonnet-5-6");
+  assert.equal(claudeModelInfo("claude-sonnet-5-20260101").id, "claude-sonnet-5");
+  assert.equal(claudeModelInfo("claude-sonnet-5-20260101-v1").id, "claude-sonnet-5");
+  assert.equal(claudeModelInfo("claude-sonnet-5[1m]").id, "claude-sonnet-5");
+  assert.equal(claudeModelInfo("sonnet").id, "claude-sonnet-5");
+  assert.equal(claudeModelInfo("opus").id, "claude-opus-5");
 });

@@ -23,10 +23,18 @@ import { spawn } from "node:child_process";
 import { mkdirSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { blockedCommandReason } from "../host-guard.js";
 
 interface BackgroundTasksApi {
   registerTool(tool: Record<string, unknown>): unknown;
   sendUserMessage(content: string, options?: { deliverAs?: string }): unknown;
+  on(
+    event: "tool_call",
+    handler: (event: {
+      toolName: string;
+      input: Record<string, unknown>;
+    }) => { block: true; reason: string } | void,
+  ): void;
 }
 
 const TASK_DIR = join(tmpdir(), "devden-tasks");
@@ -51,9 +59,27 @@ function taskDir(): string {
   return TASK_DIR;
 }
 
-function tail(text: string, lines: number): string {
+// Tool output stays in context for the rest of the session. The line
+// budget stays at 100 -- node's test summary sits ~85 lines from the end
+// when tests fail -- but each line is capped: one bundler warning or
+// minified line can be thousands of chars of noise.
+export const DEFAULT_LINES = 100;
+const MAX_LINE = 300;
+
+export function tail(text: string, lines: number): string {
   const parts = text.split("\n");
-  return parts.slice(-Math.max(1, lines)).join("\n");
+  const kept = parts
+    .slice(-Math.max(1, lines))
+    .map((line) =>
+      line.length > MAX_LINE
+        ? `${line.slice(0, MAX_LINE)}... [${line.length - MAX_LINE} chars cut]`
+        : line,
+    );
+  const hidden = parts.length - kept.length;
+  const body = kept.join("\n");
+  return hidden > 0
+    ? `[${hidden} earlier lines omitted -- call again with a larger \`lines\` for more]\n${body}`
+    : body;
 }
 
 /** The terminal-tab tools are a no-op without the bridge env vars. */
@@ -82,6 +108,21 @@ async function postJson(
 }
 
 export default function backgroundTasks(pi: BackgroundTasksApi) {
+  // pi's bash `timeout` is seconds; models trained on ms harnesses pass
+  // 60000 ("1 min") and a hung command then blocks the turn for ~17h.
+  // ponytail: anything over an hour is read as ms; real multi-hour waits
+  // belong in bash_background anyway.
+  // pi runs /bin/bash by absolute path, so host-guard's SHELL/PATH wrappers
+  // never see pi commands: classify here instead (kill of the workbench, etc.).
+  pi.on("tool_call", (event) => {
+    if (event.toolName !== "bash") return;
+    const reason = blockedCommandReason(event.input.command);
+    if (reason) return { block: true, reason };
+    const timeout = event.input.timeout;
+    if (typeof timeout === "number" && timeout > 3600) {
+      event.input.timeout = Math.ceil(timeout / 1000);
+    }
+  });
   pi.registerTool({
     name: "bash_background",
     label: "Background command",
@@ -110,7 +151,7 @@ export default function backgroundTasks(pi: BackgroundTasksApi) {
     ) {
       const id = newId();
       const outputFile = join(taskDir(), `${id}.output`);
-      const description = params.description?.trim() || tail(params.command, 1);
+      const description = params.description?.trim() || params.command.trim().split("\n").pop();
       const child = spawn(
         process.env.SHELL || "/bin/sh",
         ["-lc", `${params.command} >> ${JSON.stringify(outputFile)} 2>&1`],
@@ -192,7 +233,7 @@ export default function backgroundTasks(pi: BackgroundTasksApi) {
         },
         lines: {
           type: "number",
-          description: "Recent lines to return (default 100)",
+          description: `Recent lines to return (default ${DEFAULT_LINES})`,
         },
       },
       required: ["task_id"],
@@ -228,7 +269,7 @@ export default function backgroundTasks(pi: BackgroundTasksApi) {
       } catch {
         /* no output yet */
       }
-      const recent = tail(text, params.lines ?? 100);
+      const recent = tail(text, params.lines ?? DEFAULT_LINES);
       return {
         content: [
           {
@@ -360,7 +401,7 @@ export default function backgroundTasks(pi: BackgroundTasksApi) {
         },
         lines: {
           type: "number",
-          description: "Recent lines to return (default 100)",
+          description: `Recent lines to return (default ${DEFAULT_LINES})`,
         },
       },
       required: ["tab_id"],
@@ -384,7 +425,7 @@ export default function backgroundTasks(pi: BackgroundTasksApi) {
       const result = await postJson(`${base}/read`, {
         tabId: params.tab_id,
         waitMs: params.wait_ms ?? 15_000,
-        lines: params.lines ?? 100,
+        lines: params.lines ?? DEFAULT_LINES,
       });
       if (!result.ok) {
         return {
@@ -401,7 +442,7 @@ export default function backgroundTasks(pi: BackgroundTasksApi) {
         content: [
           {
             type: "text",
-            text: `[${params.tab_id} ${status}]\n${String(result.text || "(no new output)")}`,
+            text: `[${params.tab_id} ${status}]\n${result.text ? tail(String(result.text), params.lines ?? DEFAULT_LINES) : "(no new output)"}`,
           },
         ],
         details: result,

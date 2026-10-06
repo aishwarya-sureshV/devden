@@ -54,6 +54,12 @@ export function startOptionsFromBody(body = {}) {
         : undefined,
     thinkingLevel:
       typeof body.thinkingLevel === "string" ? body.thinkingLevel : undefined,
+    contextWindow:
+      Number.isFinite(
+        Number(body.model?.contextWindow ?? body.contextWindow),
+      ) && Number(body.model?.contextWindow ?? body.contextWindow) > 0
+        ? Math.round(Number(body.model?.contextWindow ?? body.contextWindow))
+        : undefined,
     accessMode: body.accessMode === "read-only" ? "read-only" : undefined,
     ...(agentMode ? { agentMode } : {}),
   };

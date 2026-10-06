@@ -4,6 +4,7 @@ import type * as React from "react";
 import type { Attachment, ConversationTab } from "../lib/store";
 import {
   api,
+  AuthError,
   backendLabel,
   type SessionState,
   type AgentBackend,
@@ -34,8 +35,6 @@ import {
   runtimeModelAnswer,
 } from "../lib/modelIdentity";
 import {
-  limitResumePrompt,
-  limitScope,
   type LimitTurn,
 } from "../lib/usageLimit";
 import type { AgentCapabilities } from "../lib/agentCapabilities";
@@ -371,32 +370,6 @@ export async function send(
       await forkOutput(target);
       return;
     }
-    if (message.startsWith("/goal")) {
-      const arg = message.slice(5).trim();
-      setDraft("");
-      if (!arg) {
-        timeline.appendNotice(
-          "Usage: /goal <one concrete outcome> — the agent checks in automatically (after 30m, then 1h → 2h). /goal off clears it.",
-          "info",
-        );
-        return;
-      }
-      const result = await api.goal(tab.key, arg);
-      if (!result.ok) {
-        timeline.appendNotice(
-          result.error ?? "Could not set the goal",
-          "error",
-        );
-        return;
-      }
-      timeline.appendNotice(
-        result.cleared
-          ? "Standing goal cleared."
-          : `Goal parked — the agent checks in on its own (after 30m, then every 1h → 2h): ${arg}`,
-        "info",
-      );
-      return;
-    }
     if (message === "/remote" || message.startsWith("/remote ")) {
       const arg = message.slice("/remote".length).trim();
       setDraft("");
@@ -568,14 +541,21 @@ export async function send(
       error?: string;
       sessionPath?: string;
       data?: { queued?: boolean };
-    } = streaming
+    } = await (streaming
       ? willSteer
-        ? await api.steer(tab.key, outboundMessage, images)
-        : await api.enqueue(tab.key, outboundMessage, images)
-      : await api.prompt(tab.key, outboundMessage, {
+        ? api.steer(tab.key, outboundMessage, images)
+        : api.enqueue(tab.key, outboundMessage, images)
+      : api.prompt(tab.key, outboundMessage, {
           ...promptOptions,
           answersAsk: opts?.answersAsk,
-        });
+        })
+    // Server down/restarting: fetch rejects or a proxy 502 isn't JSON. Fold it
+    // into the failure branch so the spinner clears and the text comes back.
+    ).catch((error: unknown) => {
+      if (error instanceof AuthError) throw error; // App shows the lock screen
+      const reason = error instanceof Error ? error.message : String(error);
+      return { ok: false, error: `Could not reach the DevDen server: ${reason}` };
+    });
     // Laptop sleep / lease sweep can kill grok stdio while the tab still
     // thinks a turn is in flight and therefore enqueues. Restart on the
     // prompt path with the session file instead of failing closed.
@@ -583,7 +563,12 @@ export async function send(
       !result.ok &&
       /session is not running/i.test(String(result.error ?? ""))
     ) {
-      result = await api.prompt(tab.key, outboundMessage, promptOptions);
+      result = await api
+        .prompt(tab.key, outboundMessage, promptOptions)
+        .catch((error: unknown) => {
+          if (error instanceof AuthError) throw error;
+          return { ok: false, error: String(error) };
+        });
     }
     if (result.ok) {
       // The transcript's producing backend is now whichever agent took this
@@ -620,6 +605,8 @@ export async function send(
       }
     } else {
       setAttachments(pickedAttachments);
+      // Give the typed text back unless the user already started a new one.
+      setDraft((current) => current || message);
       if (pendingHandoff) pendingHandoffRef.current = pendingHandoff;
       if (!willQueue) timeline.clearPendingRun();
       timeline.appendNotice(result.error ?? "prompt failed", "error");
@@ -680,7 +667,14 @@ export async function resendEdited(
   );
   setConversationSessionPath(tab.key, result.state.sessionFile);
   stickToBottom.current = true;
-  const sent = await api.prompt(tab.key, text, { images: [] });
+  // cwd/session matter only if the agent died since the rewind: a lazy
+  // restart must land in this project, not the server's own directory.
+  const sent = await api.prompt(tab.key, text, {
+    images: [],
+    cwd: tab.cwd,
+    backend: tab.backend,
+    sessionPath: result.state.sessionFile ?? (fromSessionFile || undefined),
+  });
   if (!sent.ok) {
     timeline.appendNotice(sent.error ?? "prompt failed", "error");
   }
@@ -753,17 +747,15 @@ export async function resumeFromLimit(ctx: ResumeFromLimitCtx) {
     accessMode,
     limitTurn,
     streaming,
-    limitWindow,
     timeline,
     tab,
     state,
     agentMode,
   } = ctx;
   if (!limitTurn || streaming) return;
-  const prompt = limitResumePrompt(
-    limitTurn.request,
-    limitScope(limitWindow?.label ?? ""),
-  );
+  // What a user would type: the agent's own session already holds the
+  // interrupted request, so no harness text is needed.
+  const prompt = "continue";
   timeline.appendNotice("Resuming the interrupted turn…", "info");
   timeline.markPendingRun();
   const result: {

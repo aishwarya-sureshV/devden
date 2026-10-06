@@ -1,7 +1,6 @@
 import { strict as assert } from "node:assert";
 import test from "node:test";
 import {
-  buildReassertion,
   carriedIn,
   deadZoneStats,
   findDroppedInstructions,
@@ -119,10 +118,4 @@ test("deadZoneStats without a cut is empty", () => {
     toolCalls: 0,
     failedToolCalls: 0,
   });
-});
-
-test("buildReassertion lists each dropped instruction", () => {
-  const text = buildReassertion([{ text: "Never force-push to main." }]);
-  assert.match(text, /context guard/);
-  assert.match(text, /- Never force-push to main\./);
 });

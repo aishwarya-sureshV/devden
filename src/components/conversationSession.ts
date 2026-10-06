@@ -68,6 +68,7 @@ export type ForkOutputCtx = {
       | "standard"
       | "plan"
       | "routed"
+      | "prosecutor"
       | "manual"
       | "auto-edit"
       | undefined;
@@ -153,4 +154,17 @@ export async function forkOutput(
   } finally {
     setForkingId(null);
   }
+}
+
+/** Stop the running turn. A refused interrupt used to be dropped on the
+ *  floor, leaving a Stop button that silently did nothing. */
+export async function stopTurn(key: string, timeline: Timeline) {
+  const result = await api
+    .abort(key)
+    .catch((error: unknown) => ({ ok: false, error: String(error) }));
+  if (!result.ok)
+    timeline.appendNotice(
+      `Stop did not reach the agent: ${result.error ?? "unknown error"}`,
+      "warning",
+    );
 }

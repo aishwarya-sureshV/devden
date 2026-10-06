@@ -1,3 +1,4 @@
+import { useAnchoredPopover } from "../lib/anchoredPopover";
 import { SESSION_DRAG_TYPE, startSessionDrag } from "../lib/dockLayout";
 import { AppUpdateFooter } from "./AppUpdateFooter";
 import {
@@ -244,7 +245,6 @@ export function Sidebar({
     };
   }, [transcriptQuery]);
 
-  const [sessionMenuOpensUp, setSessionMenuOpensUp] = useState(false);
   const [collapsedWorkspaces, setCollapsedWorkspaces] = useState<
     ReadonlySet<string>
   >(new Set());
@@ -319,6 +319,24 @@ export function Sidebar({
     );
     return filtersActive ? matched : matched.slice(0, 200);
   }, [backendFilter, filtersActive, modelFilterSet, savedSessions]);
+  // A session that was working and stopped while you never opened it keeps
+  // an amber dot: "finished, and you missed it". Cleared from view by the
+  // !isOpen check on the dot; entries live as strings for the page's life.
+  const [finishedUnread, setFinishedUnread] = useState<ReadonlySet<string>>(
+    new Set(),
+  );
+  const prevRunningPaths = useRef<ReadonlySet<string>>(new Set());
+  useEffect(() => {
+    const nowRunning = new Set(runningPaths);
+    for (const session of visibleSessions)
+      if (session.isStreaming) nowRunning.add(session.path);
+    const finished = [...prevRunningPaths.current].filter(
+      (path) => !nowRunning.has(path),
+    );
+    prevRunningPaths.current = nowRunning;
+    if (finished.length === 0) return;
+    setFinishedUnread((current) => new Set([...current, ...finished]));
+  }, [runningPaths, visibleSessions]);
   const draftMatchCount = useMemo(() => {
     const backends = draftBackends.size > 0 ? draftBackends : null;
     return savedSessions.filter((session) =>
@@ -1255,6 +1273,9 @@ export function Sidebar({
                       const isOpen = openTabs.some(
                         (tab) => tab.key === matchingTab?.key,
                       );
+                      // Only the focused pane's session gets the grey box;
+                      // other open sessions stay marked by title weight.
+                      const isFocused = matchingTab?.key === activeKey;
                       const isRunning = Boolean(
                         (matchingTab && workingKeys.has(matchingTab.key)) ||
                           runningPaths.has(session.path) ||
@@ -1283,7 +1304,7 @@ export function Sidebar({
                         <div className="sidebar__saved-row" key={session.path}>
                           <button
                             type="button"
-                            className={`sidebar__item sidebar__item--saved${isOpen ? " is-active-session" : ""}${isRunning ? " is-running" : ""}${isAwaiting ? " is-awaiting" : ""}`}
+                            className={`sidebar__item sidebar__item--saved${isOpen ? " is-active-session" : ""}${isFocused ? " is-focused" : ""}${isRunning ? " is-running" : ""}${isAwaiting ? " is-awaiting" : ""}`}
                             aria-label={
                               isRunning
                                 ? `${title}, running`
@@ -1304,12 +1325,17 @@ export function Sidebar({
                               {isRunning ? (
                                 <span
                                   className="sidebar__run-dot"
-                                  title="Running"
+                                  title="Working"
                                 />
                               ) : isAwaiting ? (
                                 <span
                                   className="sidebar__await-dot"
                                   title="Waiting for your answer"
+                                />
+                              ) : !isOpen && finishedUnread.has(session.path) ? (
+                                <span
+                                  className="sidebar__done-dot"
+                                  title="Finished while you were away"
                                 />
                               ) : isOpen ? (
                                 <span
@@ -1353,58 +1379,41 @@ export function Sidebar({
                           >
                             <IconOpenTab size={12} />
                           </button>
-                          <div className="sidebar__session-menu sidebar__floating-menu">
+                          <SessionRowMenu
+                            open={openSessionMenu === session.path}
+                            title={title}
+                            onToggle={() => {
+                              setOpenWorkspaceMenu(null);
+                              setOpenSessionMenu((current) =>
+                                current === session.path
+                                  ? null
+                                  : session.path,
+                              );
+                            }}
+                          >
+                            {sessionView === "recent" ? (
+                              <button
+                                type="button"
+                                onClick={() => void handleArchive(session)}
+                              >
+                                <IconArchive /> Archive
+                              </button>
+                            ) : (
+                              <button
+                                type="button"
+                                onClick={() => void handleRestore(session)}
+                              >
+                                <IconRestore /> Restore
+                              </button>
+                            )}
                             <button
                               type="button"
-                              className="sidebar__session-trigger"
-                              aria-label={`Actions for ${title}`}
-                              aria-expanded={openSessionMenu === session.path}
-                              onClick={(event) => {
-                                event.stopPropagation();
-                                const rect =
-                                  event.currentTarget.getBoundingClientRect();
-                                setSessionMenuOpensUp(
-                                  window.innerHeight - rect.bottom < 116,
-                                );
-                                setOpenWorkspaceMenu(null);
-                                setOpenSessionMenu((current) =>
-                                  current === session.path
-                                    ? null
-                                    : session.path,
-                                );
-                              }}
+                              className="is-danger"
+                              onClick={() => void handleDelete(session)}
                             >
-                              <IconDots />
+                              <IconTrash /> Delete permanently
                             </button>
-                            {openSessionMenu === session.path && (
-                              <div
-                                className={`sidebar__session-popover${sessionMenuOpensUp ? " is-upwards" : ""}`}
-                              >
-                                {sessionView === "recent" ? (
-                                  <button
-                                    type="button"
-                                    onClick={() => void handleArchive(session)}
-                                  >
-                                    <IconArchive /> Archive
-                                  </button>
-                                ) : (
-                                  <button
-                                    type="button"
-                                    onClick={() => void handleRestore(session)}
-                                  >
-                                    <IconRestore /> Restore
-                                  </button>
-                                )}
-                                <button
-                                  type="button"
-                                  className="is-danger"
-                                  onClick={() => void handleDelete(session)}
-                                >
-                                  <IconTrash /> Delete permanently
-                                </button>
-                              </div>
-                            )}
-                          </div>
+                          </SessionRowMenu>
                         </div>
                       );
                     },
@@ -1465,6 +1474,48 @@ export function Sidebar({
         </button>
       </div>
     </aside>
+  );
+}
+
+function SessionRowMenu({
+  open,
+  title,
+  onToggle,
+  children,
+}: {
+  open: boolean;
+  title: string;
+  onToggle: () => void;
+  children: ReactNode;
+}) {
+  const anchorRef = useRef<HTMLDivElement>(null);
+  const popoverRef = useAnchoredPopover<HTMLDivElement>(open, "end", {
+    anchor: anchorRef,
+    prefer: "below",
+  });
+  return (
+    <div
+      className="sidebar__session-menu sidebar__floating-menu"
+      ref={anchorRef}
+    >
+      <button
+        type="button"
+        className="sidebar__session-trigger"
+        aria-label={`Actions for ${title}`}
+        aria-expanded={open}
+        onClick={(event) => {
+          event.stopPropagation();
+          onToggle();
+        }}
+      >
+        <IconDots />
+      </button>
+      {open && (
+        <div ref={popoverRef} className="sidebar__session-popover" role="menu">
+          {children}
+        </div>
+      )}
+    </div>
   );
 }
 

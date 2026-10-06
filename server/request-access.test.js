@@ -10,6 +10,12 @@ test("HTTP and WebSocket access require configured tokens, including on loopback
   const access = (req, token = "", tunnel = "") =>
     requestHasAccess(req, url, token, tunnel, noTicket);
   assert.equal(access(local), true);
+  assert.equal(access({ ...local, headers: { host: "127.0.0.1:4319" } }), true);
+  assert.equal(access({ ...local, headers: { host: "[::1]:4319" } }), true);
+  // DNS rebinding: loopback socket, attacker's Host, no token configured.
+  assert.equal(access({ ...local, headers: { host: "evil.example:4319" } }), false);
+  // Non-loopback bind with no token configured is not an open API.
+  assert.equal(access({ headers: { host: "192.168.1.5:4319" }, socket: { remoteAddress: "192.168.1.9" } }), false);
   assert.equal(access(local, "secret"), false);
   assert.equal(access(local, "", "phone"), true);
   assert.equal(access(remote, "", "phone"), false);

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, backendLabel, backendMark } from "../lib/api";
+import { BackendLogo } from "./icons";
 import "../styles/updateTray.css";
 
 type Status = "idle" | "queued" | "running" | "ok" | "fail";
@@ -32,12 +33,26 @@ function rowMark(id: string) {
   };
 }
 
+function RowMark({ id }: { id: string }) {
+  const mark = rowMark(id);
+  return (
+    <span
+      className="update-tray__mark"
+      style={{ color: mark.color }}
+      title={rowName(id)}
+      aria-label={rowName(id)}
+    >
+      {id === "devden" ? mark.glyph : <BackendLogo backend={id} size={14} />}
+    </span>
+  );
+}
+
 function rowSub(row: Row) {
   if (row.status === "fail") return row.reason ?? "Update failed.";
   if (row.id === "devden")
     return row.status === "ok" ? "Pulled and rebuilt" : "New commits on main";
   if (row.status === "ok") return `Now ${row.latest ?? "latest"}`;
-  return `${row.installed ?? "?"}  →  ${row.latest ?? "?"}`;
+  return `${row.installed ?? "?"} → ${row.latest ?? "?"}`;
 }
 
 /**
@@ -154,36 +169,26 @@ export function UpdateTray() {
   if (dismissed || !rows.length) return null;
 
   const n = rows.length;
+  // One pending update: the header itself is the row (logo + versions).
+  const single = phase === "available" && n === 1;
   const finished = okRows.length + failedRows.length;
   let title: string;
-  let sub: string;
   let tone: "up" | "spin" | "ok" | "bad";
   if (phase === "available") {
-    title =
-      n === 1 ? `${rowName(rows[0].id)} update available` : `${n} updates available`;
-    sub = rows.some((row) => row.id !== "devden")
-      ? "New models and fixes. Sessions keep running."
-      : "New build ready. Takes about a minute.";
+    title = n === 1 ? "Update available" : `${n} updates`;
     tone = "up";
   } else if (phase === "updating") {
     title = `Updating ${Math.min(finished + 1, n)} of ${n}…`;
-    sub = "Runs in the background. Keep working.";
     tone = "spin";
   } else if (!failedRows.length) {
-    title = "Everything's up to date";
-    sub = hasDevden
-      ? "Reload to load the new build."
-      : "New sessions use the latest versions.";
+    title = hasDevden ? "Reload to finish" : "Up to date";
     tone = "ok";
   } else {
-    title = !okRows.length
-      ? n === 1
-        ? `${rowName(rows[0].id)} update failed`
-        : `${n} updates failed`
-      : `${okRows.length} updated · ${failedRows.length} failed`;
-    sub = okRows.length
-      ? "Successful updates are already in place."
-      : "Your current versions still work.";
+    title = okRows.length
+      ? `${okRows.length} updated · ${failedRows.length} failed`
+      : n === 1
+        ? "Update failed"
+        : `${n} updates failed`;
     tone = "bad";
   }
 
@@ -226,16 +231,28 @@ export function UpdateTray() {
         />
       )}
       <header className="update-tray__head">
-        <span className={`update-tray__badge is-${tone}`} aria-hidden>
-          <TrayIcon tone={tone} />
-        </span>
         <div
-          className="update-tray__titles"
+          className={`update-tray__title is-${tone}`}
           aria-live={tone === "bad" ? "assertive" : "polite"}
         >
-          <div className="update-tray__title">{title}</div>
-          <div className="update-tray__sub">{sub}</div>
+          {single ? (
+            <>
+              <RowMark id={rows[0].id} />
+              <span className="update-tray__ver">{rowSub(rows[0])}</span>
+            </>
+          ) : (
+            title
+          )}
         </div>
+        {primary && (
+          <button
+            type="button"
+            className="update-tray__primary"
+            onClick={primary.onClick}
+          >
+            {primary.label}
+          </button>
+        )}
         <button
           type="button"
           className="update-tray__x"
@@ -256,20 +273,16 @@ export function UpdateTray() {
           </svg>
         </button>
       </header>
-      <ul className="update-tray__rows">
+      {!single && <ul className="update-tray__rows">
         {rows.map((row) => {
-          const mark = rowMark(row.id);
           return (
             <li
               key={row.id}
               className={`update-tray__row is-${row.status}`}
             >
               <div className="update-tray__line">
-                <span className="update-tray__mark" style={{ color: mark.color }}>
-                  {mark.glyph}
-                </span>
+                <RowMark id={row.id} />
                 <span className="update-tray__who">
-                  <span className="update-tray__name">{rowName(row.id)}</span>
                   <span className="update-tray__ver">{rowSub(row)}</span>
                 </span>
                 {row.status === "running" && (
@@ -330,50 +343,7 @@ export function UpdateTray() {
             </li>
           );
         })}
-      </ul>
-      {primary && (
-        <footer className="update-tray__foot">
-          <button
-            type="button"
-            className="update-tray__primary"
-            onClick={primary.onClick}
-          >
-            {primary.label}
-          </button>
-        </footer>
-      )}
+      </ul>}
     </section>
-  );
-}
-
-function TrayIcon({ tone }: { tone: "up" | "spin" | "ok" | "bad" }) {
-  const common = {
-    viewBox: "0 0 16 16",
-    width: 16,
-    height: 16,
-    fill: "none",
-    stroke: "currentColor",
-    strokeWidth: 1.7,
-    strokeLinecap: "round" as const,
-    strokeLinejoin: "round" as const,
-  };
-  if (tone === "spin") return <span className="update-tray__spin" />;
-  if (tone === "ok")
-    return (
-      <svg {...common}>
-        <path d="m3.5 8.4 3 3 6-6.6" />
-      </svg>
-    );
-  if (tone === "bad")
-    return (
-      <svg {...common}>
-        <circle cx="8" cy="8" r="6" />
-        <path d="M8 5v3.4M8 10.9v.1" />
-      </svg>
-    );
-  return (
-    <svg {...common}>
-      <path d="M8 12.5V3.8M4.3 7.4 8 3.7l3.7 3.7" />
-    </svg>
   );
 }

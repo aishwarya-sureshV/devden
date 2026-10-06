@@ -33,14 +33,15 @@ scratchpad.
 
 Exit codes: `0` = good, `1`–`124` = bad, `125` = untestable (skip).
 
-pi-web has no test runner, so the predicate is a shell check. Pick the narrowest
+Prefer a single focused `node --test <file>` when a test covers the symptom;
+otherwise the predicate is a shell check. Pick the narrowest
 one that actually distinguishes good from bad:
 
 ```bash
 # A. Type regression
 cat > "$SCRATCH/probe.sh" <<'EOF'
 #!/bin/sh
-cd /Users/aishwarya/dev/pi-web || exit 125
+cd "$(git rev-parse --show-toplevel)" || exit 125
 npm run -s typecheck 2>&1 | grep -q "Conversation.tsx.*TS2322" && exit 1
 exit 0
 EOF
@@ -53,7 +54,7 @@ EOF
 #    never collides with a dev server you already have running.
 cat > "$SCRATCH/probe.sh" <<'EOF'
 #!/bin/sh
-cd /Users/aishwarya/dev/pi-web || exit 125
+cd "$(git rev-parse --show-toplevel)" || exit 125
 PORT=4399
 PI_WEB_PORT=$PORT node server/index.js >/dev/null 2>&1 &
 PID=$!
@@ -123,9 +124,3 @@ commit message plus its diff is usually the whole explanation.
 Report: the first-bad commit hash and subject, the line(s) responsible, and the
 fix. Do not re-derive the bug by reading unrelated files afterward.
 
-## Caveat for pi-web today
-
-History is short (`git log --oneline | wc -l` → 3), so bisect currently resolves
-in ~2 steps and its edge over `/localize` is small. This command is the harness
-for when it isn't — and commit hygiene now (small, self-contained commits) is
-what keeps bisect sharp later.

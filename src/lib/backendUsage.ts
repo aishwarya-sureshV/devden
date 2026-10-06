@@ -5,11 +5,12 @@ import { formatCountdown } from "./time";
 /**
  * Backend quota usage, shared by the status footer and the model picker's
  * agent bars. One singleton fetch (GET /api/usage fans out to all four
- * backends server-side) refreshed every few minutes — every consumer
+ * backends server-side) refreshed every 30s — every consumer
  * subscribes to the same store instead of polling its own.
  */
 
-const REFRESH_MS = 5 * 60_000;
+// Just under TICK_MS so timer jitter never skips a tick.
+const REFRESH_MS = 25_000;
 const TICK_MS = 30_000;
 
 export type BackendUsageMap = Partial<Record<AgentBackend, ProviderUsage>>;

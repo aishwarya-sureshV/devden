@@ -2,7 +2,8 @@ import { stripClarifyPrefix } from "./co-partner-prompt.js";
 
 export function codexUsageFrom(tokens, baseline = {}) {
   if (!tokens) return undefined;
-  const count = (camel, snake) => Math.max(0, Number(tokens[camel] ?? tokens[snake] ?? 0) - Number(baseline[camel] ?? baseline[snake] ?? 0));
+  const number = value => Number.isFinite(Number(value)) ? Math.max(0, Number(value)) : 0;
+  const count = (camel, snake) => Math.max(0, number(tokens[camel] ?? tokens[snake]) - number(baseline[camel] ?? baseline[snake]));
   const cached = count("cachedInputTokens", "cached_input_tokens");
   return {
     input: Math.max(0, count("inputTokens", "input_tokens") - cached),
@@ -75,6 +76,9 @@ export function readCodexLog(contents) {
           target.usage = usage;
           if (turn) turn.usageMessage = target;
         }
+      } else if ((item.type === "task_complete" || item.type === "turn_completed" || item.type === "turn_aborted") && turn) {
+        const durationMs = timestamp - turn.timestamp;
+        if (turn.usage && durationMs > 0) Object.assign(turn.usage, { durationMs, durationKind: "turn" });
       }
       continue;
     }

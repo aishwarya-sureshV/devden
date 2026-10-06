@@ -179,25 +179,3 @@ export function formatResetAt(at: number, now = Date.now()): string {
     ? time
     : `${date.toLocaleDateString(undefined, { weekday: "short" })} ${time}`;
 }
-
-/**
- * The nudge Resume sends in place of the user having to re-ask. The agent keeps
- * its own session, so its history is already in context -- what it is missing is
- * that the last turn never finished. Mirrors server/co-partner-prompt.js's
- * resumePrompt, which does the same job after a server restart.
- */
-export function limitResumePrompt(request: string, scope: LimitScope): string {
-  return [
-    "[devden harness instruction — the account's usage limit cut your last turn off; the user did not send this]",
-    `Your previous turn was cut off mid-execution by the ${limitScopeLabel(scope).toLowerCase()}, so it never finished and never reported back.`,
-    request ? `The request you were working on was:\n\n${request}\n` : "",
-    "Do not start over and do not repeat work that already succeeded.",
-    "First check the current state of the workspace — read the files you were editing and re-run the",
-    "checks you had run — to establish what actually landed before the interruption.",
-    "Then say in one or two lines where things stood, and carry on from exactly that point until the",
-    "original request is complete.",
-    "[end devden harness instruction]",
-  ]
-    .filter(Boolean)
-    .join(" ");
-}

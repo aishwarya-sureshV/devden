@@ -10,7 +10,7 @@ import {
   type FormEvent,
 } from "react";
 import { StoreProvider, useStore, type ConversationTab } from "./lib/store";
-import { AuthError, api, setAuthToken } from "./lib/api";
+import { AuthError, api, setAuthToken, subscribeEvents } from "./lib/api";
 import { Sidebar } from "./components/Sidebar";
 import { UpdateTray } from "./components/UpdateTray";
 import { Conversation } from "./components/Conversation";
@@ -75,11 +75,35 @@ function OfflineBanner() {
     () => navigator.onLine,
     () => true,
   );
-  if (online) return null;
+  // The DevDen server itself restarting (or a deploy) looks like a frozen
+  // page otherwise. Wait out short blips so a 1s reconnect never flashes.
+  const [serverDown, setServerDown] = useState(false);
+  useEffect(() => {
+    let timer: number | undefined;
+    const unsubscribe = subscribeEvents(
+      () => {},
+      (status) => {
+        window.clearTimeout(timer);
+        if (status === "connected") setServerDown(false);
+        else timer = window.setTimeout(() => setServerDown(true), 3000);
+      },
+    );
+    return () => {
+      window.clearTimeout(timer);
+      unsubscribe();
+    };
+  }, []);
+  if (!online)
+    return (
+      <div className="offline-banner" role="status">
+        No internet connection — the agent is retrying, and anything in flight
+        will stall until it is back.
+      </div>
+    );
+  if (!serverDown) return null;
   return (
     <div className="offline-banner" role="status">
-      No internet connection — the agent is retrying, and anything in flight
-      will stall until it is back.
+      Reconnecting to the DevDen server… This page catches up when it is back.
     </div>
   );
 }
@@ -689,13 +713,24 @@ function SessionGrid({
     null;
   const docked = reviewTabs.length > 0;
   const { workingKeys, awaitingKeys, openConversation, openDefaultConversation } = useStore();
+  // Sessions that finished while another tab was in front; cleared once opened.
+  const [doneKeys, setDoneKeys] = useState<Set<string>>(() => new Set());
+  const prevWorking = useRef(workingKeys);
+  useEffect(() => {
+    const finished = [...prevWorking.current].filter(key => !workingKeys.has(key) && key !== activeKey);
+    prevWorking.current = workingKeys;
+    if (finished.length) setDoneKeys(keys => new Set([...keys, ...finished]));
+  }, [workingKeys, activeKey]);
+  useEffect(() => {
+    setDoneKeys(keys => keys.has(activeKey) ? new Set([...keys].filter(key => key !== activeKey)) : keys);
+  }, [activeKey]);
   const layout = sessionPaneLayout(paneCount);
   // Layout identities persist while process keys stay unique to each browser page.
   const panels: DockPanel[] = tabs.map((tab) => {
     const visible = visibleTabs.some(item => item.key === tab.key);
     return {
       id: tab.key, layoutId: tab.layoutId ?? tab.key, session: true, title: tab.label || "Chat", hidden: !visible,
-      backend: tab.backend, tone: awaitingKeys.has(tab.key) ? "waiting" : workingKeys.has(tab.key) ? "running" : undefined,
+      backend: tab.backend, tone: awaitingKeys.has(tab.key) ? "waiting" : workingKeys.has(tab.key) ? "running" : doneKeys.has(tab.key) ? "done" : undefined,
       content: <section
         className={`session-pane${tab.key === activeKey ? " is-active" : ""}${activeReview?.sessionKey === tab.key ? " is-reviewing" : ""}`}
         aria-label={`Session ${tab.label}`} onPointerDownCapture={() => onActivate(tab.key)}>

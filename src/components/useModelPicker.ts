@@ -7,17 +7,21 @@ import {
   CLAUDE_DEFAULT_MODEL,
 } from "../lib/claudeModels";
 import { BACKEND_DEFAULT_EFFORT, type ConversationTab } from "../lib/store";
+import { capabilitiesFor } from "../lib/agentCapabilities";
 import {
   setModel as setModelImpl,
   pickListedModel as pickListedModelImpl,
   onModelMenuKey as onModelMenuKeyImpl,
   setEffort as setEffortImpl,
+  setContext as setContextImpl,
 } from "./conversationModel";
 import { useMemo, useEffect, useCallback, type KeyboardEvent } from "react";
 import { useModelRefresh } from "./useModelRefresh";
 import { effortScale } from "../lib/effortStops";
 import {
   api,
+  cachedCatalog,
+  backendLabel,
   type ModelInfo,
   type SessionState,
   type AgentBackend,
@@ -139,24 +143,18 @@ export function useModelPicker({
       ? models
       : (pickerModels[browseBackend] ?? EMPTY_MODELS);
   const visibleOptions = useMemo(() => {
-    const options: ModelOption[] = browseModels.map((model) => ({
-      provider: model.provider,
-      id: model.id,
-      label:
-        browseBackend === "claude" || model.provider === "anthropic"
-          ? formatClaudeModelName(model.name ?? model.id)
-          : (model.name ?? model.id),
-      context: model.contextWindow,
-      levels: model.levels,
-    }));
     const query = modelQuery.trim().toLowerCase();
-    if (!query) return options;
-    return options.filter((option) =>
-      `${option.label} ${option.provider}/${option.id}`
-        .toLowerCase()
-        .includes(query),
-    );
-  }, [browseBackend, browseModels, modelQuery]);
+    const ids = query ? backendIds as AgentBackend[] : [browseBackend];
+    return ids.flatMap(id => {
+      const catalog = id === tab.backend ? models : pickerModels[id] ?? EMPTY_MODELS;
+      return catalog.map(model => ({
+        provider: model.provider, id: model.id, backend: id,
+        label: id === "claude" || model.provider === "anthropic"
+          ? formatClaudeModelName(model.name ?? model.id) : model.name ?? model.id,
+        context: model.contextWindow, levels: model.levels,
+      })).filter(option => !query || `${backendLabel(id)} ${option.label} ${option.provider}/${option.id}`.toLowerCase().includes(query));
+    });
+  }, [browseBackend, backendIds, tab.backend, models, pickerModels, modelQuery]);
 
   // One ladder for the backend, the union of every model's levels. Hovering
   // a row used to swap the ladder and re-pack the stops, so the knob jumped
@@ -179,7 +177,7 @@ export function useModelPicker({
     pickListedModelImpl(
       {
         setModelMenuOpen,
-        browseBackend,
+        browseBackend: option.backend ?? browseBackend,
         tab,
         pendingModelRef,
         pendingBackendRef,
@@ -214,24 +212,25 @@ export function useModelPicker({
   useEffect(() => {
     let cancelled = false;
     for (const backend of backendKey.split("\0")) {
-      if (!backend || backend === "claude" || backend === tab.backend) continue;
+      if (!backend || backend === tab.backend) continue;
       const id = backend as AgentBackend;
+      // Last known catalog first (instant, survives deploys); live replaces it.
+      const seededModels = cachedCatalog("models", id);
+      const seededLevels = cachedCatalog("levels", id);
+      if (seededModels) setPickerModels(prev => prev[id]?.length ? prev : { ...prev, [id]: seededModels });
+      if (seededLevels) setPickerLevels(prev => prev[id]?.length ? prev : { ...prev, [id]: seededLevels });
       void api
         .models(tab.key, id)
         .then((result) => {
           if (cancelled || !result.ok || !result.models?.length) return;
-          setPickerModels((prev) =>
-            prev[id]?.length ? prev : { ...prev, [id]: result.models },
-          );
+          setPickerModels((prev) => ({ ...prev, [id]: result.models }));
         })
         .catch(() => {});
       void api
         .thinkingLevels(tab.key, id)
         .then((result) => {
           if (cancelled || !result.ok || !result.levels?.length) return;
-          setPickerLevels((prev) =>
-            prev[id]?.length ? prev : { ...prev, [id]: result.levels },
-          );
+          setPickerLevels((prev) => ({ ...prev, [id]: result.levels }));
         })
         .catch(() => {});
     }
@@ -279,6 +278,41 @@ export function useModelPicker({
 
   const setEffort = (level: string) => setEffortImpl({ tab, timeline }, level);
 
+  // Context-window chooser: only backends that can actually take the value
+  // (pi via its session model, codex via thread config), and only while browsing
+  // the session's own backend — the pick applies to the session's model.
+  const contextCapable =
+    capabilitiesFor(tab.backend).setContextWindow &&
+    browseBackend === tab.backend;
+  const activeEntry = useMemo(
+    () =>
+      models.find(
+        (candidate) =>
+          candidate.provider === activeModel?.provider &&
+          candidate.id === activeModel?.id,
+      ),
+    [models, activeModel?.provider, activeModel?.id],
+  );
+  const contextChoices = useMemo<number[] | null>(() => {
+    if (!contextCapable || !activeEntry?.contextWindow) return null;
+    return [...new Set([
+      activeEntry.contextWindow,
+      ...(activeEntry.contextWindowOptions ?? []),
+      ...(activeEntry.maxContextWindow ? [activeEntry.maxContextWindow] : []),
+    ])].filter(value => Number.isSafeInteger(value) && value > 0 && value <= (activeEntry.maxContextWindow ?? activeEntry.contextWindow!));
+  }, [contextCapable, activeEntry]);
+  const currentContext =
+    activeModel?.contextWindow ?? activeEntry?.contextWindow;
+  const onContext = (tokens: number | null) => {
+    if (!activeModel) return;
+    return setContextImpl(
+      { tab, timeline, fallbackContext: activeEntry?.contextWindow },
+      activeModel.provider,
+      activeModel.id,
+      tokens,
+    );
+  };
+
   return {
     browseBackend,
     currentModelLabel,
@@ -290,5 +324,9 @@ export function useModelPicker({
     pickListedModel,
     setEffort,
     onModelMenuKey,
+    contextChoices,
+    currentContext,
+    defaultContext: activeEntry?.contextWindow,
+    onContext,
   };
 }

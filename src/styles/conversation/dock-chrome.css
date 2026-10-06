@@ -469,3 +469,25 @@ body .dock-menu__body {
 @media (hover: none) {
  body .dock-handlebar { opacity: 1; }
 }
+
+/* Direction A: the status dot takes the logo's slot. */
+body .session-tabstrip__status {
+ display: grid;
+ place-items: center;
+ flex: none;
+ width: 13px;
+ height: 13px;
+}
+body .session-tabstrip__status::before {
+ content: "";
+ width: 8px;
+ height: 8px;
+ border-radius: 50%;
+}
+body .session-tabstrip__status[data-tone="running"]::before { background: #4fd18b; animation: session-tab-blink 1.2s ease-in-out infinite; }
+body .session-tabstrip__status[data-tone="done"]::before { background: #e7a25a; }
+body .session-tabstrip__status[data-tone="waiting"]::before { background: #ef6461; }
+@keyframes session-tab-blink { 50% { opacity: .25; } }
+@media (prefers-reduced-motion: reduce) {
+ body .session-tabstrip__status[data-tone="running"]::before { animation: none; }
+}

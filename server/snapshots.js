@@ -13,13 +13,21 @@
  * captured or deleted.
  */
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import { promisify } from "node:util";
 import { join } from "node:path";
 
 const execFileAsync = promisify(execFile);
 
 const REF_PREFIX = "refs/devden/snapshots";
-/** Snapshots per repo. Each is one small commit; this is clutter control. */
+/**
+ * Snapshots per session, under REF_PREFIX/<session tag>/<ms>. Per repo they
+ * were shared: a busy session pruned a quiet one's turns, and a restore then
+ * silently fell back to an older snapshot -- undoing more than was asked.
+ * Flat REF_PREFIX/<ms> refs predate this and are only a fallback.
+ * ponytail: refs grow with session count; drop dormant sessions' refs if
+ * for-each-ref ever slows down.
+ */
 const KEEP = 50;
 /** A snapshot is taken microseconds before the message it belongs to is
  *  logged, but clocks between the server and an agent's own log can skew. */
@@ -82,12 +90,17 @@ export async function withScratchIndex(dir, fn) {
 }
 
 /** Snapshot the whole working tree. Returns quietly when cwd is not a repo. */
-export async function takeSnapshot(cwd, label = "") {
-  if (!cwd) return { ok: false, error: "No working directory." };
-  return withScratchIndex(cwd, (env) => snapshotWith(cwd, label, env));
+/** Short, ref-safe tag for a session id (its session file path, else its key). */
+export function sessionTag(session) {
+  return createHash("sha1").update(String(session)).digest("hex").slice(0, 12);
 }
 
-async function snapshotWith(cwd, label, env) {
+export async function takeSnapshot(cwd, label = "", session = "") {
+  if (!cwd) return { ok: false, error: "No working directory." };
+  return withScratchIndex(cwd, (env) => snapshotWith(cwd, label, session, env));
+}
+
+async function snapshotWith(cwd, label, session, env) {
   const staged = await git(cwd, ["add", "-A"], env);
   if (!staged.ok) return { ok: false, error: staged.error };
   const tree = await git(cwd, ["write-tree"], env);
@@ -103,10 +116,11 @@ async function snapshotWith(cwd, label, env) {
   const commit = await git(cwd, args, env);
   if (!commit.ok) return { ok: false, error: commit.error };
   const at = Date.now();
-  const ref = `${REF_PREFIX}/${at}`;
+  const tag = session ? sessionTag(session) : null;
+  const ref = tag ? `${REF_PREFIX}/${tag}/${at}` : `${REF_PREFIX}/${at}`;
   const updated = await git(cwd, ["update-ref", ref, commit.out]);
   if (!updated.ok) return { ok: false, error: updated.error };
-  await prune(cwd);
+  await prune(cwd, tag);
   return { ok: true, at, ref, commit: commit.out };
 }
 
@@ -135,8 +149,12 @@ export function snapshotAfterFork(snaps, timestamp) {
  * fresh snapshot of the tree right now. Forks branch from this commit so the
  * child checkout matches the parent at that point, dirty files included.
  */
-export async function commitForFork(cwd, timestamp) {
-  const snaps = await listSnapshots(cwd);
+export async function commitForFork(cwd, timestamp, sessions = []) {
+  const all = await listSnapshots(cwd);
+  // Another session's next snapshot is not this session's tree; a fresh
+  // snapshot of right now is the safe fallback.
+  const tags = sessions.filter(Boolean).map(sessionTag);
+  const snaps = tags.length ? all.filter((snap) => tags.includes(snap.session)) : all;
   const next = snapshotAfterFork(snaps, timestamp);
   if (next)
     return { ok: true, commit: next.commit, at: next.at, ref: next.ref };
@@ -163,10 +181,12 @@ export async function listSnapshots(cwd) {
     .split("\n")
     .map((row) => {
       const [ref, commit, subject = ""] = row.split("\t");
-      const at = Number(ref?.slice(REF_PREFIX.length + 1));
-      if (!Number.isFinite(at) || !commit) return null;
+      const parts = String(ref ?? "").slice(REF_PREFIX.length + 1).split("/");
+      const at = Number(parts.at(-1));
+      if (!Number.isFinite(at) || !commit || parts.length > 2) return null;
       return {
         at,
+        session: parts.length === 2 ? parts[0] : null,
         ref,
         commit,
         label: subject.replace(/^devden snapshot: /, ""),
@@ -176,8 +196,8 @@ export async function listSnapshots(cwd) {
     .sort((left, right) => right.at - left.at);
 }
 
-async function prune(cwd) {
-  const snaps = await listSnapshots(cwd);
+async function prune(cwd, tag) {
+  const snaps = (await listSnapshots(cwd)).filter((snap) => snap.session === tag);
   for (const snap of snaps.slice(KEEP))
     await git(cwd, ["update-ref", "-d", snap.ref]);
 }
@@ -201,16 +221,50 @@ function countChanges(numstat) {
  * at or before that message. Omit the timestamp for "undo the last turn".
  * `dryRun` reports what would change without touching anything.
  */
-export async function restoreSnapshot(cwd, timestamp, dryRun = false) {
+/**
+ * The snapshot taken before the message at `timestamp`, from this session's
+ * own snapshots (`sessions`: its session file path and/or key). Flat legacy
+ * refs are used only when the session has none old enough AND never pruned
+ * any -- i.e. the message predates per-session snapshots. A pruned turn is
+ * refused rather than answered with an older snapshot that undoes more.
+ */
+export function pickSnapshot(snaps, timestamp, sessions = []) {
+  const target = Number(timestamp);
+  const before = (list) =>
+    Number.isFinite(target)
+      ? list.find((entry) => entry.at <= target + SLACK_MS)
+      : list[0];
+  const tags = sessions.filter(Boolean).map(sessionTag);
+  if (!tags.length) return before(snaps);
+  const own = snaps.filter((snap) => tags.includes(snap.session));
+  const mine = before(own);
+  if (mine) return mine;
+  if (own.length >= KEEP) return undefined;
+  return before(snaps.filter((snap) => snap.session === null));
+}
+
+/**
+ * `git diff --name-status` from `commit` to the working tree, new files
+ * included (staged into the scratch index, never the user's). Null when git
+ * fails. Prosecutor rounds hand this to both sides so neither re-explores.
+ */
+export async function changedSince(cwd, commit) {
+  if (!cwd || !commit) return null;
+  const result = await withScratchIndex(cwd, async (env) => {
+    const staged = await git(cwd, ["add", "-A"], env);
+    if (!staged.ok) return staged;
+    return git(cwd, ["diff", "--cached", "--name-status", "--no-renames", commit], env);
+  });
+  return result?.ok ? result.out : null;
+}
+
+export async function restoreSnapshot(cwd, timestamp, dryRun = false, sessions = []) {
   const snaps = await listSnapshots(cwd);
   if (!snaps.length)
     return { ok: false, error: "No snapshots recorded for this workspace." };
-  const target = Number(timestamp);
-  const snap = Number.isFinite(target)
-    ? snaps.find((entry) => entry.at <= target + SLACK_MS)
-    : snaps[0];
+  const snap = pickSnapshot(snaps, timestamp, sessions);
   if (!snap)
-    return { ok: false, error: "No snapshot from before that message." };
+    return { ok: false, error: "No snapshot from before that message in this session." };
   return withScratchIndex(cwd, (env) => restoreWith(cwd, snap, dryRun, env));
 }
 
@@ -251,14 +305,11 @@ async function restoreWith(cwd, snap, dryRun, env) {
  * message landed → current working tree. `git diff` exits 1 when there
  * are hunks, so stdout is kept on that status.
  */
-export async function diffSinceSnapshot(cwd, timestamp, context = 15) {
+export async function diffSinceSnapshot(cwd, timestamp, context = 15, sessions = []) {
   const snaps = await listSnapshots(cwd);
   if (!snaps.length)
     return { ok: false, error: "No turn snapshots for this workspace." };
-  const target = Number(timestamp);
-  const snap = Number.isFinite(target)
-    ? snaps.find((entry) => entry.at <= target + SLACK_MS)
-    : snaps[0];
+  const snap = pickSnapshot(snaps, timestamp, sessions);
   if (!snap)
     return { ok: false, error: "No snapshot from before that turn." };
   return withScratchIndex(cwd, (env) => diffWith(cwd, snap, context, env));

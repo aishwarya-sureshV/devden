@@ -2,12 +2,9 @@
  * Discover Ollama (including :cloud) models from the local daemon and keep
  * ~/.pi/agent/models.json in sync so Pi can actually select them.
  */
-import { readFile, writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
-import { join } from "node:path";
+import { updateModelsJson } from "./pi-model-overrides.js";
 
 const OLLAMA_HOST = process.env.OLLAMA_HOST || "http://127.0.0.1:11434";
-const MODELS_JSON = join(homedir(), ".pi", "agent", "models.json");
 
 function prettyName(id) {
   // Cloud models get a ☁ suffix instead of the old "(cloud)" word.
@@ -100,88 +97,86 @@ export function mergeModelLists(primary, extra) {
 
 export async function syncOllamaModelsJson(models) {
   if (!models.length) return false;
-  let config = { providers: {} };
-  try {
-    config = JSON.parse(await readFile(MODELS_JSON, "utf8"));
-  } catch {
-    /* create a minimal file below */
-  }
-  if (!config || typeof config !== "object") config = { providers: {} };
-  if (!config.providers || typeof config.providers !== "object")
-    config.providers = {};
-  if (!config.providers.ollama || typeof config.providers.ollama !== "object") {
-    config.providers.ollama = {
-      baseUrl: "http://localhost:11434/v1",
-      api: "openai-completions",
-      apiKey: "ollama",
-      compat: { supportsDeveloperRole: false, supportsReasoningEffort: false },
-      models: [],
-    };
-  }
-  if (!Array.isArray(config.providers.ollama.models))
-    config.providers.ollama.models = [];
-  const byId = new Map(
-    config.providers.ollama.models
-      .filter((model) => Boolean(model?.id))
-      .map((model) => [model.id, model]),
-  );
-  let changed = false;
-  for (const model of models) {
-    const reasoning = model.reasoning !== false;
-    const entry = byId.get(model.id);
-    if (!entry) {
-      const created = {
-        id: model.id,
-        reasoning,
-        ...(reasoning
-          ? {
-              compat: { supportsReasoningEffort: true },
-              thinkingLevelMap: OLLAMA_THINKING_LEVEL_MAP,
-            }
-          : {}),
-        ...(model.vision ? { input: ["text", "image"] } : {}),
-        ...(model.contextWindow ? { contextWindow: model.contextWindow } : {}),
+  // Runs under the same lock as every other models.json writer (context
+  // overrides, …) with an atomic replace, and throws without writing when
+  // the existing file is unreadable or malformed instead of clobbering it.
+  return updateModelsJson((config) => {
+    if (!config || typeof config !== "object") config = { providers: {} };
+    if (!config.providers || typeof config.providers !== "object")
+      config.providers = {};
+    if (!config.providers.ollama || typeof config.providers.ollama !== "object") {
+      config.providers.ollama = {
+        baseUrl: "http://localhost:11434/v1",
+        api: "openai-completions",
+        apiKey: "ollama",
+        compat: { supportsDeveloperRole: false, supportsReasoningEffort: false },
+        models: [],
       };
-      config.providers.ollama.models.push(created);
-      byId.set(model.id, created);
-      changed = true;
-      continue;
     }
-    // Upgrade models registered before effort support: thinking models gain
-    // a per-model compat override so Pi sends reasoning_effort, and any map
-    // written when "high" was believed to be Ollama's ceiling is repaired so
-    // xhigh/max/minimal reach the daemon instead of being downgraded.
-    if (reasoning) {
-      if (entry.reasoning !== true) {
-        entry.reasoning = true;
-        changed = true;
-      }
-      if (entry.compat?.supportsReasoningEffort !== true) {
-        entry.compat = {
-          ...(entry.compat ?? {}),
-          supportsReasoningEffort: true,
+    if (!Array.isArray(config.providers.ollama.models))
+      config.providers.ollama.models = [];
+    const byId = new Map(
+      config.providers.ollama.models
+        .filter((model) => Boolean(model?.id))
+        .map((model) => [model.id, model]),
+    );
+    let changed = false;
+    for (const model of models) {
+      const reasoning = model.reasoning !== false;
+      const entry = byId.get(model.id);
+      if (!entry) {
+        const created = {
+          id: model.id,
+          reasoning,
+          ...(reasoning
+            ? {
+                compat: { supportsReasoningEffort: true },
+                thinkingLevelMap: OLLAMA_THINKING_LEVEL_MAP,
+              }
+            : {}),
+          ...(model.vision ? { input: ["text", "image"] } : {}),
+          ...(model.contextWindow ? { contextWindow: model.contextWindow } : {}),
         };
+        config.providers.ollama.models.push(created);
+        byId.set(model.id, created);
+        changed = true;
+        continue;
+      }
+      // Upgrade models registered before effort support: thinking models gain
+      // a per-model compat override so Pi sends reasoning_effort, and any map
+      // written when "high" was believed to be Ollama's ceiling is repaired so
+      // xhigh/max/minimal reach the daemon instead of being downgraded.
+      if (reasoning) {
+        if (entry.reasoning !== true) {
+          entry.reasoning = true;
+          changed = true;
+        }
+        if (entry.compat?.supportsReasoningEffort !== true) {
+          entry.compat = {
+            ...(entry.compat ?? {}),
+            supportsReasoningEffort: true,
+          };
+          changed = true;
+        }
+        const map = entry.thinkingLevelMap;
+        if (!map) {
+          entry.thinkingLevelMap = OLLAMA_THINKING_LEVEL_MAP;
+          changed = true;
+        } else if (isStaleThinkingLevelMap(map)) {
+          entry.thinkingLevelMap = { ...map, ...OLLAMA_THINKING_LEVEL_MAP };
+          changed = true;
+        }
+      } else if (entry.reasoning || entry.compat?.supportsReasoningEffort) {
+        // Previously registered as reasoning-capable (e.g. GLM, before the
+        // <think>-tag leak was known) -- strip the override so Pi stops
+        // requesting reasoning_effort from a model that can't honor it cleanly.
+        entry.reasoning = false;
+        if (entry.compat) delete entry.compat.supportsReasoningEffort;
+        delete entry.thinkingLevelMap;
         changed = true;
       }
-      const map = entry.thinkingLevelMap;
-      if (!map) {
-        entry.thinkingLevelMap = OLLAMA_THINKING_LEVEL_MAP;
-        changed = true;
-      } else if (isStaleThinkingLevelMap(map)) {
-        entry.thinkingLevelMap = { ...map, ...OLLAMA_THINKING_LEVEL_MAP };
-        changed = true;
-      }
-    } else if (entry.reasoning || entry.compat?.supportsReasoningEffort) {
-      // Previously registered as reasoning-capable (e.g. GLM, before the
-      // <think>-tag leak was known) -- strip the override so Pi stops
-      // requesting reasoning_effort from a model that can't honor it cleanly.
-      entry.reasoning = false;
-      if (entry.compat) delete entry.compat.supportsReasoningEffort;
-      delete entry.thinkingLevelMap;
-      changed = true;
     }
-  }
-  if (!changed) return false;
-  await writeFile(MODELS_JSON, `${JSON.stringify(config, null, 2)}\n`);
-  return true;
+    if (!changed) return false;
+    return true;
+  });
 }

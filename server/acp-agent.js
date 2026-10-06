@@ -45,7 +45,42 @@ export async function openAcpClient({
     Writable.toWeb(child.stdin),
     Readable.toWeb(child.stdout),
   );
-  const connection = new ClientSideConnection(handlers, stream);
+  // SDK 0.4.5 has no session/set_config_option (its setSessionModel even
+  // sends session/set_mode), and grok ignores set_mode for models. Send that
+  // one request ourselves and pull its reply out before the SDK sees an
+  // unknown id. ponytail: delete once the SDK grows setSessionConfigOption.
+  const pending = new Map();
+  let seq = 0;
+  const readable = stream.readable.pipeThrough(
+    new TransformStream({
+      transform(message, controller) {
+        const waiter = !message?.method && pending.get(message?.id);
+        if (!waiter) return controller.enqueue(message);
+        pending.delete(message.id);
+        if (message.error) waiter.reject(message.error);
+        else waiter.resolve(message.result ?? {});
+      },
+    }),
+  );
+  child.once("exit", () => {
+    for (const waiter of pending.values())
+      waiter.reject(new Error("ACP agent exited"));
+    pending.clear();
+  });
+  const connection = new ClientSideConnection(handlers, {
+    readable,
+    writable: stream.writable,
+  });
+  connection.setSessionConfigOption = (params) =>
+    new Promise((resolve, reject) => {
+      const id = `devden-config-${++seq}`;
+      pending.set(id, { resolve, reject });
+      // One write per line: Node queues it whole, never interleaved with
+      // the SDK's own frames.
+      child.stdin.write(
+        `${JSON.stringify({ jsonrpc: "2.0", id, method: "session/set_config_option", params })}\n`,
+      );
+    });
   try {
     const initialized = await connection.initialize({
       protocolVersion: ACP_PROTOCOL_VERSION,

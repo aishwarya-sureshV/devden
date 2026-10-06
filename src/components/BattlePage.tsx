@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { IconArrowUp, IconFolder, IconPlus, ModelName } from "./icons";
+import { BackendLogo, IconArrowUp, IconFolder, IconPlus, ModelName } from "./icons";
 import { useModelRefresh } from "./useModelRefresh";
 import {
   AGENT_BACKENDS,
@@ -798,7 +798,7 @@ function ContenderRow({
           style={{ color: mark.color }}
           aria-hidden
         >
-          {mark.glyph}
+          <BackendLogo backend={backend} size={12} />
         </span>
         <strong className="battle-row__name">{name}</strong>
       </span>
@@ -928,7 +928,7 @@ function BattleColumn({
     return (
       <div className="battle-col battle-col--closed">
         <div className="battle-col__head">
-          <span style={{ color: mark.color }}>{mark.glyph}</span>
+          <span style={{ color: mark.color }}><BackendLogo backend={candidate.backend} size={14} /></span>
           <strong>{backendLabel(candidate.backend)}</strong>
         </div>
         <p>
@@ -943,7 +943,7 @@ function BattleColumn({
     <div className="battle-col">
       <div className="battle-col__head">
         <span className="battle-col__mark" style={{ color: mark.color }}>
-          {mark.glyph}
+          <BackendLogo backend={candidate.backend} size={14} />
         </span>
         <strong>{backendLabel(candidate.backend)}</strong>
         {modelLabel && (

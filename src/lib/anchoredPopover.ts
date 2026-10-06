@@ -14,17 +14,26 @@ const EDGE = 8;
 export function useAnchoredPopover<T extends HTMLElement>(
   open: boolean,
   align: "start" | "end" = "start",
+  options?: {
+    /** Element the menu hangs off. Defaults to the menu's parent. */
+    anchor?: { current: HTMLElement | null };
+    /** Which side of the anchor to try first. */
+    prefer?: "above" | "below";
+  },
 ) {
   const ref = useRef<T | null>(null);
+  const prefer = options?.prefer ?? "above";
+  const anchorRef = options?.anchor;
   useLayoutEffect(() => {
     const menu = ref.current;
-    const anchor = menu?.parentElement;
+    const anchor = anchorRef?.current ?? menu?.parentElement;
     if (!open || !menu || !anchor || !menu.showPopover) return;
     menu.popover = "manual";
     Object.assign(menu.style, {
       position: "fixed",
       inset: "auto",
       margin: "0",
+      transform: "none",
     });
     menu.showPopover();
     const place = () => {
@@ -33,7 +42,14 @@ export function useAnchoredPopover<T extends HTMLElement>(
       const below = window.innerHeight - a.bottom - GAP - EDGE;
       menu.style.maxHeight = `${Math.max(above, below)}px`;
       const { width, height } = menu.getBoundingClientRect();
-      const top = height <= above ? a.top - GAP - height : a.bottom + GAP;
+      const top =
+        prefer === "below"
+          ? height <= below
+            ? a.bottom + GAP
+            : a.top - GAP - height
+          : height <= above
+            ? a.top - GAP - height
+            : a.bottom + GAP;
       const left = align === "end" ? a.right - width : a.left;
       menu.style.top = `${Math.max(EDGE, top)}px`;
       menu.style.left = `${Math.max(
@@ -51,6 +67,6 @@ export function useAnchoredPopover<T extends HTMLElement>(
       window.removeEventListener("resize", place);
       window.removeEventListener("scroll", place, true);
     };
-  }, [open, align]);
+  }, [open, align, prefer, anchorRef]);
   return ref;
 }

@@ -38,6 +38,17 @@ test("context fill is the latest journal total, not the sum of turns", () => {
   assert.equal(contextTokensFromJournal(""), 0);
 });
 
+test("a completed turn floors an undercounted first journal total", () => {
+  const hello = [
+    { _meta: { totalTokens: 1837 }, update: { sessionUpdate: "agent_message_chunk" } },
+    { update: { sessionUpdate: "turn_completed", usage: { inputTokens: 20830, outputTokens: 41, modelCalls: 1 } } },
+  ].map((params) => JSON.stringify({ params })).join("\n");
+  assert.equal(contextTokensFromJournal(hello), 20871);
+  // A later journal total (compaction) wins over an earlier turn's floor.
+  const compacted = `${hello}\n${JSON.stringify({ params: { _meta: { totalTokens: 9000 } } })}`;
+  assert.equal(contextTokensFromJournal(compacted), 9000);
+});
+
 test("turn usages skip a completion that has no token counts", () => {
   const turns = turnUsagesFromJournal(journal);
   assert.equal(turns.length, 2);

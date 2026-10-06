@@ -39,5 +39,6 @@ export async function readCodexModels() {
     })),
     defaultReasoningEffort: model.default_reasoning_level,
     contextWindow: model.context_window,
+    maxContextWindow: model.max_context_window,
   }));
 }

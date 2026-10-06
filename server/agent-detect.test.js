@@ -52,4 +52,6 @@ test("detection does not report API-key accounts as connected subscriptions", as
   for (const id of ["codex", "claude", "pi", "grok"]) assert.equal(result.get(id), "missing");
   result = await check("Logged in using ChatGPT", { loggedIn: true, authMethod: "claude.ai" }, { anthropic: { type: "oauth", access: "example", refresh: "example" } }, { "https://accounts.x.ai/sign-in": { key: "example" } });
   for (const id of ["codex", "claude", "pi", "grok"]) assert.equal(result.get(id), "ok");
+  result = await check("", {}, {}, { "https://auth.x.ai::client": { key: "example" } });
+  assert.equal(result.get("grok"), "ok");
 });

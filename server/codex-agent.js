@@ -30,12 +30,6 @@ import { CodexAppServer, codexRequest } from "./codex-app-server.js";
 import { loadCodexUsage } from "./codex-usage.js";
 import { readCodexModels } from "./codex-models.js";
 import { MODEL_CATALOG_TTL_MS } from "./model-catalog.js";
-import {
-  repoContext,
-  CO_PARTNER_PROMPT,
-  CO_PARTNER_PROMPT_MANUAL,
-  CLARIFY_PROMPT,
-} from "./co-partner-prompt.js";
 
 export const CODEX_SESSIONS_ROOT = () =>
   join(process.env.CODEX_HOME || join(homedir(), ".codex"), "sessions");
@@ -162,6 +156,9 @@ class CodexAgentProcess {
     this.cwd = undefined;
     this.model = undefined;
     this.thinkingLevel = undefined;
+    /** Chosen context window for the thread (config.model_context_window),
+     * undefined = the model's catalog default. */
+    this.contextWindow = undefined;
     this.agentMode = undefined;
     this.approvalGate = new ApprovalGate(this);
     this.sessionFile = undefined;
@@ -248,12 +245,12 @@ class CodexAgentProcess {
     return {
       cwd, sandbox: this.agentMode === "plan" ? "read-only" : this.accessMode,
       approvalPolicy: this.approvalGate.enabled ? "untrusted" : "never",
-      developerInstructions: [
-        this.agentMode === "manual" ? CO_PARTNER_PROMPT_MANUAL : CO_PARTNER_PROMPT,
-        CLARIFY_PROMPT, repoContext(cwd),
-        this.agentMode === "plan" ? "Plan only. Inspect and explain the proposed changes; do not edit files or execute changes." : "",
-      ].filter(Boolean).join("\n"),
       ...(this.model?.id ? { model: this.model.id } : {}),
+      // Codex only reads config overrides at thread/start|resume; it caps
+      // the value at the model's max_context_window itself.
+      ...(this.contextWindow
+        ? { config: { model_context_window: this.contextWindow } }
+        : {}),
     };
   }
 
@@ -280,6 +277,10 @@ class CodexAgentProcess {
     if (options.model?.id)
       this.model = { provider: "codex", id: options.model.id };
     if (options.thinkingLevel) this.thinkingLevel = options.thinkingLevel;
+    // Ride along from startOptionsFromBody: a resumed session re-applies
+    // its chosen window without a second set-context call.
+    if (Number.isFinite(options.contextWindow) && options.contextWindow > 0)
+      this.contextWindow = Math.round(options.contextWindow);
 
     this.setStatus("starting");
     const connection = new CodexAppServer({
@@ -624,7 +625,9 @@ class CodexAgentProcess {
         return;
       case "thread/tokenUsage/updated":
         this.tokenUsage = params.tokenUsage;
-        if (turn) turn.message.usage = usageFrom(params.tokenUsage?.total ?? params.tokenUsage?.last, turn.usageBaseline);
+        if (turn) turn.message.usage = params.tokenUsage?.total
+          ? usageFrom(params.tokenUsage.total, turn.usageBaseline)
+          : usageFrom(params.tokenUsage?.last);
         this.emitUpdate({ type: "usage" });
         return;
       case "turn/completed":
@@ -1065,6 +1068,8 @@ class CodexAgentProcess {
         ? "end_turn"
         : (completed?.status ?? "end_turn");
     if (turn.error) turn.message.errorMessage = turn.error;
+    if (turn.message.usage && Date.now() > turn.message.timestamp)
+      Object.assign(turn.message.usage, { durationMs: Date.now() - turn.message.timestamp, durationKind: "turn" });
     this.emit({ type: "message_end", sessionKey: this.sessionKey, message: turn.message });
     this.emit({
       type: "turn_end",
@@ -1264,12 +1269,24 @@ class CodexAgentProcess {
       isStreaming: Boolean(this.turn) || subagentBusy(this),
       pendingUserInputs: [...this.pendingUserInputs].map(([requestId, entry]) => ({ requestId, questions: entry.questions })),
       messageCount: this.messages.filter((message) => message.role !== "toolResult").length,
-      ...(this.tokenUsage?.modelContextWindow ? { contextWindow: this.tokenUsage.modelContextWindow } : {}),
+      ...(this.contextWindow
+        ? { contextWindow: this.contextWindow }
+        : this.tokenUsage?.modelContextWindow
+          ? { contextWindow: this.tokenUsage.modelContextWindow }
+          : {}),
       ...(this.turnDiff ? { turnDiff: this.turnDiff } : {}),
       queuedMessages: this.queueSnapshot(),
       sessionId: this.threadId,
       cwd: this.cwd,
-      model: this.model,
+      model: {
+        ...this.model,
+        // Parity with pi: state.model.contextWindow is what the picker and
+        // the context estimate read. Prefer the explicit choice, then the
+        // window codex itself reports for the thread.
+        ...(this.contextWindow ?? this.tokenUsage?.modelContextWindow
+          ? { contextWindow: this.contextWindow ?? this.tokenUsage.modelContextWindow }
+          : {}),
+      },
       thinkingLevel: this.thinkingLevel,
       sessionFile: this.sessionFile,
     };
@@ -1354,6 +1371,8 @@ class CodexAgentProcess {
       for (const model of models) {
         const metadata = remote.find((entry) => entry.id === model.id);
         if (metadata?.contextWindow) model.contextWindow = metadata.contextWindow;
+        if (metadata?.maxContextWindow)
+          model.maxContextWindow = metadata.maxContextWindow;
       }
       for (const entry of remote)
         if (!entry.hidden && !models.some((model) => model.id === entry.id)) models.push(entry);
@@ -1376,6 +1395,7 @@ class CodexAgentProcess {
             name: model.displayName ?? model.id,
             levels: (model.supportedReasoningEfforts ?? []).map((option) => option.reasoningEffort),
             contextWindow: model.contextWindow,
+            maxContextWindow: model.maxContextWindow,
           })),
       };
     } catch (error) {
@@ -1430,6 +1450,55 @@ class CodexAgentProcess {
     return { ok: true, data: this.model, state: await this.getState() };
   }
 
+  /**
+   * Choose the thread's context window. Codex accepts config overrides
+   * (model_context_window) only at thread/start|resume — turn/start has no
+   * config field — so a live idle thread restarts against its rollout file
+   * to apply a change; a fresh session just carries it on the next start.
+   * `null` restores the model's catalog default.
+   */
+  async setContextWindow(_provider, _modelId, contextWindow) {
+    // Never mutate mid-turn: the requested value would sit unapplied while
+    // getState() reports it as if live, and turn/start has no config field
+    // to push it through. Reject and let the caller retry when idle.
+    if (this.isBusy())
+      return {
+        ok: false,
+        error: "Wait for the current response to finish before changing the context window.",
+      };
+    this.contextWindow =
+      contextWindow == null ? undefined : Math.round(contextWindow);
+    if (!this.connection?.running || !this.threadId || this.isBusy())
+      return {
+        ok: true,
+        data: {
+          ...(this.model ?? {}),
+          ...(this.contextWindow ? { contextWindow: this.contextWindow } : {}),
+        },
+      };
+    const sessionFile = this.sessionFile;
+    const model = this.model;
+    const thinkingLevel = this.thinkingLevel;
+    const threadId = this.threadId;
+    this.stop();
+    try {
+      const result = await this.start(this.cwd, {
+        ...(sessionFile ? { sessionFile } : {}),
+        ...(threadId ? { threadId } : {}),
+        ...(model?.id ? { model } : {}),
+        ...(thinkingLevel ? { thinkingLevel } : {}),
+      });
+      if (!result.ok) return result;
+    } catch (error) {
+      return { ok: false, error: String(error?.message ?? error) };
+    }
+    try {
+      return { ok: true, state: await this.getState() };
+    } catch (error) {
+      return { ok: false, error: String(error?.message ?? error) };
+    }
+  }
+
   async setThinkingLevel(level) {
     this.thinkingLevel = await this.resolveEffort(this.model?.id, level);
     return { ok: true, state: await this.getState() };
@@ -1454,13 +1523,16 @@ class CodexAgentProcess {
     if (
       !force &&
       this.usageCache.result &&
+      // Spark models bill a separate bucket: a model switch is a cache miss.
+      this.usageCache.model === this.model?.id &&
       now - this.usageCache.at < USAGE_CACHE_TTL_MS
     )
       return this.usageCache.result;
     if (this.usageRequest) return this.usageRequest;
-    this.usageRequest = loadCodexUsage(this.model?.id)
+    const model = this.model?.id;
+    this.usageRequest = loadCodexUsage(model)
       .then((result) => {
-        if (result?.ok) this.usageCache = { at: Date.now(), result };
+        if (result?.ok) this.usageCache = { at: Date.now(), result, model };
         return result;
       })
       .finally(() => {

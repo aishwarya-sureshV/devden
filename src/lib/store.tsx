@@ -16,6 +16,7 @@ import {
 import {
   AGENT_BACKENDS,
   api,
+  AuthError,
   backendLabel,
   installBackendCatalog,
   subscribeEvents,
@@ -55,7 +56,7 @@ export interface ConversationTab {
   /** Guest tabs (cross-backend review) stay off the grid until opened. */
   guest?: boolean;
   accessMode?: "workspace-write" | "read-only";
-  agentMode?: "standard" | "plan" | "routed" | "manual" | "auto-edit";
+  agentMode?: "standard" | "plan" | "routed" | "prosecutor" | "manual" | "auto-edit";
   timeline: Timeline;
 }
 
@@ -67,7 +68,7 @@ export interface OpenConversationOptions {
   /** Skip the sessionPath reuse check. Forks must mint a new tab. */
   forceNew?: boolean;
   accessMode?: "workspace-write" | "read-only";
-  agentMode?: "standard" | "plan" | "routed" | "manual" | "auto-edit";
+  agentMode?: "standard" | "plan" | "routed" | "prosecutor" | "manual" | "auto-edit";
   /** Explicit model/effort for the new session (battle races pick these per
    *  backend); left undefined they fall back to the preferred/default pick. */
   model?: ModelInfo;
@@ -119,7 +120,7 @@ interface StoreValue {
     label?: string;
     backend?: AgentBackend;
     accessMode?: "workspace-write" | "read-only";
-    agentMode?: "standard" | "plan" | "routed" | "manual" | "auto-edit";
+    agentMode?: "standard" | "plan" | "routed" | "prosecutor" | "manual" | "auto-edit";
   }) => string;
   closeConversation: (key: string) => void;
   setActiveKey: (key: string) => void;
@@ -227,13 +228,14 @@ export const BACKEND_DEFAULT_EFFORT: Record<AgentBackend, string> = {
   claude: CLAUDE_DEFAULT_EFFORT,
   grok: "high",
   codex: "off",
+  zcode: "high",
 };
 
 /** Model a new conversation opens on, where the agent has a clear best pick.
  *  A model the user picked themselves in this workspace still wins over these. */
 export const BACKEND_DEFAULT_MODEL: Partial<Record<AgentBackend, ModelInfo>> = {
   claude: CLAUDE_DEFAULT_MODEL,
-  grok: { provider: "grok-sdk", id: "grok-4.6", name: "Grok 4.6" },
+  grok: { provider: "grok", id: "grok-4.6", name: "Grok 4.6" },
   pi: {
     provider: "ollama",
     id: "glm-5.3-flash:cloud",
@@ -999,6 +1001,13 @@ export function StoreProvider({ children }: { children: ReactNode }) {
               result.error ?? `${backendLabel(backend)} could not be started`,
               "error",
             );
+        })
+        .catch((error: unknown) => {
+          if (error instanceof AuthError) throw error; // lock screen
+          tab.timeline.appendNotice(
+            `${backendLabel(backend)} could not be started: ${String(error)}`,
+            "error",
+          );
         });
       return tab.key;
     },
@@ -1318,7 +1327,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       label?: string;
       backend?: AgentBackend;
       accessMode?: "workspace-write" | "read-only";
-      agentMode?: "standard" | "plan" | "routed" | "manual" | "auto-edit";
+      agentMode?: "standard" | "plan" | "routed" | "prosecutor" | "manual" | "auto-edit";
     }): string => {
       const forkBackend = backend ?? defaultBackendRef.current;
       const tab = createConversationTab(

@@ -39,17 +39,17 @@ Setup:
    sudo apt update && sudo apt install -y git curl
    curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
    sudo apt install -y nodejs
-   sudo adduser --disabled-password piweb
+   sudo adduser --disabled-password devden
    sudo git clone <your-repo-url> /opt/devden
-   sudo chown -R piweb:piweb /opt/devden
-   cd /opt/devden && sudo -u piweb npm install && sudo -u piweb npm run build
+   sudo chown -R devden:devden /opt/devden
+   cd /opt/devden && sudo -u devden npm install && sudo -u devden npm run build
    ```
 
 4. Ollama (optional — see "Where should ollama run?" below):
 
    ```bash
    curl -fsSL https://ollama.com/install.sh | sh
-   sudo -u piweb ollama pull qwen2.5-coder:7b   # or your model
+   sudo -u devden ollama pull qwen2.5-coder:7b   # or your model
    ```
 
 5. systemd service — create `/etc/systemd/system/devden.service`:
@@ -62,11 +62,12 @@ Setup:
 
    [Service]
    Type=simple
-   User=piweb
+   User=devden
    WorkingDirectory=/opt/devden
    Environment=DEVDEN_PORT=4319
-   Environment=DEVDEN_HOST=0.0.0.0
-   Environment=DEVDEN_TOKEN=change-me-to-a-long-random-string
+   Environment=DEVDEN_HOST=127.0.0.1
+   # Generate with: openssl rand -hex 32
+   Environment=DEVDEN_TOKEN=<paste a random 64-char hex string>
    Environment=DEVDEN_DEPLOY_MODE=cloud
    ExecStart=/usr/bin/node server/index.js
    Restart=always
@@ -79,9 +80,11 @@ Setup:
    `Restart=always` is what makes the Deploy button work here: after a deploy
    the old process SIGTERMs itself and systemd brings the new build up.
 
-6. Start it: `sudo systemctl enable --now devden`, then visit
-   `http://<instance-ip>:4319` (open port 4319 in the instance's security list
-   - the default VCN security list). Log in with your DEVDEN_TOKEN.
+6. Start it: `sudo systemctl enable --now devden`. Keep port 4319 closed to
+   the internet. Reach it with an SSH tunnel
+   (`ssh -N -L 14319:127.0.0.1:4319 <user>@<instance-ip>`, then open
+   `http://127.0.0.1:14319`) or the HTTPS tunnel below, and log in with your
+   DEVDEN_TOKEN. See [SELF_HOSTING.md](SELF_HOSTING.md) for the full guide.
 
 Cost: **$0**. Downside: sign-up can be picky, ARM capacity is sometimes scarce.
 
@@ -123,8 +126,8 @@ devden reaches ollama at `OLLAMA_HOST` (default `http://127.0.0.1:11434`).
 
 ## HTTPS (strongly recommended)
 
-`DEVDEN_HOST=0.0.0.0` with token auth is OK for testing but plain HTTP means
-the token crosses the internet in the clear. Easiest free fix — Cloudflare
+Never expose port 4319 over plain HTTP: the token would cross the internet in
+the clear, and the API can run shell commands. Easiest free fix — Cloudflare
 Tunnel (also hides the server's IP, no open inbound ports):
 
 ```bash
@@ -132,7 +135,7 @@ Tunnel (also hides the server's IP, no open inbound ports):
 sudo apt install -y cloudflared
 cloudflared tunnel login
 cloudflared tunnel create devden
-cloudflared tunnel route dns devden piweb.<yourdomain>.com
+cloudflared tunnel route dns devden devden.<yourdomain>.com
 cloudflared tunnel run --url http://127.0.0.1:4319 devden
 # then run it as a service: sudo cloudflared service install
 ```

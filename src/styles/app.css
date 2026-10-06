@@ -1014,12 +1014,24 @@
  height: 7px;
  border-radius: 50%;
  flex: none;
- background: var(--ds-activity);
+ background: var(--pw-green);
+ animation: sidebar-dot-blink 1.2s ease-in-out infinite;
+}
+@keyframes sidebar-dot-blink {
+ 50% {
+  opacity: 0.35;
+ }
+}
+@media (prefers-reduced-motion: reduce) {
+ .sidebar__run-dot {
+  animation: none;
+ }
 }
 /* Dots live in the gutter, absolutely placed, so they never shift the
    session title right. */
 .sidebar__status .sidebar__run-dot,
 .sidebar__status .sidebar__await-dot,
+.sidebar__status .sidebar__done-dot,
 .sidebar__status .sidebar__open-dot {
  position: static;
  transform: none;
@@ -1037,11 +1049,18 @@
  height: 6px;
  border-radius: 50%;
  flex: none;
- background: var(--pw-orange);
+ background: var(--pw-red);
  border: 0;
 }
+.sidebar__done-dot {
+ width: 6px;
+ height: 6px;
+ border-radius: 50%;
+ flex: none;
+ background: var(--pw-orange);
+}
 .sidebar__item.is-awaiting .sidebar__item-label {
- color: var(--pw-orange);
+ color: var(--pw-red);
 }
 .sidebar__item.is-awaiting::before,
 .sidebar__item.is-active-session.is-awaiting::before {
@@ -4649,7 +4668,7 @@ html.is-electron .settings-nav__lights {
 .sidebar__saved-row:hover > .sidebar__item.sidebar__item--saved {
  background: rgb(var(--ink) / 0.05);
 }
-.sidebar__saved-row > .sidebar__item.sidebar__item--saved.is-active-session {
+.sidebar__saved-row > .sidebar__item.sidebar__item--saved.is-focused {
  background: rgb(var(--ink) / 0.09);
 }
 .sidebar__item--saved .sidebar__item-label {

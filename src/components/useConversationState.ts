@@ -16,6 +16,7 @@ import {
   type QueuedMessage,
   type ProviderUsage,
   api,
+  cachedCatalog,
 } from "../lib/api";
 import { useState, useRef, useEffect } from "react";
 import type { ToolFileView } from "../lib/toolCards";
@@ -113,10 +114,10 @@ export function useConversationState({
   const seenRunningSubagents = useRef<Set<string>>(new Set());
   const [commands, setCommands] = useState<SlashCommand[]>([]);
   const [models, setModels] = useState<ModelInfo[]>(() =>
-    tab.backend === "claude" ? CLAUDE_MODELS : [],
+    tab.backend === "claude" ? CLAUDE_MODELS : cachedCatalog("models", tab.backend) ?? [],
   );
   const [levels, setLevels] = useState<string[]>(() =>
-    tab.backend === "claude" ? CLAUDE_EFFORT_LEVELS : [],
+    tab.backend === "claude" ? CLAUDE_EFFORT_LEVELS : cachedCatalog("levels", tab.backend) ?? [],
   );
   const [commandMenuOpen, setCommandMenuOpen] = useState(false);
   const [remoteQr, setRemoteQr] = useState<{

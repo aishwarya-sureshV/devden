@@ -18,12 +18,15 @@ export type SubagentRun = {
 
 // Claude Code names the spawn tool `Agent` (older builds and the SDK say
 // `Task`); grok says `spawn_subagent`; the pi-subagents extension says
-// `subagent`.
+// `subagent`. `prosecutor` is DevDen's own: one card per prosecutor-mode
+// round, with the prosecutor agent's work nested under it
+// (server/prosecutor.js).
 const SUBAGENT_NAMES = new Set([
   "task",
   "agent",
   "spawn_subagent",
   "subagent",
+  "prosecutor",
 ]);
 
 export function isSubagentTool(name: string): boolean {

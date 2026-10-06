@@ -99,13 +99,17 @@ function gitHead() {
   return result.status === 0 ? String(result.stdout || "").trim() : null;
 }
 
-// Must match the server's workingTreeSignature() exactly — the Deploy button
-// compares this stored value against the live tree to light the pending dot,
-// so uncommitted edits count too.
+// Must match the server's TREE_SIGNATURE_CMD character for character —
+// the Deploy button compares this stored value against the live tree to
+// light the pending dot. Porcelain lists dirty and untracked paths;
+// numstat covers tracked edits without hashing every untracked blob.
 function treeSignature() {
   const result = spawnSync(
     "sh",
-    ["-c", "git rev-parse HEAD && git status --porcelain && git diff HEAD"],
+    [
+      "-c",
+      "git rev-parse HEAD && git status --porcelain && git diff --numstat HEAD",
+    ],
     {
       cwd: ROOT,
       encoding: "buffer",

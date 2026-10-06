@@ -10,7 +10,7 @@
 export function contextTokensFromJournal(contents) {
   let total = 0;
   for (const line of String(contents || "").split("\n")) {
-    if (!line.includes("totalTokens")) continue;
+    if (!line.includes("totalTokens") && !line.includes("turn_completed")) continue;
     let event;
     try {
       event = JSON.parse(line);
@@ -19,6 +19,19 @@ export function contextTokensFromJournal(contents) {
     }
     const value = Number(event?.params?._meta?.totalTokens);
     if (Number.isFinite(value) && value > 0) total = value;
+    // The first `_meta` total of a session leaves out the system prompt and
+    // tool schemas (1837 against a billed 20830 on a one-call "hello"). A
+    // completed turn's average prompt per model call is a floor -- context
+    // only grows within a turn -- and a later `_meta` (e.g. post-compaction)
+    // still overrides it.
+    const usage = event?.params?.update?.usage;
+    const calls = Number(usage?.modelCalls);
+    if (event?.params?.update?.sessionUpdate === "turn_completed" && calls > 0) {
+      const perCall = Math.round(
+        ((Number(usage.inputTokens) || 0) + (Number(usage.outputTokens) || 0)) / calls,
+      );
+      total = Math.max(total, perCall);
+    }
   }
   return total;
 }

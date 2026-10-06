@@ -8,10 +8,10 @@
 
 import { connectionCommand, detectBuiltins } from "./agent-detect.js";
 
-export const AGENT_BACKENDS = ["pi", "claude", "grok", "codex"];
+export const AGENT_BACKENDS = ["pi", "claude", "grok", "codex", "zcode"];
 
 export function backendName(value) {
-  if (value === "claude" || value === "grok" || value === "codex" || value === "pi")
+  if (value === "claude" || value === "grok" || value === "codex" || value === "pi" || value === "zcode")
     return value;
   return "pi";
 }
@@ -47,6 +47,7 @@ const DEFAULT_CAPABILITIES = {
   setSessionName: false,
   rewindFiles: false,
   warmStart: false,
+  setContextWindow: false,
 };
 
 export const BACKEND_CAPABILITIES = {
@@ -54,6 +55,7 @@ export const BACKEND_CAPABILITIES = {
     ...DEFAULT_CAPABILITIES,
     contextUsage: true,
     setSessionName: true,
+    setContextWindow: true,
   },
   claude: {
     ...DEFAULT_CAPABILITIES,
@@ -77,6 +79,22 @@ export const BACKEND_CAPABILITIES = {
     contextUsage: true,
     settings: true,
     mcp: true,
+    setContextWindow: true,
+  },
+  zcode: {
+    // ponytail: first pass is the live-conversation vertical slice; flip
+    // flags on as forkAt/compact/session listing land.
+    ...DEFAULT_CAPABILITIES,
+    steer: false,
+    fork: false,
+    truncate: false,
+    compact: false,
+    compactInstructions: false,
+    queue: true,
+    subagents: false,
+    contextUsage: false,
+    setSessionName: false,
+    warmStart: false,
   },
 };
 
@@ -94,7 +112,7 @@ export async function listBackends() {
       id,
       name: id,
       command: id,
-      args: id === "grok" ? ["agent", "stdio"] : [],
+      args: id === "grok" ? ["agent", "stdio"] : id === "zcode" ? ["agent-server"] : [],
       path: row?.path ?? null,
       pathLabel: row?.pathLabel ?? null,
       version: row?.version ?? null,

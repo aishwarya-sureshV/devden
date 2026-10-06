@@ -937,22 +937,14 @@ body[data-ds-dark-theme] .workspace-code-editor {
  }
 }
 
-/* Dark sessions view: matte body + orange copy.
-   Sidebar and composer tokens are left alone. */
+/* Dark sessions view: matte body. Strong/heading/list-marker/code colors
+   used to hardcode an orange copy here, overriding the message redesign's
+   tokens every time dark theme was active — the README bans amber/orange
+   in message chrome on purpose, so this no longer sets its own colors and
+   the base rules apply instead. Sidebar and composer tokens are left alone. */
 body[data-ds-dark-theme] .conversation-stage .user-msg {
  color: var(--pw-fg);
  -webkit-font-smoothing: auto;
-}
-body[data-ds-dark-theme] .conversation-stage .rich-text strong,
-body[data-ds-dark-theme] .conversation-stage .md-heading,
-body[data-ds-dark-theme] .conversation-stage .md-list li::before,
-body[data-ds-dark-theme] .conversation-stage .rich-text :not(pre) > code {
- color: #c4a06a;
- -webkit-font-smoothing: auto;
-}
-body[data-ds-dark-theme] .conversation-stage .rich-text :not(pre) > code {
- background: rgba(196, 160, 106, 0.08);
- border-color: rgba(196, 160, 106, 0.18);
 }
 
 .composer__turn-bar {

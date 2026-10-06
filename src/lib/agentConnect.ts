@@ -14,3 +14,13 @@ export function loginLink(output: string): string | null {
   }
   return null;
 }
+
+/** A pairing code the CLI prints during sign-in, when there is one. */
+export function loginCode(output: string): string | null {
+  // Codes ride either in the sign-in URL's query or alone on a line.
+  const inUrl = output.match(/[?&](?:code|user_code|verification_code)=([A-Z0-9-]{4,20})/i);
+  if (inUrl) return inUrl[1].toUpperCase();
+  // ponytail: loose standalone pattern (line/space/colon context); tighten if a CLI ever prints lookalikes.
+  const alone = output.match(/(?:^|[:\s])([A-Z0-9]{4,8}-[A-Z0-9]{4,8})\b/m);
+  return alone ? alone[1] : null;
+}

@@ -157,6 +157,7 @@
 /* rich text — current AgentDeck markdown semantics, adapted to DeepSeek tokens */
 .rich-text {
  font-size: calc(1em + 1px);
+ line-height: 1.65;
  width: 100%;
  min-width: 0;
  max-width: none;
@@ -172,7 +173,19 @@
 /* Paragraph spacing dominates the prose-to-tool-card gap otherwise: the
    browser default is 1em on both sides of every <p>. */
 .rich-text :where(p) {
- margin: 4px 0;
+ margin: 14px 0;
+}
+/* A heading (or a bold-only line used as one) hugs what it introduces. */
+.rich-text :is(.md-heading, p:has(> strong:only-child)) + :where(p, ul, ol) {
+ margin-top: 4px;
+}
+/* Lists get the same breathing room as paragraphs around them. */
+.rich-text :where(ul, ol) {
+ margin: 14px 0;
+}
+/* Air between bullet points so each reads as its own item. */
+.rich-text :where(li) + :where(li) {
+ margin-top: 16px;
 }
 .rich-text > :first-child {
  margin-top: 0;
@@ -202,7 +215,7 @@
  border-top-right-radius: 0;
 }
 .rich-text strong {
- color: var(--dsw-alias-state-business-primary);
+ color: var(--pw-fg-strong);
  font-weight: 600;
 }
 .rich-text em {
@@ -211,15 +224,27 @@
 .rich-text em {
  font-style: italic;
 }
+/* Only the ✻ mark carries the accent; heading text stays plain/strong so
+   the accent reads as a signal (file paths, code) rather than decoration. */
 .md-heading {
- margin: 19px 0 6px;
- color: var(--dsw-alias-state-business-primary);
+ margin: 16px 0 6px;
+ color: var(--pw-fg-strong);
  font-size: 14px;
  font-weight: 700;
  letter-spacing: 0.02em;
 }
+.md-heading::before {
+ content: "✻";
+ margin-right: 8px;
+ color: var(--g-highlight, var(--pw-accent));
+}
 .md-heading:first-child {
  margin-top: 0;
+}
+/* A "Wiring" heading sits right above its bullet rows; the parent gap
+   already provides spacing so its own bottom margin goes negative. */
+.md-heading--tight {
+ margin: 6px 0 -6px;
 }
 .md-rule {
  height: 1px;
@@ -240,28 +265,35 @@
  background: color-mix(in srgb, var(--pw-fg, currentColor) 20%, transparent);
 }
 .md-paragraph {
- margin: 0 0 9px;
+ margin: 0 0 15px;
 }
 .md-list {
- margin: 0 0 11px;
+ margin: 0 0 15px;
  padding: 0;
  list-style: none;
 }
 .md-list li {
- position: relative;
- margin: 0 0 6px;
- padding-left: 16px;
+ display: flex;
+ gap: 8px;
+ align-items: baseline;
+ margin: 0 0 4px;
+ padding-left: 4px;
 }
 .md-list li::before {
- content: "-";
- position: absolute;
- left: 0;
- color: var(--dsw-alias-state-business-primary);
+ content: "•";
+ flex: none;
+ min-width: 18px;
+ color: var(--dsw-alias-label-secondary);
+}
+/* The marker (::before) and this content cell are the row's only two flex
+   items. Content itself must NOT be a flex container, or every inline
+   child (strong, code, text run) becomes its own flex item and the
+   paragraph's normal text wrapping breaks apart word by word. */
+.md-list__content {
+ flex: 1;
+ min-width: 0;
 }
 /* Numbered lists keep their digits (data-n = the source number). */
-.md-list--ordered li {
- padding-left: 20px;
-}
 .md-list--ordered li::before {
  content: attr(data-n) ".";
  font-variant-numeric: tabular-nums;
@@ -322,20 +354,74 @@
  font-weight: 700;
 }
 .rich-text :not(pre) > code {
- padding: 1px 5px;
- border: 1px solid
-  color-mix(in srgb, var(--dsw-alias-state-business-primary) 20%, transparent);
- border-radius: 4px;
- background: color-mix(
-  in srgb,
-  var(--dsw-alias-state-business-primary) 9%,
-  transparent
- );
- color: var(--dsw-alias-state-business-primary);
+ padding: 1px 6px;
+ border: 0;
+ border-radius: 5px;
+ background: var(--chip-bg);
+ color: var(--chip-fg);
  font-size: 0.94em;
 }
+/* Calm chips: code tokens are a neutral grey on a faint white wash;
+   only file paths carry the accent, dimmed (accent 30% into the label
+   grey) on an 8% accent wash. No rings. Every theme's chip rule reads
+   these vars. */
+.rich-text code {
+ /* Grey with an accent cast (45%), on a faint accent-tinted wash (3%);
+   file chips are the quiet ones (28%). */
+ --chip-fg: color-mix(
+  in oklab,
+  var(--hl-chip-color, var(--pw-accent)) 45%,
+  #b4b4b4
+ );
+ --chip-bg: color-mix(
+  in srgb,
+  var(--hl-chip-color, var(--pw-accent)) 3%,
+  rgb(255 255 255 / 0.035)
+ );
+}
+.rich-text code.md-inline-code--file {
+ /* File names: the accent itself, softened 25% toward light grey, so the name
+    reads brighter than code words (45% accent into grey).
+    The folder part keeps its own color (.md-chip-dir). */
+ --chip-fg: color-mix(
+  in oklab,
+  var(--hl-chip-color, var(--pw-accent)) 75%,
+  #c8c8c8
+ );
+ --chip-bg: color-mix(
+  in srgb,
+  var(--hl-chip-color, var(--pw-accent)) 5%,
+  rgb(255 255 255 / 0.05)
+ );
+}
+.md-inline-code--file {
+ display: inline-flex;
+ align-items: center;
+ gap: 5px;
+ vertical-align: -2px;
+}
+.md-chip-icon {
+ flex: none;
+}
 .md-inline-code {
+ white-space: nowrap;
+}
+/* A long shell command (e.g. "node --test …") wraps instead of forcing
+   the pane wide; short tokens stay on one line. */
+.md-inline-code--wrap {
  white-space: break-spaces;
+}
+/* The directory part of a file chip (set on .md-inline-code--file by
+   RichText) stays muted; the basename inherits the chip's accent color
+   above like any other code token. */
+.md-chip-dir {
+ /* Folder part: 40% accent into white. */
+ color: color-mix(in oklab, var(--hl-chip-color, var(--pw-accent)) 40%, #fff);
+ opacity: 0.6;
+}
+.md-chip-punct,
+.md-chip-string {
+ color: inherit;
 }
 .rich-text pre {
  position: relative;

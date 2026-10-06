@@ -299,7 +299,9 @@ export function DockLayout({ onTabHost, onNewSession, panels, storageKey, maximi
               const index = (stripIds.indexOf(id) + (event.key === "ArrowRight" ? 1 : -1) + stripIds.length) % stripIds.length;
               setSelectedTab(stripIds[index]); onSessionActivate?.(panels.find(p => panelId(p) === stripIds[index])!.id);
               event.currentTarget.closest('[role="tablist"]')?.querySelectorAll<HTMLElement>('[role="tab"]')[index]?.focus();
-            }}><span className="session-tabstrip__logo" data-tone={panel.tone}><BackendLogo backend={panel.backend ?? ""} size={13} /></span><SessionTabHost id={panel.id} onHost={onTabHost} /></div>
+            }}>{panel.tone
+              ? <span className="session-tabstrip__status" data-tone={panel.tone} role="img" aria-label={{ running: "Working", done: "Finished, not opened", waiting: "Waiting for you" }[panel.tone] ?? panel.tone} />
+              : <span className="session-tabstrip__logo"><BackendLogo backend={panel.backend ?? ""} size={13} /></span>}<SessionTabHost id={panel.id} onHost={onTabHost} /></div>
           <button type="button" aria-label={`Close tab ${panel.title}`} onClick={() => {
             saveGroup(members.filter(member => member !== id)); onSessionClose?.(panel.id);
           }}>×</button>

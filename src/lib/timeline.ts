@@ -17,13 +17,19 @@ import { isSubagentTool } from "./subagents.ts";
  *  codex-agent.js `usageFrom`; pi writes it natively).
  */
 export interface MessageUsage {
+  messageId?: string;
   input: number;
   output: number;
   cacheRead?: number;
   cacheWrite?: number;
   reasoning?: number;
   totalTokens: number;
+  /** Explicit elapsed duration, never inferred from transcript row timestamps. */
+  durationMs?: number;
+  durationKind?: "api" | "turn";
   cost?: { total?: number };
+  /** A mid-run per-call count (Claude), replaced by the turn's ledger. */
+  provisional?: boolean;
 }
 
 export interface UserMessageVersion {
@@ -149,20 +155,34 @@ export function usageOfMessage(
   message: Record<string, unknown> | undefined,
 ): MessageUsage | undefined {
   const usage = asRecord(message?.usage);
-  const input = Number(usage.input);
-  const output = Number(usage.output);
+  const total = finiteOr(usage.totalTokens);
+  // zcode reports only a total; its split stays 0 so the card falls back to
+  // the "N tokens" label instead of dropping the turn.
+  const split = usage.input === undefined && usage.output === undefined && total !== undefined;
+  const input = split ? 0 : Number(usage.input);
+  const output = split ? 0 : Number(usage.output);
   if (!Number.isFinite(input) || !Number.isFinite(output)) return undefined;
   const cost = asRecord(usage.cost);
   const costTotal = Number(cost.total);
   return {
+    ...(typeof message?.id === "string" ? { messageId: message.id } : {}),
     input,
     output,
     cacheRead: finiteOr(usage.cacheRead),
     cacheWrite: finiteOr(usage.cacheWrite),
     reasoning: finiteOr(usage.reasoning),
-    totalTokens: finiteOr(usage.totalTokens) ?? input + output,
+    totalTokens: finiteOr(usage.totalTokens) ?? input + output + (finiteOr(usage.cacheRead) ?? 0) + (finiteOr(usage.cacheWrite) ?? 0),
+    durationMs: finiteOr(usage.durationMs),
+    ...(usage.durationKind === "api" || usage.durationKind === "turn" ? { durationKind: usage.durationKind } : {}),
     ...(Number.isFinite(costTotal) ? { cost: { total: costTotal } } : {}),
   };
+}
+
+function addUsage(prior: MessageUsage, usage: MessageUsage): MessageUsage {
+  return { ...prior, input: prior.input + usage.input, output: prior.output + usage.output,
+    cacheRead: (prior.cacheRead ?? 0) + (usage.cacheRead ?? 0),
+    cacheWrite: (prior.cacheWrite ?? 0) + (usage.cacheWrite ?? 0),
+    totalTokens: prior.totalTokens + usage.totalTokens };
 }
 
 function finiteOr(value: unknown): number | undefined {
@@ -207,6 +227,15 @@ function isGrokToolOutputLog(line: string): boolean {
 }
 
 /** Pull the human sentence out of a provider log or ACP throw. */
+/** A provider error that means "your sign-in is gone" -- the fix is in
+ *  Settings → Agents, not the `/login` the CLI suggests in a terminal the
+ *  user never opened. Narrow on purpose: a false hint is worse than none. */
+export function isAuthError(text: string): boolean {
+  return /\b(401|unauthori[sz]ed|not logged in|please (run )?\/login|log ?in again|invalid (api[ _-]?key|x-api-key|bearer token)|(oauth|access) token (has )?expired|authentication[_ ](failed|error))\b/i.test(
+    text,
+  );
+}
+
 export function readableAgentError(value: unknown): string {
   if (typeof value !== "string") return "";
   const raw = value
@@ -823,6 +852,7 @@ export class Timeline {
   hydrate(messages: SessionHistoryMessage[], state: SessionState) {
     const items: TimelineItem[] = [];
     const tools = new Map<string, number>();
+    const usages = new Map<string, MessageUsage>();
 
     for (
       let messageIndex = 0;
@@ -870,6 +900,13 @@ export class Timeline {
         // rework graph sums tokens without double-counting (tool-batch
         // messages have usage but no text).
         let usageLeft = usageOfMessage(message);
+        if (usageLeft?.messageId) {
+          const previous = usages.get(usageLeft.messageId);
+          if (previous) {
+            Object.assign(previous, usageLeft);
+            usageLeft = undefined;
+          } else usages.set(usageLeft.messageId, usageLeft);
+        }
         const stampUsage = (item: TimelineItem): TimelineItem => {
           if (!usageLeft) return item;
           (item as { usage?: MessageUsage }).usage = usageLeft;
@@ -1207,6 +1244,8 @@ export class Timeline {
       return;
     }
     if (event.type === "stderr") {
+      // Backend-log-only diagnostics (grok's CLI logs); appendBackendEvent kept them.
+      if (event.log) return;
       const raw = String(event.message ?? "");
       // Already retained by appendBackendEvent; unsupported plugin hooks
       // are CLI diagnostics, not a failed conversation.
@@ -1342,7 +1381,6 @@ export class Timeline {
       const error = readableAgentError(message.errorMessage);
       if (error) {
         this.appendNotice(error, "error");
-        return;
       }
       // Authoritative final text: if deltas were suppressed (retries / exhausted
       // accounts), message_end still carries the whole assistant message.
@@ -1403,6 +1441,11 @@ export class Timeline {
         if (finalText && !candidates.includes(`assistant-${streamKey}-0`))
           candidates.push(`assistant-${streamKey}-0`);
         this.updateItems((current) => {
+          const previous = usage.messageId && current.findIndex(item => "usage" in item && item.usage?.messageId === usage.messageId);
+          if (typeof previous === "number" && previous >= 0) {
+            current[previous] = { ...current[previous], usage } as TimelineItem;
+            return current;
+          }
           for (const id of candidates) {
             const index = current.findIndex((item) => item.id === id);
             if (index === -1) continue;
@@ -1499,6 +1542,58 @@ export class Timeline {
             : item,
         ),
       );
+      return;
+    }
+
+    if (event.type === "usage_progress") {
+      // A model call just finished mid-run: bill it now, on the latest item,
+      // marked provisional so turn_result can swap in the exact ledger.
+      const usage = usageOfMessage({ usage: event.usage });
+      if (usage)
+        this.updateItems((current) => {
+          const index = current.findLastIndex((item) =>
+            item.kind === "assistant" || item.kind === "tool" || item.kind === "rationale");
+          if (index === -1) return current;
+          const item = current[index] as TimelineItem & { usage?: MessageUsage };
+          const prior = item.usage;
+          // A finished turn's ledger: never fold provisional counts into it
+          // (turn_result would strip both). This call waits for the ledger.
+          if (prior && !prior.provisional) return current;
+          current[index] = {
+            ...item,
+            usage: prior ? addUsage(prior, usage) : { ...usage, provisional: true },
+          } as TimelineItem;
+          return current;
+        });
+      return;
+    }
+
+    if (event.type === "turn_result") {
+      // Claude bills a whole turn here (its live message_end carries no
+      // usage: the per-block snapshots under-count output and repeat). Stamp
+      // the ledger on the turn's last item so usageSummaryOf sums it once.
+      // Drop this turn's provisional per-call stamps first: the ledger covers them.
+      const hadProvisional = this.items.some((item) => (item as { usage?: MessageUsage }).usage?.provisional);
+      if (hadProvisional)
+        this.updateItems((current) =>
+          current.map((item) => {
+            if (!(item as { usage?: MessageUsage }).usage?.provisional) return item;
+            const { usage: _provisional, ...rest } = item as TimelineItem & { usage?: MessageUsage };
+            return rest as TimelineItem;
+          }),
+        );
+      const usage = usageOfMessage({ usage: event.usage });
+      if (usage)
+        this.updateItems((current) => {
+          const index = current.findLastIndex((item) =>
+            item.kind === "assistant" || item.kind === "tool" || item.kind === "rationale");
+          if (index === -1) return current;
+          const item = current[index] as TimelineItem & { usage?: MessageUsage };
+          // A turn that produced no new item (an early error) adds to the last one's bill.
+          const prior = item.usage;
+          current[index] = { ...item, usage: prior ? addUsage(prior, usage) : usage } as TimelineItem;
+          return current;
+        });
       return;
     }
 

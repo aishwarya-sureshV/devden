@@ -62,21 +62,30 @@ export function useUsageRefresh({
           tab.sessionPath ?? timeline.state?.sessionFile,
         )
         .then((result) => {
-          setProviderUsage(result.ok ? result.usage : null);
+          // A backend switch dropped this request: its numbers are the old agent's.
+          if (usageRequestRef.current === request)
+            setProviderUsage(result.ok ? result.usage : null);
           return result.ok;
         })
         .catch(() => {
-          setProviderUsage(null);
+          if (usageRequestRef.current === request) setProviderUsage(null);
           return false;
         })
         .finally(() => {
-          usageRequestRef.current = null;
+          if (usageRequestRef.current === request) usageRequestRef.current = null;
         });
       usageRequestRef.current = request;
       return request;
     },
     [tab.backend, tab.key, tab.sessionPath, timeline],
   );
+
+  // Declared before the poll effect so it runs first: a new backend must not
+  // join the old backend's in-flight request or show its quota meanwhile.
+  useEffect(() => {
+    usageRequestRef.current = null;
+    setProviderUsage(null);
+  }, [tab.backend, tab.key]);
 
   // The percentages lag the failure (the poll runs every 30-60s), so ask now
   // that it has landed rather than showing the banner with stale numbers.

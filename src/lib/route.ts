@@ -45,7 +45,7 @@ export interface SessionRoute {
   steps: RouteStep[];
 }
 
-const BACKENDS: AgentBackend[] = ["pi", "claude", "grok", "codex"];
+const BACKENDS: AgentBackend[] = ["pi", "claude", "grok", "codex", "zcode"];
 
 export function emptyRoute(): SessionRoute {
   return { enabled: false, template: null, steps: [] };

@@ -62,7 +62,7 @@ export function SubagentCard({
     );
   }
   const model: ToolRowModel = {
-    verb: "agent",
+    verb: item.name === "prosecutor" ? "prosecute" : "agent",
     accent: true,
     tag: "",
     prefix: "",

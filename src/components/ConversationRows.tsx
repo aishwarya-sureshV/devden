@@ -10,7 +10,7 @@ import { type ContextUsage, compactTokens } from "../lib/sessionMetrics";
 import { type SubagentRun, isSubagentTool } from "../lib/subagents";
 import type { RewindFilesResult } from "../lib/api";
 import { IconHistory, IconPencil, IconFork, ModelName } from "./icons";
-import type { TimelineItem } from "../lib/timeline";
+import { isAuthError, type TimelineItem } from "../lib/timeline";
 import type { ToolFileView } from "../lib/toolCards";
 import { SubagentCard } from "./SubagentCard";
 import { ToolCard } from "./ToolCard";
@@ -350,7 +350,12 @@ export const TimelineRow = memo(function TimelineRow({
     return item.detail ? (
       <CompactedNotice text={item.text} tone={item.tone} detail={item.detail} />
     ) : (
-      <div className={`notice notice--${item.tone}`}>{item.text}</div>
+      <div className={`notice notice--${item.tone}`}>
+        {item.text}
+        {item.tone === "error" && isAuthError(item.text) && (
+          <> Reconnect this agent in Settings → Agents.</>
+        )}
+      </div>
     );
   if (item.kind === "terminal")
     return (

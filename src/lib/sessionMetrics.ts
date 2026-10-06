@@ -60,10 +60,10 @@ export interface UsageSummary {
    *  Present only when a provider actually reported cache fields; pi reports
    *  them per usage record, grok/codex servers always normalize them in. */
   cacheHitPercent?: number;
-  /** output / summed turn duration (user message → last item of that turn).
-   *  ponytail: includes failed turns' time, so the rate is a floor; per-turn
-   *  timing would need turn ids the timeline doesn't keep. */
+  cacheReported?: boolean;
+  /** Output / explicitly measured duration; absent when timing is incomplete. */
   tokensPerSec?: number;
+  durationKind?: "api" | "turn";
 }
 
 /** One provider ledger (Grok's usage.json, already summed across turns). */
@@ -73,6 +73,7 @@ export function usageSummaryFromCounts(usage: {
   cacheRead?: number;
   cacheWrite?: number;
   durationMs?: number;
+  durationKind?: "api" | "turn";
 }): UsageSummary | null {
   const input = usage.input || 0;
   const output = usage.output || 0;
@@ -87,10 +88,12 @@ export function usageSummaryFromCounts(usage: {
     output,
     cached,
     cacheWrite,
+    cacheReported: reported,
     ...(reported && cacheable > 0
       ? { cacheHitPercent: (cached / cacheable) * 100 }
       : {}),
-    ...(output > 0 && seconds > 0 ? { tokensPerSec: output / seconds } : {}),
+    ...(output > 0 && seconds > 0 && Number.isFinite(seconds)
+      ? { tokensPerSec: output / seconds, durationKind: usage.durationKind ?? "api" } : {}),
   };
 }
 
@@ -102,10 +105,20 @@ export function usageSummaryFromCounts(usage: {
  */
 export function usageCutoff(items: TimelineItem[], pendingSince = 0): number {
   let since = 0;
+  // The cutoff in force before the first unsent switch: "Switched back"
+  // restores it (not 0 -- an earlier handoff still stands). A user message
+  // makes the switch real, so nothing is left to restore.
+  let restore: number | undefined;
   for (const item of items) {
+    if (item.kind === "user") restore = undefined;
     if (item.kind !== "notice") continue;
-    if (item.text.startsWith("Switched from ")) since = item.timestamp || 0;
-    else if (item.text.startsWith("Switched back to ")) since = 0;
+    if (item.text.startsWith("Switched from ")) {
+      restore ??= since;
+      since = item.timestamp || 0;
+    } else if (item.text.startsWith("Switched back to ")) {
+      since = restore ?? 0;
+      restore = undefined;
+    }
   }
   return Math.max(since, pendingSince || 0);
 }
@@ -130,34 +143,28 @@ export function usageSummaryOf(
   let cached = 0;
   let cacheWrite = 0;
   let cacheReported = false;
-  let turnSeconds = 0;
-  let turnStart: number | null = null;
-  let turnEnd: number | null = null;
+  let durationMs = 0;
+  let durationKind: "api" | "turn" | undefined;
+  let fullyTimed = true;
+  let fullyCached = true;
   for (const item of items) {
     if (since && usageStamp(item) < since) continue;
-    if (item.kind === "user") {
-      if (turnStart !== null)
-        turnSeconds += Math.max(0, (turnEnd ?? turnStart) - turnStart) / 1000;
-      turnStart = item.timestamp;
-      turnEnd = null;
-      continue;
-    }
-    if (turnStart !== null) {
-      // Tool items carry startedAt instead of timestamp.
-      const stamp = item.kind === "tool" ? item.startedAt : item.timestamp;
-      if (turnEnd === null || stamp > turnEnd) turnEnd = stamp;
-    }
     const usage = (item as { usage?: MessageUsage }).usage;
     if (!usage) continue;
     input += usage.input;
     output += usage.output;
     cached += usage.cacheRead ?? 0;
     cacheWrite += usage.cacheWrite ?? 0;
-    if (usage.cacheRead !== undefined || usage.cacheWrite !== undefined)
-      cacheReported = true;
+    const reported = usage.cacheRead !== undefined || usage.cacheWrite !== undefined;
+    cacheReported ||= reported;
+    fullyCached &&= reported;
+    if (usage.input || usage.output || usage.cacheRead || usage.cacheWrite) {
+      if (!(usage.durationMs! > 0) || !Number.isFinite(usage.durationMs) || !usage.durationKind ||
+          (durationKind && durationKind !== usage.durationKind)) fullyTimed = false;
+      durationKind ??= usage.durationKind;
+      durationMs += usage.durationMs || 0;
+    }
   }
-  if (turnStart !== null)
-    turnSeconds += Math.max(0, (turnEnd ?? turnStart) - turnStart) / 1000;
   if (!input && !output && !cached && !cacheWrite) return null;
   const cacheable = input + cached + cacheWrite;
   return {
@@ -165,11 +172,25 @@ export function usageSummaryOf(
     output,
     cached,
     cacheWrite,
-    ...(cacheReported && cacheable > 0
+    cacheReported: cacheReported && fullyCached,
+    ...(cacheReported && fullyCached && cacheable > 0
       ? { cacheHitPercent: (cached / cacheable) * 100 }
       : {}),
-    ...(output > 0 && turnSeconds > 0
-      ? { tokensPerSec: output / turnSeconds }
+    ...(fullyTimed && output > 0 && durationMs > 0
+      ? { tokensPerSec: output / (durationMs / 1000), durationKind }
       : {}),
   };
+}
+
+/** Labels retain reported zeroes; unknown cache fields stay absent. */
+export function formatUsageSummary(usage: UsageSummary, spend = ""): string {
+  return [
+    usage.cacheHitPercent == null ? "" : `${Math.round(usage.cacheHitPercent)}% cache hit`,
+    usage.tokensPerSec == null ? "" : `${usage.tokensPerSec.toFixed(1)} tok/s (${usage.durationKind ?? "api"})`,
+    `${compactTokens(usage.input)} input`,
+    `${compactTokens(usage.output)} output`,
+    usage.cacheReported ? `${compactTokens(usage.cached)} cached` : "",
+    usage.cacheWrite ? `${compactTokens(usage.cacheWrite)} cache write` : "",
+    spend,
+  ].filter(Boolean).join(" · ");
 }

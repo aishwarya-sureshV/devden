@@ -60,6 +60,7 @@ import { messagesFromClaudeLog } from "./claude-agent.js";
 import { codexRequest } from "./codex-app-server.js";
 import { readCodexLog } from "./codex-history.js";
 import { threadIdFromPath } from "./codex-agent.js";
+import { zcodeRequest } from "./zcode-app-server.js";
 
 // Every listing re-read every session file end to end (~175MB of Claude
 // JSONL here, ~0.8s per call, and the sidebar asks for recent + archived on
@@ -202,6 +203,7 @@ export async function listSessions({ archived = false, backend = "pi" } = {}) {
   const result = await (backend === "claude" ? listClaudeSessions({ archived })
     : backend === "grok" ? listGrokSessions({ archived })
     : backend === "codex" ? listCodexSessions({ archived })
+    : backend === "zcode" ? listZcodeSessions({ archived })
     : listPiSessions({ archived }));
   result.sessions = result.sessions.filter((session) => {
     if (paths.has(session.path)) return true;
@@ -210,6 +212,40 @@ export async function listSessions({ archived = false, backend = "pi" } = {}) {
     return true;
   });
   return result;
+}
+
+// ZCode persists sessions in its own sqlite index, so listing goes through
+// `session/list` on a shared agent-server connection (codex does the same
+// via codexRequest). Subagent/workflow children stay out of the sidebar.
+async function listZcodeSessions({ archived = false } = {}) {
+  try {
+    const result = await zcodeRequest("session/list", {
+      includeArchived: archived,
+      limit: 100,
+    });
+    const sessions = (result?.sessions ?? [])
+      .filter((session) => session?.sessionKind === "interactive")
+      .filter((session) => Boolean(String(session.title ?? "").trim()))
+      .map((session) => ({
+        path: `zcode:${session.sessionId}`,
+        backend: "zcode",
+        name: String(session.title).trim(),
+        cwd: session.workspace?.workspacePath ?? "",
+        createdAt: Number(session.createdAt ?? 0),
+        modifiedAt: Number(session.updatedAt ?? session.createdAt ?? 0),
+        messageCount: 0,
+        firstPrompt: undefined,
+        lastModel: session.model?.modelId,
+        models: session.model?.modelId ? [session.model.modelId] : [],
+      }))
+      .filter((session) => session.modifiedAt > 0)
+      .sort((a, b) => b.modifiedAt - a.modifiedAt);
+    return { ok: true, sessions };
+  } catch (error) {
+    // CLI missing, logged out, or agent-server failed to start: the sidebar
+    // just shows nothing for this backend.
+    return { ok: false, error: String(error?.message ?? error), sessions: [] };
+  }
 }
 
 async function listPiSessions({ archived = false } = {}) {
@@ -368,10 +404,10 @@ async function readGrokResumeSession(sessionDir) {
         typeof summary.current_model_id === "string"
           ? summary.current_model_id
           : undefined,
-      // Grok models always live under the grok-sdk provider, so the model
-      // picker can restore the id on a reopened session.
+      // Sessions here are grok CLI ones, whose models live under the "grok"
+      // provider ("grok-sdk" is pi's provider for the same models).
       lastModelProvider:
-        typeof summary.current_model_id === "string" ? "grok-sdk" : undefined,
+        typeof summary.current_model_id === "string" ? "grok" : undefined,
       models:
         typeof summary.current_model_id === "string"
           ? [summary.current_model_id]

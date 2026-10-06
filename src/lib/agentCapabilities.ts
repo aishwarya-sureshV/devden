@@ -19,6 +19,7 @@ export type AgentCapabilities = {
   setSessionName: boolean;
   rewindFiles: boolean;
   warmStart: boolean;
+  setContextWindow: boolean;
 };
 
 const DEFAULT_CAPABILITIES: AgentCapabilities = {
@@ -36,6 +37,7 @@ const DEFAULT_CAPABILITIES: AgentCapabilities = {
   setSessionName: false,
   rewindFiles: false,
   warmStart: false,
+  setContextWindow: false,
 };
 
 const BACKEND_CAPABILITIES: Record<BuiltinBackend, AgentCapabilities> = {
@@ -43,6 +45,7 @@ const BACKEND_CAPABILITIES: Record<BuiltinBackend, AgentCapabilities> = {
     ...DEFAULT_CAPABILITIES,
     contextUsage: true,
     setSessionName: true,
+    setContextWindow: true,
   },
   claude: {
     ...DEFAULT_CAPABILITIES,
@@ -66,6 +69,20 @@ const BACKEND_CAPABILITIES: Record<BuiltinBackend, AgentCapabilities> = {
     contextUsage: true,
     settings: true,
     mcp: true,
+    setContextWindow: true,
+  },
+  zcode: {
+    ...DEFAULT_CAPABILITIES,
+    steer: false,
+    fork: false,
+    truncate: false,
+    compact: false,
+    compactInstructions: false,
+    queue: true,
+    subagents: false,
+    contextUsage: false,
+    setSessionName: false,
+    warmStart: false,
   },
 };
 

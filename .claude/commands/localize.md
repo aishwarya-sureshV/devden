@@ -8,8 +8,8 @@ allowed-tools: Bash, Read, Grep
 
 Symptom: **$ARGUMENTS**
 
-This is Agentless phase 1. pi-web is ~48 tracked files; the entire file tree plus
-every grep hit fits in one tool result. Localization here should cost **one bash
+This is Agentless phase 1. Use the repo map in CLAUDE.md plus one batched grep
+to narrow candidates. Localization here should cost **one bash
 call and one commitment**, not an exploration session.
 
 The failure mode this command exists to prevent: opening `Conversation.tsx`

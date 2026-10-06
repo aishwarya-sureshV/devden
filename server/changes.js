@@ -124,7 +124,7 @@ export function beginTurn({ sessionKey, cwd, label = "", snapshot, takeSnapshot 
   const snap =
     snapshot ??
     (takeSnapshot
-      ? takeSnapshot(context.cwd, label).catch(() => ({ ok: false }))
+      ? takeSnapshot(context.cwd, label, context.sessionPath || sessionKey).catch(() => ({ ok: false }))
       : Promise.resolve({ ok: false }));
   active.set(sessionKey, {
     sessionKey,

@@ -842,15 +842,15 @@ const CLOUD_SUFFIX = /\s*(?:☁|\(cloud\)|:cloud)$/i;
  * A model name with any cloud marker drawn as the cloud glyph, and the
  * family word before the version in caps ("glm 5.3 flash" → "GLM 5.3 flash").
  */
-export function ModelName({ name }: { name: string }) {
+export function ModelName({ name, truncate = false }: { name: string; truncate?: boolean }) {
   const cloud = CLOUD_SUFFIX.test(name);
   const base = name
     .replace(CLOUD_SUFFIX, "")
     .replace(/^\S+(?= \d)/, (family) => family.toUpperCase());
-  if (!cloud) return <>{base}</>;
+  if (!cloud) return <>{truncate ? <span className="model-name-text">{base}</span> : base}</>;
   return (
     <>
-      {base}
+      {truncate ? <span className="model-name-text">{base}</span> : base}
       <span className="model-cloud" title="Cloud model">
         <IconCloudModel />
       </span>
@@ -900,6 +900,16 @@ function LogoClaude({ size }: { size: number }) {
   );
 }
 
+function LogoZcode({ size }: { size: number }) {
+  // Official Z.ai mark (z-cdn.chatglm.cn/z-ai/static/logo.svg), its own colors.
+  return (
+    <svg viewBox="1.49 1.49 27.02 27.02" width={size} height={size} aria-hidden>
+      <path fill="#2D2D2D" d="M24.51 28.51H5.49c-2.21 0-4-1.79-4-4V5.49c0-2.21 1.79-4 4-4h19.03c2.21 0 4 1.79 4 4v19.03c0 2.2-1.8 4-4.01 4Z" />
+      <path fill="#FFFFFF" d="M15.47 7.1l-1.3 1.85c-.2.29-.54.47-.9.47h-7.1V7.09Z M24.3 7.1 13.14 22.91H5.7L16.86 7.1Z M14.53 22.91l1.31-1.86c.2-.29.54-.47.9-.47h7.09v2.33Z" />
+    </svg>
+  );
+}
+
 function LogoGrok({ size }: { size: number }) {
   // Grok mark (lobehub icons); xAI is monochrome, so it follows the text color.
   return (
@@ -936,6 +946,7 @@ export function BackendLogo({
   if (backend === "claude") return <LogoClaude size={size} />;
   if (backend === "grok") return <LogoGrok size={size} />;
   if (backend === "codex") return <LogoCodex size={size} />;
+  if (backend === "zcode") return <LogoZcode size={size} />;
   if (backend === "pi") return <LogoPi size={size} />;
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" aria-hidden="true">
@@ -944,4 +955,133 @@ export function BackendLogo({
       </text>
     </svg>
   );
+}
+
+/** Blinking eye pair for the mascots below (SMIL, staggered per kind). */
+function Blink({
+  x,
+  y,
+  r,
+  dur,
+}: {
+  x: number;
+  y: number;
+  r: number;
+  dur: string;
+}) {
+  return (
+    <>
+      <ellipse cx={x} cy={y} rx={r} ry={r} fill="#FFFFFF">
+        <animate
+          attributeName="ry"
+          values={`${r};${r};${r * 0.08};${r}`}
+          keyTimes="0;0.9;0.95;1"
+          dur={dur}
+          repeatCount="indefinite"
+        />
+      </ellipse>
+      <ellipse cx={x + r * 0.1} cy={y + r * 0.15} rx={r / 2} ry={r / 2} fill="#111111">
+        <animate
+          attributeName="ry"
+          values={`${r / 2};${r / 2};${r * 0.04};${r / 2}`}
+          keyTimes="0;0.9;0.95;1"
+          dur={dur}
+          repeatCount="indefinite"
+        />
+      </ellipse>
+    </>
+  );
+}
+
+/**
+ * First-run mascots: each agent's real mark with blinking eyes, as drawn in
+ * the onboarding design. Claude Code keeps its own pixel eyes; Codex has
+ * none, so it just pulses nothing — it stays plain.
+ */
+export function AgentMascot({
+  kind,
+  size = 24,
+}: {
+  kind: string;
+  size?: number;
+}) {
+  if (kind === "claude")
+    return (
+      <svg viewBox="0 -7 18 18" width={size} height={size} role="img" aria-label="Claude Code" shapeRendering="crispEdges">
+        <path
+          fill="#D77757"
+          d="M1 4h1v2h-1ZM2 4h1v2h-1ZM3 0h1v2h-1ZM3 2h1v2h-1ZM3 4h1v2h-1ZM3 6h1v2h-1ZM4 0h1v2h-1ZM4 2h1v2h-1ZM4 4h1v2h-1ZM4 6h1v2h-1ZM4 8h1v2h-1ZM5 0h1v2h-1ZM5 2h1v2h-1ZM5 4h1v2h-1ZM5 6h1v2h-1ZM6 0h1v2h-1ZM6 2h1v2h-1ZM6 4h1v2h-1ZM6 6h1v2h-1ZM6 8h1v2h-1ZM7 0h1v2h-1ZM7 2h1v2h-1ZM7 4h1v2h-1ZM7 6h1v2h-1ZM8 0h1v2h-1ZM8 2h1v2h-1ZM8 4h1v2h-1ZM8 6h1v2h-1ZM9 0h1v2h-1ZM9 2h1v2h-1ZM9 4h1v2h-1ZM9 6h1v2h-1ZM10 0h1v2h-1ZM10 2h1v2h-1ZM10 4h1v2h-1ZM10 6h1v2h-1ZM11 0h1v2h-1ZM11 2h1v2h-1ZM11 4h1v2h-1ZM11 6h1v2h-1ZM11 8h1v2h-1ZM12 0h1v2h-1ZM12 2h1v2h-1ZM12 4h1v2h-1ZM12 6h1v2h-1ZM13 0h1v2h-1ZM13 2h1v2h-1ZM13 4h1v2h-1ZM13 6h1v2h-1ZM13 8h1v2h-1ZM14 0h1v2h-1ZM14 2h1v2h-1ZM14 4h1v2h-1ZM14 6h1v2h-1ZM15 4h1v2h-1ZM16 4h1v2h-1Z"
+        />
+        <rect x="5" y="2" width="1" height="2" fill="#141413">
+          <animate attributeName="height" values="2;2;0.2;2" keyTimes="0;0.9;0.95;1" dur="4.2s" repeatCount="indefinite" />
+          <animate attributeName="y" values="2;2;2.9;2" keyTimes="0;0.9;0.95;1" dur="4.2s" repeatCount="indefinite" />
+        </rect>
+        <rect x="12" y="2" width="1" height="2" fill="#141413">
+          <animate attributeName="height" values="2;2;0.2;2" keyTimes="0;0.9;0.95;1" dur="4.2s" repeatCount="indefinite" />
+          <animate attributeName="y" values="2;2;2.9;2" keyTimes="0;0.9;0.95;1" dur="4.2s" repeatCount="indefinite" />
+        </rect>
+      </svg>
+    );
+  if (kind === "codex")
+    return (
+      <svg viewBox="0 0 24 24" width={size} height={size} role="img" aria-label="Codex">
+        <defs>
+          <linearGradient id="dd-codex-g" gradientUnits="userSpaceOnUse" x1="12" x2="12" y1="3" y2="21">
+            <stop offset="0" stopColor="#B1A7FF" />
+            <stop offset=".5" stopColor="#7A9DFF" />
+            <stop offset="1" stopColor="#3941FF" />
+          </linearGradient>
+        </defs>
+        <path
+          fill="#FFFFFF"
+          d="M19.503 0H4.496A4.496 4.496 0 000 4.496v15.007A4.496 4.496 0 004.496 24h15.007A4.496 4.496 0 0024 19.503V4.496A4.496 4.496 0 0019.503 0z"
+        />
+        <path
+          fill="url(#dd-codex-g)"
+          d="M9.064 3.344a4.578 4.578 0 012.285-.312c1 .115 1.891.54 2.673 1.275.01.01.024.017.037.021a.09.09 0 00.043 0 4.55 4.55 0 013.046.275l.047.022.116.057a4.581 4.581 0 012.188 2.399c.209.51.313 1.041.315 1.595a4.24 4.24 0 01-.134 1.223.123.123 0 00.03.115c.594.607.988 1.33 1.183 2.17.289 1.425-.007 2.71-.887 3.854l-.136.166a4.548 4.548 0 01-2.201 1.388.123.123 0 00-.081.076c-.191.551-.383 1.023-.74 1.494-.9 1.187-2.222 1.846-3.711 1.838-1.187-.006-2.239-.44-3.157-1.302a.107.107 0 00-.105-.024c-.388.125-.78.143-1.204.138a4.441 4.441 0 01-1.945-.466 4.544 4.544 0 01-1.61-1.335c-.152-.202-.303-.392-.414-.617a5.810 5.810 0 01-.37-.961 4.582 4.582 0 01-.014-2.298.124.124 0 00.006-.056.085.085 0 00-.027-.048 4.467 4.467 0 01-1.034-1.651 3.896 3.896 0 01-.251-1.192 5.189 5.189 0 01.141-1.6c.337-1.112.982-1.985 1.933-2.618.212-.141.413-.251.601-.33.215-.089.43-.164.646-.227a.098.098 0 00.065-.066 4.51 4.51 0 01.829-1.615 4.535 4.535 0 011.837-1.388zm3.482 10.565a.637.637 0 000 1.272h3.636a.637.637 0 100-1.272h-3.636zM8.462 9.23a.637.637 0 00-1.106.631l1.272 2.224-1.266 2.136a.636.636 0 101.095.649l1.454-2.455a.636.636 0 00.005-.64L8.462 9.23z"
+        />
+      </svg>
+    );
+  if (kind === "grok")
+    return (
+      <svg viewBox="0 0 24 24" width={size} height={size} role="img" aria-label="Grok">
+        <path
+          fill="#F3EFE8"
+          fillRule="evenodd"
+          d="M9.27 15.29l7.978-5.897c.391-.29.95-.177 1.137.272.98 2.369.542 5.215-1.41 7.169-1.951 1.954-4.667 2.382-7.149 1.406l-2.711 1.257c3.889 2.661 8.611 2.003 11.562-.953 2.341-2.344 3.066-5.539 2.388-8.42l.006.007c-.983-4.232.242-5.924 2.75-9.383.06-.082.12-.164.179-.248l-3.301 3.305v-.01L9.267 15.292M7.623 16.723c-2.792-2.67-2.31-6.801.071-9.184 1.761-1.763 4.647-2.483 7.166-1.425l2.705-1.25a7.808 7.808 0 00-1.829-1A8.975 8.975 0 005.984 5.83c-2.533 2.536-3.33 6.436-1.962 9.764 1.022 2.487-.653 4.246-2.34 6.022-.599.63-1.199 1.259-1.682 1.925l7.62-6.815"
+        />
+        <Blink x={8.6} y={10.6} r={1.25} dur="5s" />
+        <Blink x={11.6} y={8.4} r={1.25} dur="5s" />
+      </svg>
+    );
+  if (kind === "pi")
+    return (
+      <svg viewBox="115 115 570 570" width={size} height={size} role="img" aria-label="pi">
+        <path fill="#F09082" d="M165.29 165.29H517.36V400H400V282.65H165.29Z" />
+        <path fill="#4D9ABF" d="M165.29 282.65H282.65V400H400V517.36H282.65V634.72H165.29Z" />
+        <path fill="#F1BE58" d="M517.36 400H634.72V634.72H517.36Z" />
+        <Blink x={270} y={224} r={30} dur="3.4s" />
+        <Blink x={410} y={224} r={30} dur="3.4s" />
+      </svg>
+    );
+  if (kind === "zcode")
+    return (
+      <svg viewBox="1.49 1.49 27.02 27.02" width={size} height={size} role="img" aria-label="zcode">
+        <path fill="#2D2D2D" d="M24.51 28.51H5.49c-2.21 0-4-1.79-4-4V5.49c0-2.21 1.79-4 4-4h19.03c2.21 0 4 1.79 4 4v19.03c0 2.2-1.8 4-4.01 4Z" />
+        <path fill="#FFFFFF" d="M15.47 7.1l-1.3 1.85c-.2.29-.54.47-.9.47h-7.1V7.09Z M24.3 7.1 13.14 22.91H5.7L16.86 7.1Z M14.53 22.91l1.31-1.86c.2-.29.54-.47.9-.47h7.09v2.33Z" />
+        <Blink x={8.2} y={13} r={1.1} dur="4.4s" />
+        <Blink x={11} y={13} r={1.1} dur="4.4s" />
+      </svg>
+    );
+  if (kind === "opencode")
+    return (
+      <svg viewBox="0 0 512 512" width={size} height={size} role="img" aria-label="opencode">
+        <rect width="512" height="512" rx="48" fill="#131010" />
+        <path d="M320 224V352H192V224H320Z" fill="#5A5858" />
+        <path fillRule="evenodd" d="M384 416H128V96H384V416ZM320 160H192V352H320V160Z" fill="#FFFFFF" />
+        <Blink x={228} y={192} r={18} dur="4.6s" />
+        <Blink x={284} y={192} r={18} dur="4.6s" />
+      </svg>
+    );
+  return <BackendLogo backend={kind} size={size} />;
 }

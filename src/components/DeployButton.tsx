@@ -20,6 +20,7 @@ type Variant = "local" | "cloud";
 const IDLE_POLL_MS = 15_000;
 const ACTIVE_POLL_MS = 1_500;
 const RESTART_TIMEOUT_MS = 120_000;
+const START_TIMEOUT_MS = 90_000;
 const TOAST_MS = 6_000;
 
 function formatAgo(ts?: number | null): string {
@@ -98,11 +99,28 @@ export function DeployButton({ cwd }: { cwd: string }) {
   useEffect(() => {
     if (phase !== "deploying") return;
     let cancelled = false;
+    let inFlight = false;
+    let started = false;
     const timer = setInterval(async () => {
-      const next = await fetchStatus();
-      if (cancelled || !mountedRef.current || !next?.ok) return;
+      // Checked on the client clock, not on a response: a stalled server
+      // never answers, and the click's POST may never have reached it.
+      if (!started && Date.now() - (deployStartedAt ?? 0) > START_TIMEOUT_MS) {
+        setPhase("failed");
+        setMessage("The server didn't confirm the deploy started — it may be overloaded. Retry.");
+        return;
+      }
+      // A loaded server takes longer than the interval to answer; stacking
+      // requests on it only makes it slower.
+      if (inFlight) return;
+      inFlight = true;
+      const next = await fetchStatus().finally(() => (inFlight = false));
+      if (cancelled || !mountedRef.current) return;
+      if (!next?.ok) return;
       setStatus(next);
       const last = next.last;
+      started ||=
+        next.deploying ||
+        (last?.startedAt ?? 0) >= (deployStartedAt ?? 0) - 2000;
       if (next.stale) {
         setPhase("failed");
         setMessage("Deploy timed out — check the backend log.");
@@ -141,9 +159,12 @@ export function DeployButton({ cwd }: { cwd: string }) {
     if (phase !== "restarting") return;
     let cancelled = false;
     const deadline = Date.now() + RESTART_TIMEOUT_MS;
+    let inFlight = false;
     const timer = setInterval(async () => {
+      if (inFlight) return;
+      inFlight = true;
       try {
-        const health = await api.health();
+        const health = await api.health().finally(() => (inFlight = false));
         if (cancelled || !mountedRef.current || !health?.ok) return;
         const bootedAfterDeploy =
           (health.bootMs ?? 0) > (deployStartedAt ?? 0) ||
@@ -173,35 +194,32 @@ export function DeployButton({ cwd }: { cwd: string }) {
   const startDeploy = useCallback(
     async (which: Variant) => {
       if (phase === "deploying" || phase === "restarting") return;
+      // Go busy at once and let the status poll decide the outcome. A busy
+      // server answers the POST after its 10s timeout, and a self-deploy can
+      // kill the server before the response is written — both used to land
+      // on "failed" with no polling, so a deploy that actually succeeded
+      // never restarted the page.
+      const startedAt = Date.now();
+      setVariant(which);
+      setDeployStartedAt(startedAt);
+      setMessage("");
+      setPhase("deploying");
       try {
         const result = await api.deploy(which, cwd);
-        if (!result.ok) {
-          // 409: another pane (or a click before the 15s idle poll caught
-          // up) already started one — follow it instead of failing.
-          const next = await fetchStatus();
-          if (next?.ok && next.deploying) {
-            setStatus(next);
-            setVariant(next.last?.mode === "cloud" ? "cloud" : "local");
-            setDeployStartedAt(next.last?.startedAt ?? Date.now());
-            setMessage("A deploy is already running — following it.");
-            setPhase("deploying");
-            return;
-          }
-          setVariant(which);
-          setPhase("failed");
-          setMessage(result.error || "Failed to start deploy.");
+        if (result.ok || !mountedRef.current) return;
+        // 409: another pane already started one — follow it instead.
+        const next = await fetchStatus();
+        if (next?.ok && next.deploying) {
+          setVariant(next.last?.mode === "cloud" ? "cloud" : "local");
+          setDeployStartedAt(next.last?.startedAt ?? startedAt);
+          setMessage("A deploy is already running — following it.");
           return;
         }
-        setVariant(which);
-        setDeployStartedAt(Date.now());
-        setMessage("");
-        setPhase("deploying");
-      } catch (error) {
-        setVariant(which);
         setPhase("failed");
-        setMessage(
-          error instanceof Error ? error.message : "Failed to start deploy.",
-        );
+        setMessage(result.error || "Failed to start deploy.");
+      } catch {
+        // Timeout or dropped connection: the server may still act on it.
+        // The deploying poll settles it, or gives up after START_TIMEOUT_MS.
       }
     },
     [cwd, phase, fetchStatus],

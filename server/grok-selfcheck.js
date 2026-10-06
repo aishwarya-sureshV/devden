@@ -15,9 +15,9 @@
  * Usage: node server/grok-selfcheck.js   (or: npm run check:grok)
  */
 import { execFileSync } from "node:child_process";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { GrokAgentPool } from "./grok-agent.js";
 
 const results = [];
@@ -101,22 +101,26 @@ async function main() {
 
     // 5. Model switching
     const c5 = check(
-      "setModel() succeeds via session/set_mode",
-      "connection.setSessionMode({modeId: <model id>}) -- setSessionModel is known broken, set_mode is the workaround",
+      "setModel() lands in grok's summary.json",
+      "session/set_config_option configId=model -- set_mode replies {} but is ignored",
     );
     const otherModel = models.models?.find((m) => m.id !== start.state.model?.id) ?? models.models?.[0];
     if (otherModel) {
-      const sm = await agent.setModel("grok-sdk", otherModel.id);
-      if (sm.ok) c5.pass(`switched to ${otherModel.id}`);
-      else c5.fail(sm.error);
+      const sm = await agent.setModel("grok", otherModel.id);
+      // sm.ok alone is a false pass: grok acks ignored requests with {}.
+      const summary = sm.ok
+        ? await readFile(join(dirname(agent.sessionFile), "summary.json"), "utf8").then(JSON.parse, () => ({}))
+        : {};
+      if (summary.current_model_id === otherModel.id) c5.pass(`switched to ${otherModel.id}`);
+      else c5.fail(sm.error ?? `summary.json still says ${summary.current_model_id}`);
     } else {
       c5.fail("no alternate model available to test switching");
     }
 
     // 6. Thinking-level switching
     const c6 = check(
-      "setThinkingLevel() succeeds via session/set_mode",
-      "connection.setSessionMode({modeId: <effort id>}) -- same set_mode call, different id namespace",
+      "setThinkingLevel() succeeds",
+      "session/set_config_option configId=reasoning_effort",
     );
     const level = levels.levels?.[0];
     if (level) {

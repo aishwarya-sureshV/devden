@@ -227,17 +227,3 @@ export function liveFailures(entries, cutTimestamp) {
     .sort((a, b) => b.count - a.count);
 }
 
-/** The message devden auto-sends after a compaction ate live constraints. */
-export function buildReassertion(dropped) {
-  const lines = dropped
-    .map(
-      (instruction) =>
-        `- ${instructionSnippet(instruction.text ?? instruction.fullText)}`,
-    )
-    .join("\n");
-  return [
-    `[context guard] The compaction summary above no longer mentions the standing instructions below. They remain in force:`,
-    lines,
-    `Acknowledge briefly and keep following them for the rest of the session.`,
-  ].join("\n");
-}

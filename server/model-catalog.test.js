@@ -24,11 +24,17 @@ test("every backend shares lookups, expires, retries outages, and invalidates af
     assert.equal(calls, 1);
     assert.equal(first, shared);
     t.mock.timers.tick(MODEL_CATALOG_TTL_MS);
+    // Expired: answers stale at once, refreshes behind it.
+    assert.equal((await cachedModels(agent)).models[0].id, "new-1");
+    await new Promise(setImmediate);
     assert.equal((await cachedModels(agent)).models[0].id, "new-2");
     offline = true;
     t.mock.timers.tick(MODEL_CATALOG_TTL_MS);
     assert.equal((await cachedModels(agent)).models[0].id, "new-2");
+    await new Promise(setImmediate);
     offline = false;
+    assert.equal((await cachedModels(agent)).models[0].id, "new-2");
+    await new Promise(setImmediate);
     assert.equal((await cachedModels(agent)).models[0].id, "new-4");
     clearModelCatalogs();
     assert.equal((await cachedModels(agent)).models[0].id, "new-5");

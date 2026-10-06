@@ -16,6 +16,8 @@ const assistant = (
     cacheRead?: number;
     cacheWrite?: number;
     totalTokens: number;
+    durationMs?: number;
+    durationKind?: "api" | "turn";
   },
 ): TimelineItem => ({
   id,
@@ -89,6 +91,18 @@ test("switching back before a message restores the original agent's usage", () =
   assert.equal(usageCutoff([], 9_000), 9_000);
 });
 
+test("switching back keeps an earlier, already-used handoff", () => {
+  const notice = (id: string, text: string, timestamp: number) =>
+    ({ id, kind: "notice" as const, text, tone: "info" as const, timestamp });
+  const user = { id: "u", kind: "user" as const, text: "go", timestamp: 2_000 };
+  // Claude → Codex (used) → Claude → back to Codex: Codex owns usage since 1_000.
+  assert.equal(usageCutoff([notice("a", "Switched from Claude to Codex.", 1_000), user,
+    notice("b", "Switched from Codex to Claude.", 3_000), notice("c", "Switched back to Codex.", 4_000)]), 1_000);
+  // Codex → Grok → Claude → back to Codex, nothing sent: all Codex's.
+  assert.equal(usageCutoff([notice("a", "Switched from Codex to Grok.", 1_000),
+    notice("b", "Switched from Codex to Claude.", 2_000), notice("c", "Switched back to Codex.", 3_000)]), 0);
+});
+
 test("a backend switch does not keep the previous agent's usage", () => {
   const summary = usageSummaryOf(
     [
@@ -134,6 +148,8 @@ test("sums across turns and never double-counts shared messages", () => {
       cacheRead: 0,
       cacheWrite: 0,
       totalTokens: 140,
+      durationMs: 5000,
+      durationKind: "api",
     }),
     {
       id: "t1",
@@ -144,7 +160,7 @@ test("sums across turns and never double-counts shared messages", () => {
       output: "",
       status: "done",
       startedAt: 5000,
-      usage: { input: 50, output: 10, totalTokens: 60 },
+      usage: { input: 50, output: 10, totalTokens: 60, durationMs: 1000, durationKind: "api" },
     },
     {
       id: "u2",
@@ -152,11 +168,11 @@ test("sums across turns and never double-counts shared messages", () => {
       text: "more",
       timestamp: 8000,
     },
-    assistant("a2", 12000, { input: 30, output: 60, totalTokens: 90 }),
+    assistant("a2", 12000, { input: 30, output: 60, totalTokens: 90, durationMs: 3000, durationKind: "api" }),
   ]);
   assert.equal(summary?.input, 180);
   assert.equal(summary?.output, 110);
-  // Turn lengths: 5s (0→last tool item) + 4s (8→12 at scan end) = 9s.
+  // Rate uses the reported model time (5s + 1s + 3s), not wall-clock gaps.
   assert.equal(summary?.tokensPerSec, 110 / 9);
 });
 

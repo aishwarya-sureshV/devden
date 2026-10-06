@@ -19,11 +19,10 @@
  *
  * Session resume uses ACP's `loadSession` (confirmed working: grok replays
  * full history as session/update notifications on a fresh connection given
- * just the sessionId). Model and reasoning-effort switching both go through
- * ACP's standard `session/set_mode` -- grok exposes both models and effort
- * levels as flat "mode" options (confirmed empirically; grok's own
- * setSessionModel method rejects the standard ACP request shape, but
- * setSessionMode accepts model ids and effort ids interchangeably).
+ * just the sessionId). Model and reasoning effort are ACP config options
+ * (`session/set_config_option`, configIds "model" and "reasoning_effort").
+ * grok 1.0.46 answers `session/set_mode` with {} for a model id but keeps
+ * its default model, so set_mode must not be used for either.
  *
  * Known gap: ACP's `prompt()` runs a turn to completion before returning, so
  * there's no protocol-level way to interject mid-turn the way pi/claude's
@@ -48,11 +47,7 @@ import { ApprovalGate } from "./approval-gate.js";
 import { attachQueue } from "./agent-queue.js";
 import { unsupported } from "./agent-methods.js";
 import { isSubagentToolName } from "./agent-subagent.js";
-import {
-  repoContext,
-  stripClarifyPrefix,
-  withGrokPrefix,
-} from "./co-partner-prompt.js";
+import { stripClarifyPrefix } from "./co-partner-prompt.js";
 import {
   GROK_PROXY_BASE,
   GROK_PROXY_HEADERS,
@@ -121,7 +116,26 @@ export function usageFrom(raw) {
     cacheRead,
     cacheWrite,
     totalTokens: num("totalTokens"),
+    ...(num("apiDurationMs") > 0 ? { durationMs: num("apiDurationMs"), durationKind: "api" } : {}),
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+  };
+}
+
+/** Keep counts and timing on the same set of completed calls. */
+export function grokSessionUsage(session, turns) {
+  const summed = turns.reduce((total, turn) => {
+    const usage = usageFrom(turn);
+    for (const key of ["input", "output", "cacheRead", "cacheWrite"])
+      total[key] += usage[key];
+    total.durationMs += usage.durationMs || 0;
+    return total;
+  }, { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, durationMs: 0 });
+  const ledger = session ? usageFrom(session) : summed;
+  const matching = ["input", "output", "cacheRead", "cacheWrite"].every(key => ledger[key] === summed[key]);
+  const timed = turns.length > 0 && turns.every(turn => Number(turn.apiDurationMs) > 0 && Number.isFinite(Number(turn.apiDurationMs)));
+  return {
+    input: ledger.input, output: ledger.output, cacheRead: ledger.cacheRead, cacheWrite: ledger.cacheWrite,
+    ...(matching && timed ? { durationMs: summed.durationMs, durationKind: "api" } : {}),
   };
 }
 
@@ -329,6 +343,13 @@ export function sessionUpdateIsFor(sessionId, notification) {
   const incoming = notification?.sessionId;
   if (!incoming || !sessionId) return true;
   return incoming === sessionId;
+}
+
+/** grok's per-session event counter: `_meta.eventId` is `<sessionId>-<n>`,
+ *  shared by the ACP stream and the updates.jsonl journal. 0 when absent. */
+export function eventSeq(meta) {
+  const match = /-(\d+)$/.exec(String(meta?.eventId ?? ""));
+  return match ? Number(match[1]) : 0;
 }
 
 export function assistantEndedOnTools(content) {
@@ -557,14 +578,16 @@ class GrokAgentProcess {
                 .replace(/\u001b\[[0-9;]*m/g, "");
             const lines = this.grokStderrBuf.split(/\r?\n/);
             this.grokStderrBuf = lines.pop() ?? "";
-            const message = lines
-              // grok logs ERROR tool_error: tool_output_error for every failed
-              // tool (missing file, MCP -32602). The card already shows that.
-              .filter((line) => !/\btool_error:\s*tool_output_error\b/i.test(line))
-              .join("\n")
-              .trim();
+            // The grok TUI never prints these logs (they go to
+            // ~/.grok/logs), so neither does the chat: `log` keeps them in the
+            // Backend log only. A failed turn surfaces its ERROR line itself.
+            this.grokErrorLines = [
+              ...(this.grokErrorLines ?? []),
+              ...lines.filter((line) => /\bERROR\b/.test(line)),
+            ].slice(-10);
+            const message = lines.join("\n").trim();
             if (message)
-              this.emit({ type: "stderr", sessionKey: this.sessionKey, message });
+              this.emit({ type: "stderr", sessionKey: this.sessionKey, message, log: true });
           },
           onError: (error) => {
             this.process = undefined;
@@ -717,8 +740,8 @@ class GrokAgentProcess {
 
       if (options.warmOnly) {
         this.model = options.model?.id
-          ? { provider: "grok-sdk", id: options.model.id }
-          : (this.model ?? { provider: "grok-sdk", id: "grok-4.6" });
+          ? { provider: "grok", id: options.model.id }
+          : (this.model ?? { provider: "grok", id: "grok-4.6" });
         if (options.thinkingLevel) this.thinkingLevel = options.thinkingLevel;
         if (options.agentMode) this.agentMode = options.agentMode;
         this.setStatus("ready");
@@ -730,8 +753,8 @@ class GrokAgentProcess {
       if (options.sessionPath) {
         this.sessionId = sessionIdFromPath(options.sessionPath);
         this.model = options.model?.id
-          ? { provider: "grok-sdk", id: options.model.id }
-          : { provider: "grok-sdk", id: "grok-4.6" };
+          ? { provider: "grok", id: options.model.id }
+          : { provider: "grok", id: "grok-4.6" };
         replayedMessages = await this.replayHistory(effectiveCwd);
       } else {
         const newSession = await this.connection.newSession({
@@ -741,18 +764,17 @@ class GrokAgentProcess {
         this.sessionId = newSession.sessionId;
         this.messages = [];
         this.model = options.model?.id
-          ? { provider: "grok-sdk", id: options.model.id }
-          : { provider: "grok-sdk", id: "grok-4.6" };
+          ? { provider: "grok", id: options.model.id }
+          : { provider: "grok", id: "grok-4.6" };
         if (options.agentMode) this.agentMode = options.agentMode;
-        if (options.model?.id) {
-          try {
-            await this.connection.setSessionMode({
-              sessionId: this.sessionId,
-              modeId: options.model.id,
-            });
-          } catch {
-            /* model selection is best-effort at session creation */
-          }
+      }
+      // Resumed sessions too: without this this.model claimed a model grok
+      // was not running.
+      if (options.model?.id) {
+        try {
+          await this.setConfig("model", options.model.id);
+        } catch {
+          /* model selection is best-effort at session creation */
         }
       }
       // Grok advertises a different effort ladder per model (grok-4.6 adds
@@ -767,10 +789,7 @@ class GrokAgentProcess {
           : await this.resolveEffort(this.model?.id, this.thinkingLevel);
       if (this.thinkingLevel) {
         try {
-          await this.connection.setSessionMode({
-            sessionId: this.sessionId,
-            modeId: this.thinkingLevel,
-          });
+          await this.setConfig("reasoning_effort", this.thinkingLevel);
         } catch {
           /* effort selection is best-effort at session creation */
         }
@@ -851,8 +870,8 @@ class GrokAgentProcess {
       const assistantMessage = {
         role: "assistant",
         content: [],
-        api: "grok-sdk",
-        provider: "grok-sdk",
+        api: "grok",
+        provider: "grok",
         model: this.model?.id ?? "grok-4.6",
         usage: zeroUsage(),
         stopReason: "pending",
@@ -899,6 +918,10 @@ class GrokAgentProcess {
   handleSessionUpdate(notification) {
     if (!sessionUpdateIsFor(this.sessionId, notification)) return;
     const update = notification.update;
+    this.streamSeq = Math.max(
+      this.streamSeq ?? 0,
+      eventSeq(notification._meta ?? update?._meta),
+    );
     if (update.sessionUpdate === "available_commands_update") {
       this.availableCommands = Array.isArray(update.availableCommands)
         ? update.availableCommands
@@ -1507,23 +1530,7 @@ class GrokAgentProcess {
             : "A Grok turn is already in progress",
       };
 
-    // The clarify gate applies to what the user typed; a harness follow-up
-    // (a goal check-in, an interrupted-turn resume) must not be told to stop
-    // and ask questions instead of continuing.
-    const promptBlocks = [
-      {
-        type: "text",
-        text:
-          kind === "prompt"
-            ? withGrokPrefix(
-                message,
-                repoContext(this.cwd),
-                this.agentMode === "manual" ||
-                  this.agentMode === "auto-edit",
-              )
-            : message,
-      },
-    ];
+    const promptBlocks = [{ type: "text", text: message }];
     for (const image of images ?? []) {
       if (image?.data && image?.mimeType)
         promptBlocks.push({
@@ -1561,8 +1568,8 @@ class GrokAgentProcess {
     const assistantMessage = {
       role: "assistant",
       content: [],
-      api: "grok-sdk",
-      provider: "grok-sdk",
+      api: "grok",
+      provider: "grok",
       model: this.model?.id ?? "grok-4.6",
       usage: zeroUsage(),
       stopReason: "pending",
@@ -1584,6 +1591,7 @@ class GrokAgentProcess {
       message: assistantMessage,
     };
     this.setStatus("working");
+    this.grokErrorLines = [];
     // grok journals turn_completed off the ACP stream. Idle turns already
     // watched that file; a normal prompt that hung after the reply was on
     // disk left the UI on "Grok is thinking" until a refresh re-read it.
@@ -1612,6 +1620,13 @@ class GrokAgentProcess {
       clearInterval(turn.fileTimer);
       this.closeOpenBlock(this.turn);
       assistantMessage.stopReason = response.stopReason;
+      // grok's live turn_completed is an `_x.ai/session_notification` ext
+      // notification the SDK never routes to handleSessionUpdate, and the
+      // journal poll above runs every 200ms, so it usually loses the race to
+      // this response. grok 1.0.46 also puts the turn's usage on the prompt
+      // reply itself: response._meta.usage (same shape usageFrom() reads).
+      if (response?._meta?.usage)
+        assistantMessage.usage = usageFrom(response._meta.usage);
       if (this.subagentFollows.size > 0) await this.waitForSubagentFollows();
       if (!this.turn) {
         this.setStatus("ready");
@@ -1654,7 +1669,11 @@ class GrokAgentProcess {
       clearInterval(turn?.fileTimer);
       this.turn = undefined;
       this.stopSubagentFollows();
-      const message = String(error?.message ?? error);
+      let message = String(error?.message ?? error);
+      // ACP only says "Internal error"; the real reason (usage limit, auth,
+      // API error) is the ERROR line grok logged during this turn.
+      if (/^internal error$/i.test(message.trim()))
+        message = this.grokErrorLines?.at(-1) || message;
       // A user stop already moved the session to "stopped"; re-marking it
       // ready or notifying would resurrect a stopped agent. Otherwise,
       // without the settle the composer spins forever and the interrupted-
@@ -1687,8 +1706,8 @@ class GrokAgentProcess {
     const assistantMessage = {
       role: "assistant",
       content: [],
-      api: "grok-sdk",
-      provider: "grok-sdk",
+      api: "grok",
+      provider: "grok",
       model: this.model?.id ?? "grok-4.6",
       usage: zeroUsage(),
       stopReason: "pending",
@@ -1730,6 +1749,7 @@ class GrokAgentProcess {
     if (!this.cwd || !this.sessionId) return;
     const path = sessionUpdatesPath(this.cwd, this.sessionId);
     let offset = 0;
+    let lastJournaledSeq = 0;
     try {
       offset = statSync(path).size;
     } catch {
@@ -1749,23 +1769,35 @@ class GrokAgentProcess {
         } catch {
           continue;
         }
+        if (event.method === "session/update")
+          lastJournaledSeq = eventSeq(event.params?._meta);
         if (event.params?.update?.sessionUpdate === "turn_completed") {
           if (event.params.update.usage)
             turn.message.usage = usageFrom(event.params.update.usage);
-          if (turn.idle) {
-            clearInterval(turn.fileTimer);
-            this.finishIdleTurn();
-            return;
-          }
-          // A generation that still ends on tools is not the user prompt
-          // finishing. Resolving here settled the UI and dropped whatever
-          // grok streamed next — the cut-off turn. Keep watching.
-          if (assistantEndedOnTools(turn.content)) continue;
-          clearInterval(turn.fileTimer);
-          turn.resolve?.({ stopReason: "end_turn" });
-          return;
+          turn.completedAtSeq = lastJournaledSeq;
         }
       }
+      if (turn.completedAtSeq === undefined) return;
+      // The journal is written before the same events drain off the stdio
+      // pipe. Under load (27s lag observed) closing here dropped the reply's
+      // chunks into a phantom idle turn whose turn_completed was already
+      // behind its watcher -- "running" until the 5-minute stall timer. Wait
+      // for the stream to deliver what grok journaled before turn_completed.
+      if (this.streamSeq > 0 && this.streamSeq < turn.completedAtSeq) return;
+      if (turn.idle) {
+        clearInterval(turn.fileTimer);
+        this.finishIdleTurn();
+        return;
+      }
+      // A generation that still ends on tools is not the user prompt
+      // finishing. Resolving here settled the UI and dropped whatever
+      // grok streamed next — the cut-off turn. Keep watching.
+      if (assistantEndedOnTools(turn.content)) {
+        turn.completedAtSeq = undefined;
+        return;
+      }
+      clearInterval(turn.fileTimer);
+      turn.resolve?.({ stopReason: "end_turn" });
     }, 200);
   }
 
@@ -1903,6 +1935,14 @@ class GrokAgentProcess {
       );
       this.messages = [];
       this.availableCommands = [];
+      // A fresh session starts on grok's default model, not this.model.
+      try {
+        if (this.model?.id) await this.setConfig("model", this.model.id);
+        if (this.thinkingLevel)
+          await this.setConfig("reasoning_effort", this.thinkingLevel);
+      } catch {
+        /* best-effort, as in start() */
+      }
       return { ok: true, state: await this.getState() };
     } catch (error) {
       return { ok: false, error: String(error?.message ?? error) };
@@ -2028,7 +2068,7 @@ class GrokAgentProcess {
       cwd: this.cwd,
       // Unset means grok runs its default; report it so the UI names it
       // instead of "model…" (resumed sessions never set one explicitly).
-      model: this.model ?? { provider: "grok-sdk", id: "grok-4.6" },
+      model: this.model ?? { provider: "grok", id: "grok-4.6" },
       thinkingLevel: this.thinkingLevel,
       sessionFile: this.sessionFile,
     };
@@ -2079,7 +2119,7 @@ class GrokAgentProcess {
       const models = raw
         .filter((m) => m.hidden !== true && m.supported_in_api !== false)
         .map((m) => ({
-          provider: "grok-sdk",
+          provider: "grok",
           id: m.id ?? m.model,
           name: m.name ?? m.id ?? m.model,
           levels: (m.reasoning_efforts ?? []).map((effort) => effort.id ?? effort.value),
@@ -2125,23 +2165,26 @@ class GrokAgentProcess {
     }
   }
 
-  async setModel(provider, modelId) {
-    this.model = { provider, id: modelId };
+  /** Model before effort: effort ladders are per model. */
+  setConfig(configId, value) {
+    return this.connection.setSessionConfigOption({
+      sessionId: this.sessionId,
+      configId,
+      value,
+    });
+  }
+
+  async setModel(_provider, modelId) {
+    // One provider here; a stale "grok-sdk" from saved picker state still lands on it.
+    this.model = { provider: "grok", id: modelId };
     // The previous effort may not exist on the new model (xhigh is grok-4.6
     // only), so re-resolve and re-push it rather than leaving the session on
     // a level the model does not accept.
     const effort = await this.resolveEffort(modelId, this.thinkingLevel);
     if (this.connection && this.sessionId) {
       try {
-        await this.connection.setSessionMode({
-          sessionId: this.sessionId,
-          modeId: modelId,
-        });
-        if (effort)
-          await this.connection.setSessionMode({
-            sessionId: this.sessionId,
-            modeId: effort,
-          });
+        await this.setConfig("model", modelId);
+        if (effort) await this.setConfig("reasoning_effort", effort);
       } catch (error) {
         return { ok: false, error: String(error?.message ?? error) };
       }
@@ -2153,10 +2196,7 @@ class GrokAgentProcess {
   async setThinkingLevel(level) {
     if (this.connection && this.sessionId) {
       try {
-        await this.connection.setSessionMode({
-          sessionId: this.sessionId,
-          modeId: level,
-        });
+        await this.setConfig("reasoning_effort", level);
       } catch (error) {
         return { ok: false, error: String(error?.message ?? error) };
       }
@@ -2200,28 +2240,10 @@ class GrokAgentProcess {
     if (!windowInfo)
       return { ok: false, error: "Grok has not reported a context window" };
     const turns = turnUsagesFromJournal(journal);
-    const summed = turns.reduce(
-      (total, turn) => {
-        const usage = usageFrom(turn);
-        total.input += usage.input;
-        total.output += usage.output;
-        total.cacheRead += usage.cacheRead;
-        total.cacheWrite += usage.cacheWrite;
-        total.durationMs += Number(turn.apiDurationMs) || 0;
-        return total;
-      },
-      { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, durationMs: 0 },
-    );
-    const ledger = usageFile?.session ? usageFrom(usageFile.session) : summed;
+    const ledger = grokSessionUsage(usageFile?.session, turns);
     const session =
-      ledger.input || ledger.output || ledger.cacheRead
-        ? {
-            input: ledger.input,
-            output: ledger.output,
-            cacheRead: ledger.cacheRead,
-            cacheWrite: ledger.cacheWrite,
-            durationMs: summed.durationMs,
-          }
+      ledger.input || ledger.output || ledger.cacheRead || ledger.cacheWrite
+        ? ledger
         : undefined;
     return {
       ok: true,

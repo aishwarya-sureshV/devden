@@ -182,8 +182,8 @@ export function SessionDetails({
     { label: "Input", value: metric(/(\S+) input/) },
     { label: "Output", value: metric(/(\S+) output/) },
     { label: "Cached", value: metric(/(\S+) cached/) },
-    { label: "Speed", value: metric(/(\S+) tok\/s/), unit: "tok/s" },
-    { label: "Cache hit", value: hit, bar: hit === "—" ? 0 : parseInt(hit, 10) },
+    { label: "Speed", value: metric(/(\S+) tok\/s/), unit: "tok/s", title: usageLabel.includes("tok/s (turn)") ? "Average output tokens per second of turn elapsed time, including tool and approval waits." : "Average output tokens per second of reported API time. Unavailable without complete timing." },
+    { label: "Cache hit", value: hit, bar: hit === "—" ? 0 : parseInt(hit, 10), title: "Session cache reads / (fresh input + cache reads + cache writes). Historical usage, not current cache contents." },
   ];
   const project = pathLabel.split("/").filter(Boolean).pop() ?? pathLabel;
   return (
@@ -273,7 +273,7 @@ export function SessionDetails({
       <div className="session-header__usage-head">Usage · this session</div>
       <div className="session-header__usage">
         {usageTiles.map((tile) => (
-          <div key={tile.label} className={`session-header__usage-tile${tile.bar !== undefined ? " is-wide" : ""}`}>
+          <div key={tile.label} title={tile.title} className={`session-header__usage-tile${tile.bar !== undefined ? " is-wide" : ""}`}>
             <span>{tile.label}</span>
             <b className={tile.value === "—" ? "is-empty" : undefined}>
               {tile.value}
@@ -405,7 +405,7 @@ export function displayPath(cwd: string): string {
   return cwd || "—";
 }
 
-export function SessionTab({ title, backend, cwd, active, sessionKey, details, open, onOpen, contextPercent, disabled, onPickWorkspace }: {
+export function SessionTab({ title, backend, cwd, active, sessionKey, details, open, onOpen, contextPercent: _contextPercent, disabled, onPickWorkspace }: {
   title: string; backend: string; cwd: string; active: boolean; sessionKey: string; details: SessionDetailsInfo & { modelLabel?: string; effortText?: string; view: SessionView; onView: (view: SessionView) => void };
   open: boolean; onOpen: (open: boolean) => void; contextPercent: number | null;
   disabled: boolean; onPickWorkspace: (path: string) => Promise<void>;
@@ -430,7 +430,6 @@ export function SessionTab({ title, backend, cwd, active, sessionKey, details, o
     window.addEventListener("pointerdown", close); window.addEventListener("keydown", key);
     return () => { window.removeEventListener("pointerdown", close); window.removeEventListener("keydown", key); };
   }, [open, onOpen]);
-  const percent = contextPercent === null ? null : Math.max(0, Math.min(100, contextPercent));
   return <div className="session-tab-content" ref={ref}>
     <button type="button" className="session-tab-content__title" role="tab" aria-selected={active} aria-controls={`dock-${sessionKey}`} tabIndex={active ? 0 : -1} aria-haspopup="dialog" aria-expanded={open} title="Session details" onClick={() => onOpen(!open)}>{title}</button>
     <div className="session-tab-content__workspace">
@@ -438,9 +437,6 @@ export function SessionTab({ title, backend, cwd, active, sessionKey, details, o
       <WorkspacePicker ref={workspacePicker} cwd={cwd} backend={backend as "pi" | "claude" | "codex" | "grok"} disabled={disabled} onPick={onPickWorkspace} variant="chip" sessionTitle={title} />
       {details.branchLabel && <><IconBranch size={10} /><span title={details.branchLabel}>{details.branchLabel}</span></>}
     </div>
-    <button type="button" className="session-tab-content__context" title={details.contextLabel} aria-label={`Context: ${details.contextLabel}`} onClick={() => onOpen(!open)}>
-      <span><i style={{ width: `${percent ?? 0}%`, background: percent !== null && percent >= 85 ? "#ff7a8a" : percent !== null && percent >= 60 ? "#f0b35a" : "#8fe39b" }} /></span><small>{percent === null ? "—" : `${percent}%`}</small>
-    </button>
     {open && <SessionDetails {...details} />}
   </div>;
 }

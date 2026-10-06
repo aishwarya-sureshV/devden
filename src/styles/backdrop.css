@@ -447,23 +447,27 @@ body[data-glass] .center {
 
 /* ---------- 7. Conversation UI, from the mockup ---------- */
 
-/* Highlighted words: strong, headings and list markers follow the picked
-   color (plain bold in the design's grey mode). */
+/* Highlighted words: only the ✻ mark and code chips (below) carry the
+   picked accent. Strong/headings stay plain strong text and list markers
+   stay muted — see timeline.css for why (cuts down on "chip soup"). */
 body[data-glass] :is(.conversation-stage, .subagent-panel) .rich-text strong,
 body[data-glass] :is(.conversation-stage, .subagent-panel) .md-heading,
-body[data-glass] :is(.conversation-stage, .subagent-panel) .md-list li::before,
 body[data-glass][data-ds-dark-theme]
  :is(.conversation-stage, .subagent-panel)
  .rich-text
  strong,
 body[data-glass][data-ds-dark-theme]
  :is(.conversation-stage, .subagent-panel)
- .md-heading,
+ .md-heading {
+ color: var(--pw-fg-strong);
+ -webkit-font-smoothing: antialiased;
+}
+body[data-glass] :is(.conversation-stage, .subagent-panel) .md-list li::before,
 body[data-glass][data-ds-dark-theme]
  :is(.conversation-stage, .subagent-panel)
  .md-list
  li::before {
- color: var(--hl-text, var(--g-fg));
+ color: var(--dsw-alias-label-secondary);
  -webkit-font-smoothing: antialiased;
 }
 
@@ -483,9 +487,9 @@ body[data-glass][data-ds-dark-theme]
  border-radius: 6px;
  padding: 0 6px;
  margin: 0 1px;
- background: var(--hl-chip-bg, rgb(var(--g-ink) / 0.08));
- box-shadow: inset 0 0 0 1px var(--hl-ring, rgb(var(--g-ink) / 0.06));
- color: var(--hl-chip-color, var(--g-fg));
+ background: var(--chip-bg);
+ box-shadow: none;
+ color: var(--chip-fg);
  font-size: 12.5px;
  line-height: 1.7;
  vertical-align: 1px;
@@ -841,6 +845,12 @@ body[data-glass] .subagent-panel--error {
   rgba(6, 7, 10, 0.62)
  );
  pointer-events: none;
+}
+
+/* Freeze (not reset) the drift and glint while DevDen isn't the active
+   window -- set by Backdrop.tsx. */
+.is-window-idle .backdrop * {
+ animation-play-state: paused;
 }
 
 @keyframes wb-drift {

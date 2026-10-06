@@ -1,4 +1,4 @@
-/* Update tray: one card for every harness (and devden) with a newer version.
+/* Update tray: one compact card for every harness with a newer version.
    Surface (fill, blur, rim, shadow) comes from the shared popover lists in
    backdrop.css (glass) and workbenchSkin.css (every other skin), so it matches
    the model picker in each skin. Only layout and tokens live here. */
@@ -7,12 +7,12 @@
   right: 16px;
   bottom: 16px;
   z-index: 1000;
-  width: min(360px, calc(100vw - 32px));
+  width: min(280px, calc(100vw - 32px));
   box-sizing: border-box;
   overflow: hidden;
-  border-radius: 14px;
+  border-radius: 12px;
   color: var(--fg0, #f6f5fa);
-  font-size: 13px;
+  font-size: 12.5px;
   line-height: 1.4;
   animation: update-tray-in 160ms ease-out;
 }
@@ -52,60 +52,61 @@
 }
 .update-tray__head {
   display: flex;
-  align-items: flex-start;
-  gap: 12px;
-  padding: 14px 8px 10px 14px;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 6px 2px 12px;
 }
-.update-tray__badge {
-  flex: none;
-  width: 28px;
-  height: 28px;
-  display: grid;
-  place-items: center;
-  border-radius: 9px;
-}
-.update-tray__badge.is-up,
-.update-tray__badge.is-spin {
-  background: color-mix(in srgb, var(--acc) 16%, transparent);
-  color: var(--acc);
-}
-.update-tray__badge.is-ok {
-  background: color-mix(in srgb, var(--add) 14%, transparent);
-  color: var(--add);
-}
-.update-tray__badge.is-bad {
-  background: color-mix(in srgb, var(--del) 12%, transparent);
-  color: var(--del);
-}
-.update-tray__badge .update-tray__spin {
-  width: 16px;
-  height: 16px;
-}
-.update-tray__titles {
-  flex: 1;
-  min-width: 0;
-  padding-top: 1px;
+.update-tray__head:last-child {
+  padding-bottom: 6px;
 }
 .update-tray__title {
-  font-size: 13.5px;
-  font-weight: 600;
-}
-.update-tray__sub {
-  margin-top: 1px;
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--fg2);
   font-size: 12px;
-  color: var(--fg3);
+  font-weight: 500;
+}
+.update-tray__title.is-ok {
+  color: var(--add);
+}
+.update-tray__title.is-bad {
+  color: var(--del);
+}
+/* Same type size as the title: the button earns weight from its tint, not
+   from being bigger than the line it sits on. */
+.update-tray__primary {
+  height: 22px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--acc) 14%, transparent);
+  color: var(--acc);
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+}
+.update-tray__primary:hover {
+  background: color-mix(in srgb, var(--acc) 24%, transparent);
 }
 .update-tray__x {
   flex: none;
-  width: 32px;
-  height: 32px;
+  width: 24px;
+  height: 24px;
   display: grid;
   place-items: center;
   border: 0;
-  border-radius: 8px;
+  border-radius: 6px;
   background: transparent;
   color: var(--fg3);
   cursor: pointer;
+}
+.update-tray__x svg {
+  width: 12px;
+  height: 12px;
 }
 .update-tray__x:hover {
   background: rgb(var(--ink) / 0.08);
@@ -113,64 +114,55 @@
 }
 
 .update-tray__rows {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
   margin: 0;
-  padding: 0 6px 6px;
+  padding: 0 4px 6px;
   list-style: none;
 }
 .update-tray__row {
-  padding: 6px 8px;
-  border-radius: 10px;
+  padding: 4px 8px;
+  border-radius: 8px;
 }
 .update-tray__row.is-fail {
-  background: color-mix(in srgb, var(--del) 11%, transparent);
+  background: color-mix(in srgb, var(--del) 10%, transparent);
 }
 .update-tray__line {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
+  min-height: 24px;
 }
 .update-tray__mark {
   flex: none;
-  width: 28px;
-  height: 28px;
   display: grid;
   place-items: center;
-  border-radius: 8px;
-  background: rgb(var(--ink) / 0.07);
-  font-size: 15px;
+  font-size: 13px;
   line-height: 1;
 }
 .update-tray__who {
   flex: 1;
   min-width: 0;
   display: flex;
-  flex-direction: column;
-}
-.update-tray__name {
-  font-weight: 500;
+  align-items: baseline;
+  gap: 8px;
 }
 .update-tray__ver {
   overflow: hidden;
   color: var(--fg3);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 11.5px;
+  font-size: 11px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .update-tray__row.is-fail .update-tray__ver {
   color: var(--del);
   font-family: inherit;
-  white-space: normal;
 }
 .update-tray__state {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 5px;
   color: var(--fg3);
-  font-size: 12px;
+  font-size: 11.5px;
 }
 .update-tray__state.is-running {
   color: var(--acc);
@@ -179,10 +171,10 @@
   color: var(--add);
 }
 .update-tray__spin {
-  width: 14px;
-  height: 14px;
+  width: 11px;
+  height: 11px;
   box-sizing: border-box;
-  border: 1.8px solid color-mix(in srgb, currentColor 25%, transparent);
+  border: 1.6px solid color-mix(in srgb, currentColor 25%, transparent);
   border-top-color: currentColor;
   border-radius: 50%;
   animation: update-tray-spin 0.9s linear infinite;
@@ -191,15 +183,15 @@
 .update-tray__details {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  margin: 8px 0 4px 38px;
+  gap: 6px;
+  margin: 6px 0 2px 22px;
 }
 .update-tray__log {
   max-height: 92px;
   margin: 0;
-  padding: 8px 10px;
+  padding: 6px 8px;
   overflow: auto;
-  border-radius: 8px;
+  border-radius: 6px;
   background: color-mix(in srgb, var(--fg0) 7%, transparent);
   color: var(--fg2);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
@@ -225,15 +217,15 @@
 }
 .update-tray__chip {
   flex: none;
-  height: 28px;
-  padding: 0 10px;
+  height: 22px;
+  padding: 0 8px;
   border: 0;
-  border-radius: 7px;
+  border-radius: 6px;
   background: rgb(var(--ink) / 0.08);
   color: var(--fg0);
   font-family: inherit;
-  font-size: 12px;
-  font-weight: 600;
+  font-size: 11.5px;
+  font-weight: 500;
   cursor: pointer;
 }
 .update-tray__chip:hover {
@@ -241,29 +233,6 @@
 }
 .update-tray__chip.is-bad {
   color: var(--del);
-}
-
-.update-tray__foot {
-  display: flex;
-  justify-content: flex-end;
-  padding: 2px 12px 12px;
-}
-.update-tray__primary {
-  height: 34px;
-  padding: 0 16px;
-  border: 0;
-  border-radius: 9px;
-  background: var(--acc);
-  /* --pop is the skin's surface: dark on the dark skins, light on the light
-     ones, which is the readable ink on every accent we ship. */
-  color: var(--pop, #17171b);
-  font-family: inherit;
-  font-size: 13px;
-  font-weight: 600;
-  cursor: pointer;
-}
-.update-tray__primary:hover {
-  filter: brightness(1.1);
 }
 
 /* DevDen's own update: a pill in the sidebar footer (AppUpdateFooter). Tinted

@@ -5,11 +5,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import {
+  changedSince,
   commitForFork,
   diffSinceSnapshot,
   snapshotAfterFork,
   listSnapshots,
+  pickSnapshot,
   restoreSnapshot,
+  sessionTag,
   takeSnapshot,
 } from "./snapshots.js";
 
@@ -152,5 +155,58 @@ test("a directory that is not a repo fails without throwing", async () => {
   const dir = mkdtempSync(join(tmpdir(), "devden-snap-bare-"));
   assert.equal((await takeSnapshot(dir, "x")).ok, false);
   assert.equal((await restoreSnapshot(dir)).ok, false);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("pickSnapshot stays inside the session and refuses a pruned turn", () => {
+  const a = sessionTag("/sessions/a.jsonl");
+  const b = sessionTag("/sessions/b.jsonl");
+  const snap = (session, at) => ({ session, at, commit: `${session}-${at}` });
+  const newestFirst = (list) => list.sort((l, r) => r.at - l.at);
+
+  // B's snapshot lands inside A's slack window; A still gets its own.
+  const shared = newestFirst([snap(a, 100_000), snap(b, 101_000), snap(null, 50_000)]);
+  assert.equal(pickSnapshot(shared, 100_000, ["/sessions/a.jsonl"]).commit, `${a}-100000`);
+  // No session given: the old repo-wide lookup.
+  assert.equal(pickSnapshot(shared, 100_000).commit, `${b}-101000`);
+  // A message older than any of A's snapshots predates them: legacy ref.
+  assert.equal(pickSnapshot(shared, 60_000, ["/sessions/a.jsonl"]).commit, "null-50000");
+
+  // A has pruned its oldest turns: refuse instead of restoring further back.
+  const pruned = newestFirst([
+    ...Array.from({ length: 50 }, (_, i) => snap(a, 200_000 + i * 10_000)),
+    snap(null, 50_000),
+  ]);
+  assert.equal(pickSnapshot(pruned, 60_000, ["/sessions/a.jsonl"]), undefined);
+});
+
+test("two sessions in one repo keep and restore their own snapshots", async () => {
+  const { dir } = repo();
+  const mine = await takeSnapshot(dir, "a turn", "/sessions/a.jsonl");
+  writeFileSync(join(dir, "kept.txt"), "edited by session a\n");
+  const theirs = await takeSnapshot(dir, "b turn", "/sessions/b.jsonl");
+  assert.match(mine.ref, new RegExp(`/${sessionTag("/sessions/a.jsonl")}/`));
+  assert.deepEqual(
+    (await listSnapshots(dir)).map((entry) => entry.session).sort(),
+    [sessionTag("/sessions/a.jsonl"), sessionTag("/sessions/b.jsonl")].sort(),
+  );
+  // Restoring A's message must use A's snapshot even though B's is newer
+  // and within the slack window.
+  const done = await restoreSnapshot(dir, mine.at, false, ["/sessions/a.jsonl"]);
+  assert.equal(done.ok, true);
+  assert.equal(done.data.snapshotAt, mine.at);
+  assert.equal(readFileSync(join(dir, "kept.txt"), "utf8"), "original\n");
+  assert.ok(theirs.ok);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("changedSince lists modified and brand-new files without touching the real index", async () => {
+  const { dir, git } = repo();
+  const snap = await takeSnapshot(dir, "before");
+  writeFileSync(join(dir, "kept.txt"), "edited\n");
+  writeFileSync(join(dir, "added.txt"), "new\n");
+  assert.equal(await changedSince(dir, snap.commit), "A\tadded.txt\nM\tkept.txt");
+  assert.equal(git("diff", "--cached", "--name-only").trim(), "", "user's index untouched");
+  assert.equal(await changedSince(dir, ""), null);
   rmSync(dir, { recursive: true, force: true });
 });

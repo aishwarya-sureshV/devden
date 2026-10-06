@@ -636,7 +636,6 @@ export function highlightVars(highlight: string): Record<string, string> {
   return {
     "--g-highlight": hex,
     ...send,
-    "--hl-text": grey ? "var(--g-fg)" : hex,
     "--hl-chip-color": grey ? "var(--g-fg)" : hex,
     "--hl-chip-bg": grey
       ? "rgb(var(--g-ink) / 0.08)"

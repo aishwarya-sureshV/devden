@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { devdenHome, docGet, docSet } from "./db.js";
 
 const KINDS = new Set(["plan", "diagnose", "execute", "review"]);
-const BACKENDS = new Set(["pi", "claude", "grok", "codex"]);
+const BACKENDS = new Set(["pi", "claude", "grok", "codex", "zcode"]);
 const TEMPLATES = new Set(["diagnose", "fix", "plan", "custom"]);
 
 export function normalizeRoute(raw) {

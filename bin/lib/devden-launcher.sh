@@ -7,6 +7,13 @@ PORT="${DEVDEN_PORT:-4319}"
 HOST="${DEVDEN_HOST:-127.0.0.1}"
 DEVDEN_LOG="${DEVDEN_LOG:-${TMPDIR:-/tmp}/devden.log}"
 
+# The server imports node:sqlite; older Node dies with an opaque error inside a
+# nohup'd log, so refuse here where the user can see why.
+if ! node -e 'const [a,b]=process.versions.node.split(".").map(Number);process.exit(a>22||(a===22&&b>=13)?0:1)' 2>/dev/null; then
+  echo "devden needs Node.js 22.13 or newer (found: $(node --version 2>/dev/null || echo none))." >&2
+  exit 1
+fi
+
 # Stop the supervisor too, or --stop and build refresh immediately respawn it.
 terminate_server() {
   local server_pid="$1" parent_pid parent_command

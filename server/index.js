@@ -30,6 +30,7 @@
  *   POST /api/:sessionKey/set-thinking     { level }
  *   GET  /api/:sessionKey/route            -> saved composer route (no chain)
  *   PUT  /api/:sessionKey/route            { route, sessionFile? }
+ *   PUT  /api/:sessionKey/prosecutor       { backend, model? } | { off: true }
  *   GET  /api/:sessionKey/git-changes?cwd=  -> branch, remote, per-file working-tree changes
  *   GET  /api/:sessionKey/git-changes?cwd=&file= -> one file's diff vs HEAD
  *   GET  /api/:sessionKey/changes?scope=turn|session&sessionPath=&turn=
@@ -58,6 +59,7 @@ import {
   mkdir,
   open as openFile,
   readdir,
+  readFile,
   readlink,
   rename,
   rm,
@@ -78,7 +80,7 @@ import {
   sep,
 } from "node:path";
 import { homedir, tmpdir } from "node:os";
-import { spawn, execFile, execSync } from "node:child_process";
+import { spawn, exec, execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import { logFault } from "./log-fault.js";
@@ -103,6 +105,9 @@ import { ClaudeAgentPool, startClaudeAuthKeepalive } from "./claude-agent.js";
 import { GrokAgentPool } from "./grok-agent.js";
 import { CodexAgentPool } from "./codex-agent.js";
 import { closeSharedCodex } from "./codex-app-server.js";
+import { closeSharedZcode } from "./zcode-app-server.js";
+import { ZcodeAgentPool } from "./zcode-agent.js";
+import { optInZcodeOllama, syncZcodeProviderConfig, zcodeOllamaOptedIn } from "./zcode-ollama.js";
 import {
   AGENT_BACKENDS,
   allBackendIds,
@@ -133,7 +138,6 @@ import {
   runningSessionPaths,
   takeInterruptedTurns,
 } from "./inflight.js";
-import { resumePrompt } from "./co-partner-prompt.js";
 import { isOneShotSseClient, SSE_ONESHOT_MS } from "./host-guard.js";
 import {
   commitForFork,
@@ -185,6 +189,7 @@ import {
 import { findDefinition, grepWorkspace } from "./workspace-search.js";
 import { saveDisplayOverlay, withDisplayHistory } from "./display-history.js";
 import { loadRoute, saveRoute } from "./session-route.js";
+import { createProsecutor } from "./prosecutor.js";
 import {
   startRemoteTunnel,
   stopRemoteTunnel,
@@ -200,6 +205,7 @@ const PORT = Number(process.env.DEVDEN_PORT || 4319);
 const HOST = process.env.DEVDEN_HOST || "127.0.0.1";
 const ACCESS_TOKEN = String(process.env.DEVDEN_TOKEN || "").trim();
 const execFileAsync = promisify(execFile);
+const execAsync = promisify(exec);
 
 /**
  * Workspace roots for the file-explorer endpoints. Starts from the launch
@@ -400,7 +406,7 @@ function sweepExpiredLeases() {
     if (!backend) continue;
     poolFor(backend).stop(key);
     sessionBackends.delete(key);
-    clearSessionGoal(key);
+    prosecutor.disarm(key);
   }
   for (const key of [...SESSION_LEASES.keys()]) {
     if (!sessionBackends.has(key)) SESSION_LEASES.delete(key);
@@ -420,162 +426,13 @@ const pruneChangeHistory = () => {
 pruneChangeHistory();
 setInterval(pruneChangeHistory, 6 * 60 * 60_000).unref();
 
-/**
- * Standing goals (/goal): the agent gets a deterministic follow-up check-in
- * when idle — after 30 minutes, then 1h, then every 2h — so a long task does
- * not silently stall. In-memory per session key; /goal off clears it.
- */
-const CONVERSATION_GOALS = new Map();
-const GOAL_CHECKIN_DELAYS_MS = [30, 60, 120].map((minutes) => minutes * 60_000);
-/**
- * Hard stop on the check-in loop. Every check-in is a full turn on the whole
- * conversation, fired hours apart -- always past the prompt-cache TTL, so each
- * one re-bills the entire context at the full input rate. The agent is asked
- * to end the loop itself by saying GOAL DONE, but a model that never says it
- * would otherwise keep spending for as long as the tab stays open. Eight
- * covers ~13h (30m + 1h + 2h x 6) before the user has to re-park the goal.
- */
-const MAX_GOAL_CHECKINS = 8;
+/** Prosecutor mode (prosecutor.js): rounds run off the executor's events. */
+const prosecutor = createProsecutor({
+  poolFor: (backend) => poolFor(backend),
+  publish: (sessionKey, event) =>
+    publishRuntimeEvent(sessionKey, "server", event),
+});
 
-function clearSessionGoal(sessionKey) {
-  const goal = CONVERSATION_GOALS.get(sessionKey);
-  if (goal?.timer) clearTimeout(goal.timer);
-  CONVERSATION_GOALS.delete(sessionKey);
-}
-
-function scheduleGoalCheckIn(sessionKey) {
-  const goal = CONVERSATION_GOALS.get(sessionKey);
-  if (!goal) return;
-  const delay =
-    GOAL_CHECKIN_DELAYS_MS[
-      Math.min(goal.checkIns, GOAL_CHECKIN_DELAYS_MS.length - 1)
-    ];
-  goal.timer = setTimeout(() => {
-    if (!CONVERSATION_GOALS.has(sessionKey)) return;
-    const backend = sessionBackends.get(sessionKey);
-    const agent = backend ? poolFor(backend).get(sessionKey) : undefined;
-    if (!agent || agent.status === "stopped" || agent.status === "error") {
-      CONVERSATION_GOALS.delete(sessionKey);
-      return;
-    }
-    // Counted whether or not the check-in could be sent: the delays are a
-    // backoff over elapsed time, and incrementing only on a successful send
-    // pinned a session that is busy at every check-in to the 30-minute delay
-    // forever -- four times the intended rate, on the longest-running work.
-    goal.checkIns += 1;
-    if (goal.checkIns > MAX_GOAL_CHECKINS) {
-      clearSessionGoal(sessionKey);
-      publishRuntimeEvent(sessionKey, "server", {
-        type: "notice",
-        message: `Standing goal stopped after ${MAX_GOAL_CHECKINS} check-ins without a "GOAL DONE". Re-park it with /goal if it is still live.`,
-      });
-      return;
-    }
-    if (agent.status === "ready") {
-      void agent
-        .followUp(
-          `Goal check-in ("${goal.text}"): report progress in one line. If the goal is fully achieved, reply with exactly "GOAL DONE" plus one line of proof; otherwise continue working on it now.`,
-        )
-        .catch(() => {
-          /* re-armed below; the next check-in retries */
-        });
-    }
-    scheduleGoalCheckIn(sessionKey);
-  }, delay);
-  goal.timer.unref?.();
-}
-
-/**
- * Restart the turns that were running when this process's predecessor
- * stopped. The user should not have to ask "did you finish that?" after a
- * deploy, a crash, or the machine being switched off.
- *
- * The agent is resumed on its own session file, so it comes back with the
- * full conversation in context; the follow-up only tells it that the last
- * turn never ended. The conversation key is synthetic because the browser
- * mints a new one on reload -- adoptLiveAgent() rebinds this running agent
- * to whatever key the page comes back with, keyed on the session file, and
- * carries the runtime log across with it, so the restored tab shows the
- * resumed run live.
- */
-const MAX_CONCURRENT_RESUMES = 3;
-
-async function resumeInterruptedTurns() {
-  const interrupted = takeInterruptedTurns().slice(0, MAX_CONCURRENT_RESUMES);
-  for (const entry of interrupted) {
-    if (!existsSync(entry.cwd) || !existsSync(entry.sessionPath)) continue;
-    const backend = backendName(entry.backend);
-    const sessionKey = `resume-${randomUUID()}`;
-    const agent = watch(sessionKey, backend);
-    // Re-register before the agent starts: if this resume is itself cut
-    // short, the attempt counter is what stops a crash loop.
-    noteTurnStarted({
-      ...entry,
-      sessionKey,
-      resumeAttempts: Number(entry.resumeAttempts ?? 0) + 1,
-    });
-    const started = await runLoggedCommand(
-      sessionKey,
-      "start",
-      { cwd: entry.cwd, backend },
-      () =>
-        agent.start(entry.cwd, {
-          sessionPath: entry.sessionPath,
-          ...(entry.model ? { model: entry.model } : {}),
-          ...(entry.thinkingLevel
-            ? { thinkingLevel: entry.thinkingLevel }
-            : {}),
-        }),
-    );
-    if (!started.ok) {
-      noteTurnSettled(sessionKey);
-      continue;
-    }
-    publishRuntimeEvent(sessionKey, "server", {
-      type: "notice",
-      sessionKey,
-      message:
-        "The workbench restarted mid-turn — picking this conversation back up where it stopped.",
-    });
-    void agent
-      .followUp(resumePrompt(entry.message))
-      .then(() => {
-        // Instructions the user had lined up behind the interrupted turn are
-        // part of the work, so they go back into the queue rather than being
-        // silently dropped.
-        for (const queued of entry.queued ?? [])
-          void agent.enqueue?.(queued.message);
-      })
-      .catch((error) => {
-        noteTurnSettled(sessionKey);
-        publishRuntimeEvent(sessionKey, "server", {
-          type: "notice",
-          sessionKey,
-          message: `Could not resume the interrupted turn: ${String(error?.message ?? error)}`,
-          tone: "error",
-        });
-      })
-      .finally(() => {
-        // No lease is taken for a resume key: nothing heartbeats it, and the
-        // sweep would reap the agent mid-work. That means cleaning up here
-        // instead -- unless a page has adopted the agent by now, in which
-        // case adoptLiveAgent has already moved it to the page's own key and
-        // this key is gone.
-        if (sessionBackends.has(sessionKey)) poolFor(backend).stop(sessionKey);
-      });
-  }
-}
-
-function setSessionGoal(sessionKey, text) {
-  if (!text || /^off$/i.test(text)) {
-    clearSessionGoal(sessionKey);
-    return { ok: true, cleared: true };
-  }
-  clearSessionGoal(sessionKey);
-  CONVERSATION_GOALS.set(sessionKey, { text, checkIns: 0 });
-  scheduleGoalCheckIn(sessionKey);
-  return { ok: true, text };
-}
 const BUILD_ID = existsSync(join(DIST, "index.html"))
   ? createHash("sha256")
       .update(readFileSync(join(DIST, "index.html")))
@@ -669,69 +526,123 @@ function writeDeployState(patch, projectRoot = ROOT) {
   }
 }
 
-function currentGitHead(projectRoot = ROOT) {
+async function currentGitHead(projectRoot = ROOT) {
   try {
-    return execSync("git rev-parse --short HEAD", {
+    const { stdout } = await execFileAsync("git", ["rev-parse", "--short", "HEAD"], {
       cwd: projectRoot,
-      stdio: ["ignore", "pipe", "ignore"],
       timeout: 5000,
-    })
-      .toString()
-      .trim();
+    });
+    return String(stdout).trim() || null;
   } catch {
     return null;
   }
 }
 
 /**
- * Content signature of the whole working tree: HEAD + status + diff, hashed.
- * The deployer stores this at deploy time, so /api/deploy/status can answer
- * "does the working tree differ from what is running?" — including uncommitted
- * edits, which HEAD alone can't see.
+ * Must match scripts/deploy.mjs treeSignature() character for character.
+ * Porcelain lists every dirty/untracked path; numstat covers tracked edits
+ * without shipping a full diff. Hashing untracked blobs (git hash-object)
+ * froze the event loop on trees with hundreds of new files.
  */
-function workingTreeSignature(projectRoot = ROOT) {
+const TREE_SIGNATURE_CMD =
+  "git rev-parse HEAD && git status --porcelain && git diff --numstat HEAD";
+const SIGNATURE_TTL_MS = 2500;
+const SIGNATURE_WAIT_MS = 1500;
+/** @type {Map<string, { value: string | null, at: number, inflight: Promise<string | null> | null }>} */
+const signatureCache = new Map();
+
+function withTimeout(promise, ms, fallback) {
+  let timer;
+  return Promise.race([
+    promise.finally(() => clearTimeout(timer)),
+    new Promise((resolve) => {
+      timer = setTimeout(() => resolve(fallback), ms);
+    }),
+  ]);
+}
+
+async function computeWorkingTreeSignature(projectRoot) {
   try {
-    const out = execSync(
-      // `git diff HEAD` skips untracked files, so hash their contents too:
-      // editing a new file would otherwise leave the button on "Live".
-      "git rev-parse HEAD && git status --porcelain && git diff HEAD && git ls-files -o --exclude-standard -z | xargs -0 git hash-object --",
-      {
-        cwd: projectRoot,
-        stdio: ["ignore", "pipe", "ignore"],
-        timeout: 5000,
-        maxBuffer: 16 * 1024 * 1024,
-      },
-    );
+    const { stdout: out } = await execAsync(TREE_SIGNATURE_CMD, {
+      cwd: projectRoot,
+      timeout: 4000,
+      maxBuffer: 4 * 1024 * 1024,
+      encoding: "buffer",
+    });
     return createHash("sha256").update(out).digest("hex").slice(0, 16);
   } catch {
     return null;
   }
 }
 
-function uncommittedFileCount(projectRoot = ROOT) {
-  try {
-    const out = execSync("git status --porcelain", {
-      cwd: projectRoot,
-      stdio: ["ignore", "pipe", "ignore"],
-      timeout: 5000,
+async function workingTreeSignature(projectRoot = ROOT) {
+  const hit = signatureCache.get(projectRoot);
+  if (hit?.inflight) return hit.inflight;
+  if (hit && Date.now() - hit.at < SIGNATURE_TTL_MS) return hit.value;
+  const inflight = computeWorkingTreeSignature(projectRoot)
+    .then((value) => {
+      signatureCache.set(projectRoot, { value, at: Date.now(), inflight: null });
+      return value;
     })
-      .toString()
-      .trim();
+    .catch(() => {
+      signatureCache.set(projectRoot, {
+        value: hit?.value ?? null,
+        at: Date.now(),
+        inflight: null,
+      });
+      return hit?.value ?? null;
+    });
+  signatureCache.set(projectRoot, {
+    value: hit?.value ?? null,
+    at: hit?.at ?? 0,
+    inflight,
+  });
+  return inflight;
+}
+
+async function uncommittedFileCount(projectRoot = ROOT) {
+  try {
+    const { stdout } = await execFileAsync("git", ["status", "--porcelain"], {
+      cwd: projectRoot,
+      timeout: 5000,
+    });
+    const out = stdout.trim();
     return out ? out.split("\n").length : 0;
   } catch {
     return null;
   }
 }
 
+/**
+ * Lines `git diff --numstat /dev/null <file>` would report, without a spawn.
+ * Binary (a NUL in the first 8000 bytes, git's own test) or unreadable -> 0.
+ */
+async function untrackedLineCount(path) {
+  let buffer;
+  try {
+    // ponytail: reads the whole file; cap by size if huge untracked files show up.
+    buffer = await readFile(path);
+  } catch {
+    return 0;
+  }
+  if (buffer.length === 0 || buffer.subarray(0, 8000).includes(0)) return 0;
+  let lines = 0;
+  for (let i = buffer.indexOf(10); i !== -1; i = buffer.indexOf(10, i + 1))
+    lines++;
+  return buffer[buffer.length - 1] === 10 ? lines : lines + 1;
+}
+
 const piPool = new PiAgentPool();
 const claudePool = new ClaudeAgentPool();
 const grokPool = new GrokAgentPool();
 const codexPool = new CodexAgentPool();
+const zcodePool = new ZcodeAgentPool();
 const POOLS = {
   pi: piPool,
   claude: claudePool,
   grok: grokPool,
   codex: codexPool,
+  zcode: zcodePool,
 };
 /** @type {Map<string, 'pi' | 'claude'>} */
 const sessionBackends = new Map();
@@ -798,7 +709,16 @@ function broadcast(event) {
     logFault("unstringifiable event", event?.type, error);
     return;
   }
+  // A half-open client (laptop asleep, phone off wifi) never fires 'close';
+  // without a cap its socket buffers every token of every session forever.
+  // Dropping it is safe: the page reconnects and re-adopts its sessions.
+  const STALE_BYTES = 8 * 1024 * 1024;
   for (const res of sseClients) {
+    if (res.writableLength > STALE_BYTES) {
+      sseClients.delete(res);
+      res.destroy();
+      continue;
+    }
     try {
       res.write(line);
     } catch {
@@ -806,6 +726,11 @@ function broadcast(event) {
     }
   }
   for (const socket of eventSockets) {
+    if (socket.bufferedAmount > STALE_BYTES) {
+      eventSockets.delete(socket);
+      socket.terminate();
+      continue;
+    }
     try {
       socket.send(json);
     } catch {
@@ -886,23 +811,18 @@ function publishRuntimeEvent(sessionKey, source, event) {
     if (target !== sessionKey) continue;
     broadcast({ ...payload, sessionKey: alias });
   }
-  // The check-in prompt asks the agent to end a standing goal by replying
-  // GOAL DONE, but nothing read it, so a goal that was achieved kept billing
-  // a full-context turn every two hours. Checked here because every backend's
-  // events pass through this one funnel.
   if (
-    // The completed assistant message lands on message_end for pi/Claude/Grok
-    // and on turn_end for Codex.
-    (event?.type === "message_end" || event?.type === "turn_end") &&
-    event.message?.role === "assistant" &&
-    CONVERSATION_GOALS.has(sessionKey) &&
-    assistantText(event.message).includes("GOAL DONE")
+    event?.type === "agent_end" ||
+    event?.type === "agent_settled" ||
+    event?.type === "message_end" ||
+    event?.type === "turn_end"
   ) {
-    clearSessionGoal(sessionKey);
-    publishRuntimeEvent(sessionKey, source, {
-      type: "notice",
-      message: "Goal reported done — standing check-ins stopped.",
-    });
+    const backend = sessionBackends.get(sessionKey);
+    prosecutor.onExecutorEvent(
+      sessionKey,
+      event,
+      backend ? poolFor(backend).agents.get(sessionKey) : undefined,
+    );
   }
   return entry;
 }
@@ -1026,6 +946,15 @@ async function runLoggedCommand(sessionKey, action, body, run) {
   } catch (error) {
     result = { ok: false, error: String(error?.message ?? error) };
   }
+  // Every adapter fails a missing CLI as "spawn <bin> ENOENT", which tells a
+  // new user nothing. Say what it means and where to fix it.
+  if (!result?.ok && /\bspawn \S+ ENOENT\b/.test(String(result?.error))) {
+    const backend = backendName(body?.backend ?? sessionBackends.get(sessionKey));
+    result = {
+      ...result,
+      error: `The ${backend} CLI isn't installed or isn't on PATH. Install or connect it in Settings → Agents. (${result.error})`,
+    };
+  }
   publishRuntimeEvent(sessionKey, "server", {
     type: "backend_response",
     requestId,
@@ -1043,6 +972,13 @@ async function runLoggedCommand(sessionKey, action, body, run) {
 
 function sessionPathOf(agent) {
   return agent?.sessionFile ?? agent?.lastState?.sessionFile ?? "";
+}
+
+/** Ids a session's turn snapshots may be filed under (snapshots.js). */
+function snapshotSessions(sessionKey, ...paths) {
+  const backend = sessionBackends.get(sessionKey);
+  const agent = backend ? poolFor(backend).agents.get(sessionKey) : undefined;
+  return [...paths, sessionPathOf(agent), sessionKey].filter(Boolean);
 }
 
 async function rawAgentMessages(agent) {
@@ -1244,13 +1180,6 @@ function adoptLiveAgent(sessionKey, backend, sessionPath) {
         ),
       );
     }
-    // A parked goal belongs to the conversation, not the browser tab.
-    const goal = CONVERSATION_GOALS.get(key);
-    if (goal) {
-      clearSessionGoal(key);
-      CONVERSATION_GOALS.set(sessionKey, goal);
-      scheduleGoalCheckIn(sessionKey);
-    }
     return candidate;
   }
   return undefined;
@@ -1303,9 +1232,8 @@ function watch(sessionKey, requestedBackend, bind = true) {
  * in its final assistant reply). While set, the queue holds typed prompts so
  * a follow-up typed before the answer cannot replace the pending question —
  * the answer goes first, and the answer turn's settle flushes the queue.
- * Cleared the moment any turn starts, so a fork/check-in/auto-resume cannot
- * strand the hold. Event shapes per backend mirror the GOAL DONE check in
- * publishRuntimeEvent: message_end (pi/Claude/Grok), turn_end (Codex).
+ * Cleared the moment any turn starts, so a fork cannot strand the hold.
+ * Event shapes per backend: message_end (pi/Claude/Grok), turn_end (Codex).
  */
 function trackAskPending(agent, event) {
   if (event?.type === "agent_start") {
@@ -1923,6 +1851,14 @@ async function route(req, res) {
     return sendJson(res, 200, { ok: true, backends: await listBackends() });
   }
 
+  if (pathname === "/api/zcode/ollama" && req.method === "POST") {
+    const models = await listOllamaModels().catch(() => []);
+    if (!optInZcodeOllama(models))
+      return sendJson(res, 400, { ok: false, error: "Ollama isn't running or has no models. Start Ollama, pull a model, then try again." });
+    clearDetectionCache();
+    return sendJson(res, 200, { ok: true, backends: await listBackends() });
+  }
+
   if (pathname === "/api/backends/recheck" && req.method === "POST") {
     clearDetectionCache();
     return sendJson(res, 200, { ok: true, backends: await listBackends() });
@@ -2020,7 +1956,9 @@ async function route(req, res) {
             }
         }
         agent ??= pool.get("__usage__");
-        const result = await agent.getUsage().catch((error) => ({
+        // A sync throw (e.g. a backend with no getUsage) must not reject
+        // Promise.all and blank every other backend's quota.
+        const result = await Promise.resolve().then(() => agent.getUsage()).catch((error) => ({
           ok: false,
           error: String(error?.message ?? error),
         }));
@@ -2087,6 +2025,11 @@ async function route(req, res) {
       state?.status === "running" &&
         Date.now() - (state.startedAt || 0) > 15 * 60_000,
     );
+    const [head, signature, dirtyFiles] = await Promise.all([
+      currentGitHead(projectRoot),
+      withTimeout(workingTreeSignature(projectRoot), SIGNATURE_WAIT_MS, null),
+      uncommittedFileCount(projectRoot),
+    ]);
     return sendJson(res, 200, {
       ok: true,
       mode: DEPLOY_MODE,
@@ -2095,9 +2038,9 @@ async function route(req, res) {
       // Only a deploy of devden itself restarts this server and reloads the
       // page; any other project is just built in place.
       self: deploysSelf(projectRoot),
-      head: currentGitHead(projectRoot),
-      signature: workingTreeSignature(projectRoot),
-      dirtyFiles: uncommittedFileCount(projectRoot),
+      head,
+      signature,
+      dirtyFiles,
       deploying: state?.status === "running" && !stale,
       stale,
       last: state,
@@ -2123,6 +2066,12 @@ async function route(req, res) {
         error: String(error?.message ?? error),
       });
     }
+    if (!existsSync(join(projectRoot, "package.json"))) {
+      return sendJson(res, 400, {
+        ok: false,
+        error: "That folder isn't a project (no package.json).",
+      });
+    }
     const state = readDeployState(projectRoot);
     if (
       state?.status === "running" &&
@@ -2139,7 +2088,7 @@ async function route(req, res) {
         mode: requestedMode,
         startedAt: Date.now(),
         finishedAt: null,
-        commit: currentGitHead(projectRoot),
+        commit: await currentGitHead(projectRoot),
         steps: [],
         log: "",
         error: null,
@@ -2719,11 +2668,16 @@ async function route(req, res) {
     // checkpoints for itself. Never let it block or fail a turn — awaiting
     // `git add -A` sat on the first-token path.
     const turnCwd = String(body.cwd || promptAgent.cwd || process.cwd());
-    const snapshot = takeSnapshot(turnCwd, message).catch(() => ({
+    const snapshot = takeSnapshot(
+      turnCwd,
+      message,
+      sessionPathOf(promptAgent) || sessionKey,
+    ).catch(() => ({
       ok: false,
     }));
     // The same snapshot is this turn's "before" for the Changes views.
     beginTurn({ sessionKey, cwd: turnCwd, label: message, snapshot });
+    prosecutor.noteTask(sessionKey, message, snapshot);
     // A tab whose `streaming` flag lost sync (laptop wake, SSE reconnect, an
     // auto-resume that started under another key) used to POST /prompt into a
     // busy agent and have the message rejected outright. enqueue sends
@@ -2751,6 +2705,9 @@ async function route(req, res) {
       message,
       model: promptAgent.lastState?.model ?? promptAgent.model ?? undefined,
       thinkingLevel: promptAgent.lastState?.thinkingLevel,
+      // A resume must not come back with broader permissions than the turn had.
+      agentMode: promptAgent.agentMode ?? promptAgent.options?.agentMode,
+      accessMode: promptAgent.accessMode ?? promptAgent.options?.accessMode,
     });
     const promptIsBusy =
       hasMethod(promptTarget, "isBusy") && promptTarget.isBusy();
@@ -3146,6 +3103,7 @@ async function route(req, res) {
           const snap = await commitForFork(
             isolatedFrom,
             Number(body.timestamp),
+            snapshotSessions(sessionKey, body.sessionPath, sessionPathOf(forkAgent)),
           );
           const isolated = await createWorktree(
             isolatedFrom,
@@ -3279,6 +3237,7 @@ async function route(req, res) {
           snapshotCwd,
           Number(body.timestamp),
           body.dryRun === true,
+          snapshotSessions(sessionKey, rewindSessionPath, sessionPathOf(agent)),
         ),
       );
     };
@@ -3341,10 +3300,27 @@ async function route(req, res) {
     );
     return sendJson(res, result.ok ? 200 : 500, result);
   }
-  if (req.method === "POST" && action === "goal") {
+  // Prosecutor mode: { backend, model? } arms it for this key, { off: true }
+  // disarms it. The composer re-sends this whenever the mode is shown.
+  if (req.method === "PUT" && action === "prosecutor") {
     const body = await readBody(req);
-    const text = typeof body.text === "string" ? body.text.trim() : "";
-    return sendJson(res, 200, setSessionGoal(sessionKey, text));
+    if (body.off) {
+      prosecutor.disarm(sessionKey);
+      return sendJson(res, 200, { ok: true });
+    }
+    if (!allBackendIds().includes(body.backend))
+      return sendJson(res, 400, { ok: false, error: "unknown backend" });
+    prosecutor.arm(sessionKey, {
+      backend: body.backend,
+      model:
+        body.model && typeof body.model === "object" && body.model.id
+          ? {
+              provider: String(body.model.provider || ""),
+              id: String(body.model.id),
+            }
+          : null,
+    });
+    return sendJson(res, 200, { ok: true });
   }
   // Recorded changes (changes.js): this session's latest turn, a given
   // `turn`, or the whole session. Reads only DevDen's own database.
@@ -3430,7 +3406,12 @@ async function route(req, res) {
       }
       const since = Number(url.searchParams.get("since"));
       if (Number.isFinite(since) && since > 0) {
-        const isolated = await diffSinceSnapshot(dir, since, 15);
+        const isolated = await diffSinceSnapshot(
+          dir,
+          since,
+          15,
+          snapshotSessions(sessionKey),
+        );
         if (isolated.ok) {
           const diff = String(isolated.diff ?? "");
           return sendJson(res, 200, {
@@ -3593,29 +3574,25 @@ async function route(req, res) {
       );
       statusRows = expanded;
     }
-    // Untracked files have no numstat row; count them all at once. Probing
-    // them one by one serialized a git spawn per file (dozens of them),
-    // which is what kept the Changes pill blank for seconds.
+    // Untracked files have no numstat row; an untracked file's additions are
+    // just its line count, so read them instead of asking git. A git spawn
+    // per file (933 in a repo with an untracked icon set) pinned the event
+    // loop for ~15s and stalled every other request, new sessions included.
     const untrackedPaths = statusRows
       .filter((row) => row.startsWith("??"))
       .map((row) => row.slice(3).replace(/^"|"$/g, ""));
-    await Promise.all(
-      untrackedPaths.map(async (path) => {
-        const probe = await git([
-          "diff",
-          "--no-index",
-          "--numstat",
-          "--",
-          "/dev/null",
-          path,
-        ]);
-        const match = probe.stdout.match(/^(\d+|-)\t(\d+|-)\t/);
-        counts.set(path, {
-          additions: match ? Number(match[1]) || 0 : 0,
-          deletions: match ? Number(match[2]) || 0 : 0,
-        });
-      }),
-    );
+    // Cap: a tree with hundreds of untracked files (file-icons, build
+    // artifacts) would otherwise read every one on each Changes poll.
+    if (untrackedPaths.length <= 80) {
+      await Promise.all(
+        untrackedPaths.map(async (path) => {
+          counts.set(path, {
+            additions: await untrackedLineCount(join(dir, path)),
+            deletions: 0,
+          });
+        }),
+      );
+    }
     const changes = [];
     for (const row of statusRows) {
       if (row.length < 4) continue;
@@ -4245,6 +4222,44 @@ async function route(req, res) {
       ),
     );
   }
+  if (req.method === "POST" && (action === "set-context" || action === "set-session-context")) {
+    const body = await readBody(req);
+    const backend = sessionBackends.get(sessionKey) ?? "pi";
+    if (!capabilitiesFor(backend).setContextWindow)
+      return sendJson(res, 200, {
+        ok: false,
+        error: `${backendName(backend)} does not support choosing a context window`,
+      });
+    const contextWindow = Number(body.contextWindow);
+    if (
+      body.contextWindow != null &&
+      (!Number.isSafeInteger(contextWindow) || contextWindow <= 0)
+    )
+      return sendJson(res, 200, {
+        ok: false,
+        error: "contextWindow must be a positive token count or null",
+      });
+    if (action === "set-session-context" && backend === "codex" && body.contextWindow != null) {
+      const catalog = await watch(sessionKey).getAvailableModels();
+      const model = catalog.models?.find(model => model.id === body.modelId);
+      const capacity = model?.maxContextWindow ?? model?.contextWindow;
+      if (!capacity || contextWindow > capacity)
+        return sendJson(res, 200, { ok: false, error: capacity ? `This model supports up to ${capacity} tokens.` : "Backend context capacity unavailable." });
+    }
+    return sendJson(
+      res,
+      200,
+      await runLoggedCommand(sessionKey, "set-context", body, () =>
+        (action === "set-session-context" && backend === "pi"
+          ? watch(sessionKey).setSessionContextWindow.bind(watch(sessionKey))
+          : watch(sessionKey).setContextWindow.bind(watch(sessionKey)))(
+          String(body.provider ?? ""),
+          String(body.modelId ?? ""),
+          body.contextWindow == null ? null : Math.round(contextWindow),
+        ),
+      ),
+    );
+  }
   if (req.method === "POST" && action === "rename") {
     const body = await readBody(req);
     const title =
@@ -4386,6 +4401,7 @@ async function route(req, res) {
 for (const signal of ["uncaughtException", "unhandledRejection"]) {
   process.on(signal, (error) => {
     logFault(`${signal} -- restarting`, error);
+    shutdownAgents();
     process.exit(1);
   });
 }
@@ -4537,26 +4553,57 @@ terminalSockets.on("connection", (socket, _request, url) => {
 
 server.listen(PORT, HOST, () => {
   console.log(`devden ready: http://${HOST}:${PORT}`);
+  if (!ACCESS_TOKEN && !["127.0.0.1", "::1", "localhost"].includes(HOST))
+    console.warn(
+      `devden: bound to ${HOST} without DEVDEN_TOKEN -- only this machine can use the API. Set DEVDEN_TOKEN for remote access.`,
+    );
   // Warm the session-summary cache so the first sidebar load (and the first
   // backend switch after a restart) reads stats, not 175MB of JSONL.
   for (const backend of AGENT_BACKENDS)
     void listSessions({ backend }).catch(() => {});
-  void resumeInterruptedTurns();
+  // Turns cut off by the last restart are not auto-resumed (that cost a
+  // prompt); drop their records so nothing reports them as running.
+  takeInterruptedTurns();
   startClaudeAuthKeepalive();
   listOllamaModels()
     .then((models) => syncOllamaModelsJson(models))
     .catch(() => {});
+  // Same daemon, second consumer: keep ZCode's provider config in sync so
+  // its model catalog lists local Ollama models alongside GLM.
+  // Only once the user opted in from the connect dialog.
+  if (zcodeOllamaOptedIn())
+    listOllamaModels()
+      .then((models) => syncZcodeProviderConfig(models))
+      .catch(() => {});
 });
+
+// Claude runs detached (own process group): if this process dies without
+// stopping the pools, it keeps editing files headless, then a restart starts a
+// second one on the same session. Signals are sent synchronously, so this is
+// safe on the crash path too.
+function shutdownAgents() {
+  shuttingDown = true;
+  for (const stop of [
+    () => piPool.stop(),
+    () => claudePool.stop(),
+    () => grokPool.stop(),
+    () => codexPool.stop(),
+    () => zcodePool.stop(),
+    closeSharedCodex,
+    closeSharedZcode,
+  ]) {
+    try {
+      stop();
+    } catch {
+      /* keep stopping the rest */
+    }
+  }
+  sessionBackends.clear();
+}
 
 for (const signal of ["SIGINT", "SIGTERM"]) {
   process.on(signal, () => {
-    shuttingDown = true;
-    piPool.stop();
-    claudePool.stop();
-    grokPool.stop();
-    codexPool.stop();
-    closeSharedCodex();
-    sessionBackends.clear();
+    shutdownAgents();
     server.close(() => process.exit(0));
     setTimeout(() => process.exit(0), 1500).unref();
   });

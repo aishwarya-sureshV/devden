@@ -57,11 +57,10 @@ body .trow .trow__dur { grid-column: 3; grid-row: 1; font-size: 10px; }
 body .trow .trow__open { grid-column: 4; grid-row: 1; }
 body .trow .trow__arg .trow__prefix { display: inline; }
 body .trow .trow__folder, body .trow .trow__range, body .trow .trow__tag { display: none; }
-body .trow-stack.is-settled:not(.is-failed):not(.is-stopped) .trow__thread { display: none; }
 .trow__folder { min-width: 0; max-width: 45%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg4); }
 body .trow-stack.is-running .trow__thread-bar { height: 2px; background: color-mix(in srgb, var(--tool-color) 60%, transparent); }
 body .trow-stack.is-running .trow__thread-head { background: linear-gradient(90deg, transparent, var(--tool-color)); }
-body .trow-stack.is-settled .trow__thread-bar { background: color-mix(in srgb, var(--tool-color) 8%, transparent); }
+body .trow-stack.is-settled .trow__thread-bar { background: transparent; }
 .edit-well__verb { display: inline-flex; align-items: center; gap: 5px; margin-right: 8px; color: #ffb35c; }
 body .composer .composer__chip-effort { color: #ff7eb6; flex: none; }
 body .composer .composer__row { flex-wrap: nowrap; gap: 4px; padding-right: 36px; }

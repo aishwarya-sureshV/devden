@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readableAgentError, Timeline } from "./timeline.ts";
+import { isAuthError, readableAgentError, Timeline } from "./timeline.ts";
 import type { AgentEvent } from "./api.ts";
 
 const event = (payload: Record<string, unknown>): AgentEvent =>
@@ -134,4 +134,16 @@ test("the same failure in a later turn is not swallowed", () => {
   timeline.handle(event({ type: "stderr", message: grokLog }));
   const notices = timeline.items.filter((item) => item.kind === "notice");
   assert.equal(notices.length, 2);
+});
+
+test("auth failures are recognized narrowly", () => {
+  for (const text of [
+    "Invalid API key · Please run /login",
+    "API Error: 401 {\"type\":\"error\"}",
+    "OAuth token has expired. Please obtain a new token or refresh your existing token.",
+    "Not logged in",
+  ])
+    assert.equal(isAuthError(text), true, text);
+  for (const text of ["File not found: login.tsx", "rate limit reached", "Internal error", "exit code 1401"])
+    assert.equal(isAuthError(text), false, text);
 });

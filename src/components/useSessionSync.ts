@@ -1,7 +1,7 @@
 // Session sync effects for Conversation: queued-message mirror, exact context
 // count, settle events, tab label, and following the newest conversation turn.
 import type * as React from "react";
-import { useEffect, useLayoutEffect, useRef } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { syncConversationScroll } from "../lib/conversationScroll";
 import type { SessionView } from "./SessionHeader";
 import {
@@ -55,6 +55,14 @@ export function useSessionSync({
   conversationView,
 }: UseSessionSyncArgs) {
   const lastPrompt = useRef("");
+  const [contextRevision, setContextRevision] = useState(0);
+  useEffect(() => { setExactContext(null); }, [tab.key, tab.backend, tab.sessionPath]);
+  useEffect(() => subscribeEvents(event => {
+    if (event.sessionKey !== tab.key) return;
+    if (event.type === "agent_start" || event.type === "compaction_end") setExactContext(null);
+    if (event.type === "agent_settled" || event.type === "compaction_end")
+      setContextRevision(value => value + 1);
+  }), [tab.key]);
   useEffect(() => {
     queueFromEventRef.current = false;
     setQueued(state?.queuedMessages ?? []);
@@ -88,7 +96,7 @@ export function useSessionSync({
     let cancelled = false;
     // Same reason as the usage poll: `claude` takes ~2s to count context, and
     // on a page load that request sits in front of the sidebar and transcript.
-    const timer = window.setTimeout(() => {
+    const refreshContext = () => {
       void api
         .contextUsage(tab.key)
         .then((result) => {
@@ -98,18 +106,24 @@ export function useSessionSync({
         .catch(() => {
           if (!cancelled) setExactContext(null);
         });
-    }, 1200);
+    };
+    const timer = window.setTimeout(refreshContext, 1200);
+    const interval = streaming ? window.setInterval(refreshContext, 3000) : undefined;
     return () => {
       cancelled = true;
       window.clearTimeout(timer);
+      window.clearInterval(interval);
     };
   }, [
     caps.contextUsage,
     tab.key,
     tab.backend,
+    tab.sessionPath,
     streaming,
     timeline.items.length,
     visible,
+    contextRevision,
+    timeline.state?.model?.contextWindow,
   ]);
 
   useEffect(

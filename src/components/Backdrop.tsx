@@ -37,6 +37,25 @@ import {
  */
 export function Backdrop() {
   const settings = useSyncExternalStore(subscribeAppearance, getAppearance);
+  // Motion only while DevDen is the window in use. Anything moving under the
+  // frosted panes re-blurs them every frame (~30% GPU, measured), and a
+  // window left behind other apps paid that all day.
+  useEffect(() => {
+    const apply = () =>
+      document.documentElement.classList.toggle(
+        "is-window-idle",
+        document.hidden || !document.hasFocus(),
+      );
+    // Deferred a tick: on pointerdown, focus hasn't moved in yet.
+    const sync = () => setTimeout(apply);
+    apply();
+    // focus/blur alone miss a click into an embedded or just-raised window.
+    const events = ["focus", "blur", "focusin", "pointerdown", "visibilitychange"];
+    for (const name of events) window.addEventListener(name, sync, true);
+    return () => {
+      for (const name of events) window.removeEventListener(name, sync, true);
+    };
+  }, []);
   useEffect(() => {
     if ((settings.background ?? "glass") !== "glass")
       document.body.style.removeProperty("--composer-tone");
@@ -207,6 +226,8 @@ function SceneCanvas({ settings }: { settings: AppearanceSettings }) {
       raf = requestAnimationFrame(loop);
       const dt = Math.min(0.1, (now - last) / 1000);
       last = now;
+      if (document.documentElement.classList.contains("is-window-idle"))
+        return;
       acc += dt;
       if (acc < 1 / 30) return;
       const step = acc;

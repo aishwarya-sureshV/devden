@@ -3,6 +3,7 @@
  * signed in. Results are cached until Re-check clears them.
  */
 import { execFile } from "node:child_process";
+import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -10,6 +11,8 @@ import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import { grokAuthPath } from "./grok-usage.js";
 import { subscriptionEnvironment } from "./claude-agent.js";
+import { zcodeOllamaOptedIn, zcodeProviderConfigPath } from "./zcode-ollama.js";
+import { ZCODE_APP_CLI, ZCODE_APP_CONFIG } from "./zcode-app-server.js";
 
 const execFileAsync = promisify(execFile);
 const VERSION_MS = 3_000;
@@ -35,6 +38,17 @@ export const BUILTIN_DETECT = [
     installCommand: "npm i -g @xai-official/grok",
     loginCommand: "grok login --device-auth",
   },
+  {
+    // ZCode's CLI ships inside the desktop app (no standalone installer
+    // yet; the brew cask installs the same app), so the install step uses
+    // the cask when brew exists, else downloads the official DMG and opens it;
+    // the connect step signs in with ZCode's browser OAuth. An Ollama
+    // provider config (see zcode-ollama.js) also counts as connected.
+    id: "zcode",
+    installCommand:
+      'if command -v brew >/dev/null; then brew install --cask zcode && ZCODE_LOGIN; else a=$(uname -m | sed s/x86_64/x64/); curl -fL -o "$HOME/Downloads/ZCode.dmg" "https://cdn-zcode.z.ai/zcode/electron/releases/3.14.4/macos-$a/ZCode-3.14.4-mac-$a.dmg" && open "$HOME/Downloads/ZCode.dmg"; fi',
+    loginCommand: "zcode login",
+  },
 ];
 
 /** Fixed commands only; never interpolate a client-supplied package or shell command. */
@@ -43,6 +57,14 @@ export function connectionCommand(id, installedPath) {
   if (!spec) throw new Error("Unknown agent");
   const quote = (text) => `'${text.replaceAll("'", "'\\''")}'`;
   const executable = installedPath ? quote(installedPath) : `"$HOME/.local/bin/${id}"`;
+  if (id === "zcode") {
+    // No npm package: install = brew cask (then login) or download + open the
+    // DMG; connect = login with the app's provider-config env.
+    const login = (bin) => `ZCODE_BUILTIN_PROVIDER_CONFIG_FILE=${quote(ZCODE_APP_CONFIG)} ${quote(bin)} login`;
+    if (installedPath) return login(installedPath);
+    return spec.installCommand.replace("ZCODE_LOGIN", login(ZCODE_APP_CLI))
+      .replace(/; fi$/, " && echo 'Drag ZCode to Applications, then Retry connection.'; fi");
+  }
   const login = spec.loginCommand.replace(id, executable);
   const connect = id === "pi"
     ? `${quote(process.execPath)} ${quote(fileURLToPath(new URL("./pi-login.js", import.meta.url)))} ${executable}`
@@ -75,6 +97,18 @@ export async function which(command) {
     });
     const line = String(stdout).trim().split("\n")[0];
     return line || null;
+  } catch {
+    return null;
+  }
+}
+
+// `zcode.cjs --version` loads a large bundle (2-3s, past VERSION_MS under
+// load); the app's plist has the version instantly.
+async function zcodeAppVersion() {
+  try {
+    const plist = await readFile(join(ZCODE_APP_CLI, "../../../Info.plist"), "utf8");
+    const match = plist.match(/<key>CFBundleShortVersionString<\/key>\s*<string>([^<]+)<\/string>/);
+    return match ? `ZCode ${match[1]}` : null;
   } catch {
     return null;
   }
@@ -124,8 +158,12 @@ async function authFor(id, executable) {
   if (id === "grok") {
     try {
       const credentials = JSON.parse(await readFile(grokAuthPath(), "utf8"));
-      const token = credentials?.["https://accounts.x.ai/sign-in"]?.key;
-      return typeof token === "string" && token.length > 0 ? "ok" : "missing";
+      // Device auth stores "https://auth.x.ai::<client>"; older CLIs used the
+      // sign-in key. Anything else (https://api.x.ai) is an API key, not a subscription.
+      const signedIn = Object.entries(credentials ?? {}).some(([origin, entry]) =>
+        (origin === "https://accounts.x.ai/sign-in" || origin.startsWith("https://auth.x.ai::"))
+        && typeof entry?.key === "string" && entry.key.length > 0);
+      return signedIn ? "ok" : "missing";
     } catch (error) {
       return error.code === "ENOENT" ? "missing" : "unknown";
     }
@@ -134,6 +172,42 @@ async function authFor(id, executable) {
     try {
       const credentials = JSON.parse(await readFile(join(process.env.PI_CODING_AGENT_DIR || join(homedir(), ".pi", "agent"), "auth.json"), "utf8"));
       return Object.values(credentials).some((entry) => entry?.type === "oauth" && (entry.access || entry.refresh)) ? "ok" : "missing";
+    } catch (error) {
+      return error.code === "ENOENT" ? "missing" : "unknown";
+    }
+  }
+  if (id === "zcode") {
+    // ZCode shares its credential store with the desktop app
+    // (~/.zcode/v2/credentials.json, oauth:<family>:access_token keys).
+    // A locally-configured provider (e.g. the Ollama sync) works without
+    // any Z.ai login, so it also counts as connected.
+    for (const candidate of [
+      join(homedir(), ".zcode", "v2", "credentials.json"),
+      join(homedir(), ".zcode", "credentials.json"),
+    ]) {
+      try {
+        const credentials = JSON.parse(await readFile(candidate, "utf8"));
+        if (Object.keys(credentials).some((key) => /access_token/.test(key) && credentials[key]))
+          return "ok";
+        break;
+      } catch (error) {
+        if (error.code !== "ENOENT") return "unknown";
+      }
+    }
+    try {
+      const providers = JSON.parse(
+        await readFile(zcodeProviderConfigPath(), "utf8"),
+      );
+      const rules = providers?.config?.providerConfigRules?.providerRules ?? [];
+      // "ollama" is devden's own rule (zcode-ollama.js); older builds wrote it
+      // unasked, so it only counts once the user opted in from the dialog.
+      return rules.some((rule) =>
+        rule?.providerId !== "account:zai" &&
+        (rule?.providerId !== "ollama" || zcodeOllamaOptedIn()) &&
+        rule?.config?.access?.apiKey &&
+        rule?.config?.api?.baseUrl)
+        ? "ok"
+        : "missing";
     } catch (error) {
       return error.code === "ENOENT" ? "missing" : "unknown";
     }
@@ -163,7 +237,9 @@ async function detectCommand(command, id) {
 
 async function detectBuiltin(spec) {
   try {
-    const found = await detectCommand(spec.id, spec.id);
+    let found = await detectCommand(spec.id, spec.id);
+    if (spec.id === "zcode" && !found.path && existsSync(ZCODE_APP_CLI))
+      found = { path: ZCODE_APP_CLI, pathLabel: "ZCode.app", version: await zcodeAppVersion() };
     const auth = found.path ? await authFor(spec.id, found.path) : "missing";
     return {
       ...spec,

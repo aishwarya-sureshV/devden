@@ -47,7 +47,13 @@ initial `ls`/`grep` round-trips (measured: ~47% of first-turn tool calls).
 - `server/index.js` — API entry: routes, SSE (`/api/events`), static serving. Fan-out hub for the server.
 - `server/agent-registry.js` / `agent-pool.js` / `agent-queue.js` — session registry, process pool, and queued-message handling for running agents.
 - `server/agent-subagent.js` + `pi-subagent.js` / `claude-subagent` / `grok-subagent` — subagent spawn/follow plumbing per backend.
-- `server/pi-agent.js`, `claude-agent.js`, `grok-agent.js`, `codex-agent.js` — the four backend adapters (process spawn, RPC/ACP wiring, system-prompt assembly). `server/acp-agent.js` is the ACP stdio opener grok launches through.
+- `server/pi-agent.js`, `claude-agent.js`, `grok-agent.js`, `codex-agent.js`,
+  `zcode-agent.js` — the five backend adapters (process spawn, RPC/ACP wiring,
+  system-prompt assembly). `server/acp-agent.js` is the ACP stdio opener grok
+  launches through; `server/zcode-app-server.js` is the ZCode Protocol NDJSON
+  client zcode launches through; `server/zcode-ollama.js` syncs local Ollama
+  models into `~/.zcode/v2/provider_config.json` (zcode's model catalog is
+  config-driven).
 - First-run setup: `src/components/Onboarding.tsx` + `src/styles/onboarding.css`. Detection (path, version, auth) is `server/agent-detect.js`.
 - `server/pi-extensions/` — pi extensions loaded via `-e`: `manual-approve.ts` (manual mode), `background-tasks.ts` (bash_background/task_output/task_stop + run_in_terminal/read_terminal). `server/terminal-tabs.js` — server-owned terminal tabs those tools drive.
 - `server/co-partner-prompt.js` — shared harness prompts (narration, clarify gate, report).

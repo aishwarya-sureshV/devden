@@ -9,6 +9,7 @@ import {
   compactTokens,
   usageSummaryFromCounts,
   usageSummaryOf,
+  formatUsageSummary,
   type ContextUsage,
 } from "../lib/sessionMetrics";
 import { api, type RunStatus, type ContextUsageReport } from "../lib/api";
@@ -56,7 +57,9 @@ export function useSessionStatus({
       ? "Plan"
       : agentMode === "routed"
         ? "Routed"
-        : agentMode === "manual"
+        : agentMode === "prosecutor"
+          ? "Prosecutor"
+          : agentMode === "manual"
           ? "Manual"
           : agentMode === "auto-edit"
             ? "Auto-edit"
@@ -117,6 +120,7 @@ export function useSessionStatus({
     null,
   );
   const [branchLabel, setBranchLabel] = useState<string | null>(null);
+  useEffect(() => { setSessionUsageTotal(null); }, [tab.key, tab.backend, tab.sessionPath]);
   useEffect(() => {
 
     let cancelled = false;
@@ -135,7 +139,7 @@ export function useSessionStatus({
     } else {
       setBranchLabel(null);
     }
-    if (sessionDetailsOpen && liveTokens === 0) {
+    if (sessionDetailsOpen && liveTokens === 0 && !usageSince) {
       api
         .usage(tab.key, tab.backend, true, tab.sessionPath)
         .then((result) => {
@@ -156,6 +160,7 @@ export function useSessionStatus({
     tab.backend,
     tab.sessionPath,
     liveTokens === 0,
+    usageSince,
     running,
   ]);
   // Context window, not the cumulative total: what the model carries right
@@ -168,34 +173,23 @@ export function useSessionStatus({
         ? "—"
         : `${compactTokens(estimated.estimatedTokens)} of ${compactTokens(estimated.contextWindow)} tokens (${estimated.percent ?? "?"}%) · estimated`
     : "—";
-  const usageTotal = liveTokens > 0 ? liveTokens : sessionUsageTotal;
+  const usageTotal = liveTokens > 0 ? liveTokens : usageSince ? null : sessionUsageTotal;
   // Monocode's turn-metrics readout, aggregated over the session: fresh
   // input, output, cached, cache-hit percent and tok/s. Backends that report
   // no cache fields (or no per-message usage at all) fall back to the old
   // cumulative-total label.
   const spendLabel =
     spend > 0 ? (spend < 0.01 ? "<$0.01" : `$${spend.toFixed(2)}`) : "";
-  // Grok's ledger is the session file, counted once. Summing timeline stamps
-  // repeats a turn that was already a sum of its model calls.
+  // Grok's usage.json ledger is authoritative once idle. Mid-run the timeline
+  // stamps (one turn_completed per turn) sum to the same numbers -- see
+  // timelineUsage.test.ts -- but an idle turn closed by its stall timer never
+  // got its stamp, which the ledger still counts.
   const usageSum =
-    (exactContext?.session && usageSummaryFromCounts(exactContext.session)) ||
+    (tab.backend === "grok" && !streaming && exactContext?.session && usageSummaryFromCounts(exactContext.session)) ||
     usageSummaryOf(billedItems);
   const usageLabel =
-    usageSum && (usageSum.input || usageSum.output || usageSum.cached)
-      ? [
-          usageSum.cacheHitPercent == null
-            ? null
-            : `${Math.round(usageSum.cacheHitPercent)}% cache hit`,
-          usageSum.tokensPerSec == null
-            ? null
-            : `${Math.round(usageSum.tokensPerSec)} tok/s`,
-          `${compactTokens(usageSum.input)} input`,
-          `${compactTokens(usageSum.output)} output`,
-          usageSum.cached ? `${compactTokens(usageSum.cached)} cached` : "",
-          spendLabel,
-        ]
-          .filter(Boolean)
-          .join(" · ")
+    usageSum
+      ? formatUsageSummary(usageSum, spendLabel)
       : usageTotal
         ? [`${compactTokens(usageTotal)} tokens`, spendLabel]
             .filter(Boolean)

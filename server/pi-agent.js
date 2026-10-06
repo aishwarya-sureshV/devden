@@ -27,14 +27,9 @@ import { loadGrokUsage } from "./grok-usage.js";
 import { ollamaResets } from "./ollama-resets.js";
 import { messagesFromPiLog, readResumeSession } from "./sessions.js";
 import { contextTokensFromPiMessages } from "./pi-context.js";
+import { setModelContextOverride, readModelContextOverrides } from "./pi-model-overrides.js";
 import { logFault } from "./log-fault.js";
-import { buildReassertion, findDroppedInstructions } from "./context-guard.js";
-import {
-  CO_PARTNER_PROMPT,
-  CO_PARTNER_PROMPT_MANUAL,
-  CLARIFY_PROMPT,
-  REPORT_PROMPT,
-} from "./co-partner-prompt.js";
+import { findDroppedInstructions } from "./context-guard.js";
 import { withHostGuardEnv } from "./host-guard.js";
 import {
   listOllamaModels,
@@ -52,18 +47,8 @@ const BACKGROUND_TASKS_EXTENSION_URL = new URL(
 );
 const TERMINAL_TABS_PORT = process.env.DEVDEN_PORT || "4319";
 
-const PLAN_MODE_PROMPT = [
-  "You are in plan mode, a strictly read-only exploration phase.",
-  "Inspect the workspace with the available read-only tools, ask concise clarifying questions when needed,",
-  "and do not attempt to edit, write, install, or otherwise change files or external state.",
-  'Finish with a detailed numbered implementation plan under an exact "Plan:" heading:',
-  "Plan:",
-  "1. First step description",
-  "2. Second step description",
-  "Do not execute the plan until the user explicitly chooses Execute plan in the interface.",
-].join("\n");
-
 const USAGE_CACHE_TTL_MS = 5 * 60_000;
+const modelKey = (state) => `${state?.model?.provider ?? ""}/${state?.model?.id ?? ""}`;
 
 // Control commands (state, model, session ops) must answer promptly; a hung
 // pi child would otherwise leave the pending entry and the HTTP request
@@ -145,6 +130,7 @@ function listPiCommandsStandalone(cwd, type = "get_commands") {
       cwd: cwd || homedir(),
       stdio: ["pipe", "pipe", "ignore"],
     });
+    child.stdin.on("error", () => {});
     let stdout = "";
     let settled = false;
     const settle = (fn, value) => {
@@ -531,30 +517,20 @@ export class PiAgentProcess {
     this.setStatus("starting");
     this.cwd = cwd;
     this.agentMode = options.agentMode;
+    // Remembered so a mid-session restart (model or context change) can pass
+    // the read-only tool set back to start() instead of silently reverting
+    // the session to full-auto.
+    this.accessMode = options.accessMode;
     this.stdoutBuffer = "";
-    const systemPrompt = [
-      // Manual mode skips the pre-tool narration line: the approval card
-      // already shows what is about to run, so it would be pure token spend.
-      options.agentMode === "manual" || options.agentMode === "auto-edit"
-        ? CO_PARTNER_PROMPT_MANUAL
-        : CO_PARTNER_PROMPT,
-      CLARIFY_PROMPT,
-      REPORT_PROMPT,
-      ...(options.agentMode === "plan" ? [PLAN_MODE_PROMPT] : []),
-    ].join("\n\n");
-    const args = [
-      "--mode",
-      "rpc",
-      "--approve",
-      "--append-system-prompt",
-      systemPrompt,
-    ];
+    // Plan mode is enforced by the read-only tool set below, not a prompt.
+    const args = ["--mode", "rpc", "--approve"];
     if (options.accessMode === "read-only" || options.agentMode === "plan") {
       args.push("--tools", "read,grep,find,ls");
     }
     // Always on: background tasks + terminal tabs (Claude Code parity for
     // long-running work). Tools no-op gracefully when their bridge is absent.
     args.push("-e", fileURLToPath(BACKGROUND_TASKS_EXTENSION_URL));
+    args.push("-e", fileURLToPath(new URL("./pi-extensions/session-context.ts", import.meta.url)));
     if (this.agentMode === "manual" || this.agentMode === "auto-edit") {
       // pi's RPC protocol has no built-in tool approval; the extension
       // provides it by blocking tool_call and asking over ctx.ui.select,
@@ -580,12 +556,24 @@ export class PiAgentProcess {
         DEVDEN_PORT: TERMINAL_TABS_PORT,
         DEVDEN_SESSION_KEY: this.sessionKey,
         DEVDEN_AGENT_MODE: options.agentMode || "",
+        DEVDEN_SESSION_CONTEXT: this.sessionContextChoice &&
+          this.sessionContextChoice.provider === options.model?.provider &&
+          this.sessionContextChoice.id === options.model?.id
+          ? JSON.stringify(this.sessionContextChoice)
+          : options.contextWindow && options.model
+            ? JSON.stringify({ provider: options.model.provider, id: options.model.id, contextWindow: options.contextWindow })
+            : "",
         FORCE_COLOR: "0",
         NO_COLOR: "1",
       }),
       stdio: ["pipe", "pipe", "pipe"],
     });
+    // A CLI that died mid-turn turns the next write into EPIPE, emitted as an
+    // 'error' event: unhandled, it crashes the server and every session. The
+    // exit handler already reports the death.
+    child.stdin.on("error", () => {});
     this.process = child;
+    this.sessionContextChoice = undefined;
     child.stdout.on("data", (chunk) => this.readStdout(chunk));
     child.stderr.on("data", (chunk) => {
       const message = chunk.toString("utf8").trim();
@@ -597,8 +585,12 @@ export class PiAgentProcess {
       this.emit({ type: "stderr", sessionKey: this.sessionKey, message });
     });
     child.once("error", (error) => {
-      this.failPending(error);
-      if (this.process === child) this.process = undefined;
+      // stop() already failed this child's requests; after a restart,
+      // this.pending belongs to the newer child.
+      if (this.process === child) {
+        this.failPending(error);
+        this.process = undefined;
+      }
       this.setStatus("error", error.message);
     });
     child.once("exit", (code, signal) => {
@@ -606,9 +598,13 @@ export class PiAgentProcess {
       // The detached runner outlives pi, but its results can no longer reach
       // this session; without this the follow intervals leak and the spawn
       // card spins forever.
-      this.subagents.stopAll();
-      this.failPending(new Error(`Pi exited (${signal ?? code ?? "unknown"})`));
-      if (this.process === child) this.process = undefined;
+      // Only when this child is still current: stop() already did both for
+      // it, and a late exit must not reject the restarted child's requests.
+      if (this.process === child) {
+        this.subagents.stopAll();
+        this.failPending(new Error(`Pi exited (${signal ?? code ?? "unknown"})`));
+        this.process = undefined;
+      }
       if (this.status !== "stopped" && this.process === undefined) {
         const err =
           code && code !== 0 ? `Pi exited with code ${code}` : undefined;
@@ -621,11 +617,13 @@ export class PiAgentProcess {
     });
     let state;
     try {
-      state = await this.getState(15_000);
+      // ponytail: cold pi is ~6s idle; big session files + concurrent tab
+      // restores under load blew past the old 15s. Real hangs still fail.
+      state = await this.getState(60_000);
     } catch (error) {
       this.stop();
       throw new Error(
-        `Pi did not finish starting within 15 seconds: ${String(error?.message ?? error)}`,
+        `Pi did not finish starting within 60 seconds: ${String(error?.message ?? error)}`,
       );
     }
     this.setStatus(state.isStreaming ? "working" : "ready");
@@ -770,8 +768,21 @@ export class PiAgentProcess {
       (entry) => entry?.id === result.firstKeptEntryId,
     );
     if (cutIndex <= 0) return;
-    const deadUsers = entries
-      .slice(0, cutIndex)
+    // Only the active branch's ancestors: entries from abandoned branches
+    // were never in this conversation's context.
+    const byId = new Map(entries.map((entry) => [entry?.id, entry]));
+    const branch = [];
+    for (
+      let entry = byId.get(entries[cutIndex].parentId);
+      entry;
+      entry = byId.get(entry.parentId)
+    )
+      branch.unshift(entry);
+    const deadUsers = (
+      entries[cutIndex].parentId === undefined
+        ? entries.slice(0, cutIndex)
+        : branch
+    )
       .map((entry) => entry?.message)
       .filter((message) => message?.role === "user");
     const live = await this.getMessages(10_000);
@@ -787,8 +798,27 @@ export class PiAgentProcess {
       reason: String(event.reason ?? "manual"),
       dropped: dropped.map((instruction) => instruction.text),
     });
-    await this.prompt(buildReassertion(dropped));
   }
+  /**
+   * Launch options for restarting this same session against its saved file
+   * (model or context change on an idle process). Carries every setting
+   * start() derives behavior from — losing agentMode/accessMode here would
+   * silently drop plan/manual/read-only controls.
+   */
+  restartLaunchOptions(provider, modelId) {
+    return {
+      model: { provider, id: modelId },
+      ...(this.lastState?.sessionFile
+        ? { sessionPath: this.lastState.sessionFile }
+        : {}),
+      ...(this.lastState?.thinkingLevel
+        ? { thinkingLevel: this.lastState.thinkingLevel }
+        : {}),
+      ...(this.agentMode ? { agentMode: this.agentMode } : {}),
+      ...(this.accessMode ? { accessMode: this.accessMode } : {}),
+    };
+  }
+
   async setModel(provider, modelId) {
     if (provider === "ollama") {
       try {
@@ -814,19 +844,93 @@ export class PiAgentProcess {
     // saved session with the current catalog; never interrupt a busy turn.
     if (!result.ok && this.cwd && !this.isBusy() &&
         (provider === "ollama" || /model.*not found|unknown model/i.test(result.error ?? ""))) {
-      const sessionPath = this.lastState?.sessionFile;
-      const thinkingLevel = this.lastState?.thinkingLevel;
       this.stop();
-      return this.start(this.cwd, {
-        model: { provider, id: modelId },
-        ...(sessionPath ? { sessionPath } : {}),
-        ...(thinkingLevel ? { thinkingLevel } : {}),
-      });
+      return this.start(this.cwd, this.restartLaunchOptions(provider, modelId));
     }
     if (!result.ok) return result;
     this.usageCache = { at: 0, result: undefined };
     try {
       return { ok: true, data: result.data, state: await this.getState() };
+    } catch (error) {
+      return { ok: false, error: String(error?.message ?? error) };
+    }
+  }
+
+  /**
+   * Choose the context window for one model. Pi only reads the window from
+   * ~/.pi/agent/models.json (providers.<p>.modelOverrides.<id>.contextWindow),
+   * so this writes that override. A live process re-reads models.json only
+   * at startup (verified: RPC set_model does not reload it), so an idle
+   * session restarts against its session file to pick the value up; the
+   * override also applies to every future pi session with that model.
+   * `null` removes the override and restores the catalog default.
+   */
+  async setContextWindow(provider, modelId, contextWindow) {
+    if (!provider || !modelId)
+      return { ok: false, error: "a selected model is required" };
+    try {
+      await setModelContextOverride(provider, modelId, contextWindow);
+    } catch (error) {
+      return { ok: false, error: String(error?.message ?? error) };
+    }
+    if (!this.process || this.isBusy())
+      // Nothing live to reload (or a turn is streaming): the override is
+      // written, and the next start() — which carries agentMode/accessMode
+      // — reads the new value.
+      return {
+        ok: true,
+        data: { provider, id: modelId, ...(contextWindow ? { contextWindow } : {}) },
+      };
+    this.stop();
+    try {
+      await this.start(this.cwd, this.restartLaunchOptions(provider, modelId));
+    } catch (error) {
+      return { ok: false, error: String(error?.message ?? error) };
+    }
+    this.usageCache = { at: 0, result: undefined };
+    try {
+      return { ok: true, state: await this.getState() };
+    } catch (error) {
+      return { ok: false, error: String(error?.message ?? error) };
+    }
+  }
+  /** Session-only counterpart to the legacy shared models.json override. */
+  async setSessionContextWindow(provider, modelId, contextWindow) {
+    if (!provider || !modelId) return { ok: false, error: "A selected model is required." };
+    if (this.isBusy()) return { ok: false, error: "Wait for the current response to finish before changing context." };
+    try {
+      const choice = { provider, id: modelId, contextWindow };
+      if (!this.process) {
+        const catalog = await this.getAvailableModels();
+        const model = catalog.models?.find(item => item.provider === provider && item.id === modelId);
+        const capacity = model?.maxContextWindow ?? model?.contextWindow;
+        const tokens = contextWindow ?? model?.contextWindow;
+        if (!capacity || !Number.isSafeInteger(tokens) || tokens <= 0 || tokens > capacity)
+          return { ok: false, error: capacity ? `Context must be between 1 and ${capacity} tokens.` : "Backend context capacity unavailable." };
+        this.sessionContextChoice = choice;
+        return { ok: true, data: { ...model, contextWindow: tokens } };
+      }
+      // Never send an unregistered slash command: Pi would treat it as an LLM prompt.
+      const commands = await this.runCommand({ type: "get_commands" });
+      if (!commands.ok || !commands.data?.commands?.some(command => command.name === "devden-context" && command.source === "extension"))
+        return { ok: false, error: "This Pi process needs to be reopened to load session context support." };
+      const stateBefore = await this.getState();
+      if (stateBefore.model?.provider !== provider || stateBefore.model?.id !== modelId)
+        return { ok: false, error: "Select this model before changing its context." };
+      const catalog = await this.runCommand({ type: "get_available_models" });
+      const models = Array.isArray(catalog.data) ? catalog.data : catalog.data?.models;
+      const base = models?.find(model => model.provider === provider && model.id === modelId);
+      const capacity = base?.maxContextWindow ?? base?.contextWindow;
+      const tokens = contextWindow ?? base?.contextWindow;
+      if (!capacity || !Number.isSafeInteger(tokens) || tokens <= 0 || tokens > capacity)
+        return { ok: false, error: capacity ? `Context must be between 1 and ${capacity} tokens.` : "Backend context capacity unavailable." };
+      const result = await this.runCommand({ type: "prompt", message: `/devden-context ${JSON.stringify(choice)}` });
+      if (!result.ok) return result;
+      const state = await this.getState();
+      if (state.model?.contextWindow !== tokens)
+        return { ok: false, error: "Pi did not apply the requested context window." };
+      this.usageCache = { at: 0, result: undefined };
+      return { ok: true, state };
     } catch (error) {
       return { ok: false, error: String(error?.message ?? error) };
     }
@@ -1027,11 +1131,12 @@ export class PiAgentProcess {
   // Always read a fresh registry so an active session cannot pin the picker
   // to models that existed when its process started.
   async getAvailableModels() {
-    const [response, ollama] = await Promise.all([
+    const [response, ollama, overridden] = await Promise.all([
       listPiModelsStandalone(this.cwd)
         .then((models) => ({ success: true, data: models }))
         .catch((error) => ({ success: false, error: String(error?.message ?? error) })),
       listOllamaModels().catch(() => []),
+      readModelContextOverrides().catch(() => new Set()),
     ]);
     if (ollama.length) void syncOllamaModelsJson(ollama).catch(() => {});
     if (response.success === false) {
@@ -1047,11 +1152,21 @@ export class PiAgentProcess {
     // the composer slider can match each selected model.
     return {
       ok: true,
-      models: mergeModelLists(models, ollama).map((model) =>
-        typeof model.reasoning === "boolean" || model.thinkingLevelMap
-          ? { ...model, levels: supportedThinkingLevels(model) }
-          : model,
-      ),
+      models: mergeModelLists(models, ollama)
+        .map((model) =>
+          typeof model.reasoning === "boolean" || model.thinkingLevelMap
+            ? { ...model, levels: supportedThinkingLevels(model) }
+            : model,
+        )
+        // Flag models whose contextWindow comes from a models.json override
+        // (ours or the user's): the merged catalog then reports the
+        // overridden window, and the picker must not present it as the
+        // model's default.
+        .map((model) =>
+          overridden.has(`${model.provider}\0${model.id}`)
+            ? { ...model, contextWindowOverride: true }
+            : model,
+        ),
     };
   }
 
@@ -1114,6 +1229,9 @@ export class PiAgentProcess {
     if (
       !force &&
       this.usageCache.result &&
+      // The quota belongs to whichever provider backs the model: a model
+      // switch (codex -> ollama) must not serve the old provider's numbers.
+      this.usageCache.model === modelKey(this.lastState) &&
       now - this.usageCache.at < USAGE_CACHE_TTL_MS
     ) {
       return this.usageCache.result;
@@ -1121,7 +1239,8 @@ export class PiAgentProcess {
     if (this.usageRequest) return this.usageRequest;
     this.usageRequest = this.loadUsage(sessionPath)
       .then((result) => {
-        if (result?.ok) this.usageCache = { at: Date.now(), result };
+        if (result?.ok)
+          this.usageCache = { at: Date.now(), result, model: modelKey(this.lastState) };
         return result;
       })
       .finally(() => {
@@ -1502,6 +1621,7 @@ export function generateSessionTitle(
         env: { ...process.env, FORCE_COLOR: "0", NO_COLOR: "1" },
         stdio: ["pipe", "pipe", "ignore"],
       });
+      child.stdin.on("error", () => {});
     } catch {
       resolve("");
       return;

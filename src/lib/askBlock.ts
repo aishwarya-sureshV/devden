@@ -1,7 +1,7 @@
 /**
  * Structured clarifying questions.
  *
- * CLARIFY_PROMPT tells every backend to ask its questions inside an ```ask
+ * Older sessions (devden used to prompt for it) ask questions inside an ```ask
  * fence holding JSON, so the UI can render pickable options instead of asking
  * the user to type an answer to a question the model already enumerated. A
  * ```json fence with that same payload counts too: some models (glm-5.3-flash)

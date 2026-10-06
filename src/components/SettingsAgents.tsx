@@ -4,7 +4,7 @@ import { useStore } from "../lib/store";
 import { AgentConnect } from "./AgentConnect";
 
 /** Row order matches onboarding's card order. */
-const ROW_ORDER = ["claude", "codex", "grok", "pi"];
+const ROW_ORDER = ["claude", "codex", "grok", "pi", "zcode"];
 
 type Kind = "ready" | "auth" | "missing";
 
@@ -59,7 +59,9 @@ export function SettingsAgents() {
       setAgents(result.backends);
     } catch (err) {
       setError(
-        err instanceof Error ? err.message : "Could not look up agents.",
+        err instanceof Error && err.name === "TimeoutError"
+          ? "Agent lookup timed out. Check the devden server, then re-check."
+          : err instanceof Error ? err.message : "Could not look up agents.",
       );
     } finally {
       setLoading(false);
@@ -181,7 +183,7 @@ export function SettingsAgents() {
                   )}
                 </div>
                 <div className="agents-settings__meta">
-                  <span>{agent.version ?? "not installed"}</span>
+                  <span>{agent.version ?? (agent.path ? "installed" : "not installed")}</span>
                   <span>{agent.pathLabel || agent.path || "not on PATH"}</span>
                 </div>
                 <span className={`agents-settings__status is-${kind}`}>

@@ -22,6 +22,8 @@
     "bin/devden",
     "bin/lib",
     "server",
+    "!server/**/*.test.js",
+    "!server/zcode-mock-agent.mjs",
     "scripts/deploy.mjs",
     "scripts/supervise.mjs",
     "dist"
@@ -62,6 +64,7 @@
     "codemirror": "^6.0.2",
     "node-pty": "^1.1.0",
     "qrcode": "^1.5.4",
+    "vscode-material-icons": "^0.1.1",
     "ws": "^8.21.3"
   },
   "devDependencies": {

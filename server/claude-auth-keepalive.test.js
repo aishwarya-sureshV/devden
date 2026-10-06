@@ -25,7 +25,9 @@ async function tick(bin) {
   process.env.DEVDEN_CLAUDE_BIN = bin;
   try {
     clearInterval(startClaudeAuthKeepalive());
-    await new Promise((resolve) => setTimeout(resolve, 1500));
+    // Poll: a fixed 1.5s sleep lost the race when the full suite loads the box.
+    for (let waited = 0; waited < 5000 && !warnings.length; waited += 100)
+      await new Promise((resolve) => setTimeout(resolve, 100));
   } finally {
     console.warn = original;
   }

@@ -27,11 +27,6 @@ import {
   noteSubagentToolEvent,
   subagentBusy,
 } from "./agent-subagent.js";
-import {
-  CO_PARTNER_PROMPT,
-  CO_PARTNER_PROMPT_MANUAL,
-  CLARIFY_PROMPT,
-} from "./co-partner-prompt.js";
 import { withHostGuardEnv } from "./host-guard.js";
 import { forkClaudeTranscript } from "./claude-fork.js";
 
@@ -182,22 +177,25 @@ const USAGE_TTL_MS = 5 * 60_000;
 const USAGE_FORCE_TTL_MS = 2 * 60_000;
 let usageCache = { at: 0, promise: undefined, result: undefined };
 
-function claudeModelInfo(modelId) {
+/** Tests only: pin the known-model list the CLI scan would otherwise supply. */
+export function setClaudeModelsForTesting(ids) {
+  CLAUDE_MODELS = toClaudeModels(ids);
+  CLAUDE_ALIASES = claudeAliasesFor(CLAUDE_MODELS);
+}
+
+export function claudeModelInfo(modelId) {
   const raw = String(modelId || "").trim();
   if (!raw) return null;
   const alias = CLAUDE_ALIASES[raw.toLowerCase()];
+  // Only a date/version stamp or [1m] makes two ids equivalent. A prefix match
+  // mapped point releases (claude-sonnet-5-5) onto their base (claude-sonnet-5)
+  // whenever the scanned list didn't know the newer id yet.
   const stripped = raw
     .replace(/\[1m\]$/i, "")
     .replace(/-20\d{6}(?:-v\d+)?$/i, "");
   const known = CLAUDE_MODELS.find(
     (model) =>
-      model.id === raw ||
-      model.id === alias ||
-      model.id === stripped ||
-      raw === model.id ||
-      stripped === model.id ||
-      raw.startsWith(`${model.id}-`) ||
-      stripped.startsWith(`${model.id}-`),
+      model.id === raw || model.id === alias || model.id === stripped,
   );
   if (known) return { ...known };
   return {
@@ -871,19 +869,44 @@ export function claudeUsage(raw) {
   return { input, output, cacheRead, cacheWrite, totalTokens: input + output + cacheRead + cacheWrite };
 }
 
-/** Claude writes one assistant entry per content block, each repeating the
- *  message's usage: keep it on the first entry of each message id only.
- *  ponytail: live blocks can carry a partial output count on the first block;
- *  the turn's result.usage would be exact if that drift ever matters. */
+/** One turn's bill off the CLI's `result` event, in claudeUsage's shape.
+ *  `previous` is this process's prior result event (undefined on the first).
+ *  Measured 2026-10-04 on a two-prompt stream-json process:
+ *    result.usage   per turn, snake_case (input_tokens, output_tokens,
+ *                   cache_read_input_tokens, cache_creation_input_tokens)
+ *    result.modelUsage  CUMULATIVE across the process, per model, camelCase
+ *                   (inputTokens, outputTokens, cacheReadInputTokens,
+ *                   cacheCreationInputTokens); turn 2 showed inputTokens 20
+ *                   after two 10-token turns. */
+export function claudeTurnUsage(result, previous) {
+  const now = result?.modelUsage;
+  if (!now || typeof now !== "object") return claudeUsage(result?.usage);
+  const before = previous?.modelUsage ?? {};
+  const delta = (key) =>
+    Object.entries(now).reduce((sum, [model, usage]) =>
+      sum + Math.max(0, (Number(usage?.[key]) || 0) - (Number(before[model]?.[key]) || 0)), 0);
+  const input = delta("inputTokens");
+  const output = delta("outputTokens");
+  const cacheRead = delta("cacheReadInputTokens");
+  const cacheWrite = delta("cacheCreationInputTokens");
+  return { input, output, cacheRead, cacheWrite, totalTokens: input + output + cacheRead + cacheWrite };
+}
+
+/** Repeated history blocks share one usage object, updated by the final block.
+ * Live events carry the full snapshot; the timeline replaces it by message id. */
 function withClaudeUsage(message, seen) {
   if (!message?.usage) return message;
   const { usage, ...rest } = message;
-  if (message.id && seen.has(message.id)) return rest;
-  if (message.id) seen.add(message.id);
-  return { ...rest, usage: claudeUsage(usage) };
+  const normalized = claudeUsage(usage);
+  if (message.id && seen?.has(message.id)) {
+    Object.assign(seen.get(message.id), normalized);
+    return rest;
+  }
+  if (message.id) seen?.set(message.id, normalized);
+  return { ...rest, usage: normalized };
 }
 
-function normalizeHistoryEntry(entry, seen = new Set()) {
+function normalizeHistoryEntry(entry, seen = new Map()) {
   const timestamp = Date.parse(entry?.timestamp ?? "") || Date.now();
   const message = entry?.message;
   if (!message || typeof message !== "object") return [];
@@ -988,7 +1011,7 @@ function readSubagentTranscripts(sessionPath) {
 }
 
 export function messagesFromClaudeLog(contents, sessionPath) {
-  const seen = new Set();
+  const seen = new Map();
   const messages = String(contents || "")
     .split("\n")
     .filter(Boolean)
@@ -1178,6 +1201,8 @@ export class ClaudeAgentProcess {
     this.setStatus("starting");
     this.stdoutBuffer = "";
     this.activeStreams.clear();
+    // A new CLI process restarts its cumulative result.modelUsage at zero.
+    this.lastResult = undefined;
     this.initialized = false;
     const args = [
       "-p",
@@ -1189,10 +1214,6 @@ export class ClaudeAgentProcess {
       "--forward-subagent-text",
       "--include-hook-events",
       "--verbose",
-      "--append-system-prompt",
-      // Manual mode drops the pre-tool narration: the approval card shows
-      // what is about to run.
-      `${this.options.agentMode === "manual" ? CO_PARTNER_PROMPT_MANUAL : CO_PARTNER_PROMPT}\n\n${CLARIFY_PROMPT}`,
     ];
     if (this.options.agentMode === "plan") {
       args.push("--permission-mode", "plan");
@@ -1220,6 +1241,10 @@ export class ClaudeAgentProcess {
       stdio: ["pipe", "pipe", "pipe"],
       detached: process.platform !== "win32",
     });
+    // A CLI that died mid-turn turns the next write into EPIPE, emitted as an
+    // 'error' event: unhandled, it crashes the server and every session. The
+    // exit handler already reports the death.
+    child.stdin.on("error", () => {});
     this.process = child;
     this.intentionalExit = false;
     child.stdout.on("data", (chunk) => this.readStdout(chunk));
@@ -1494,7 +1519,7 @@ export class ClaudeAgentProcess {
 
   async getMessages() {
     const entries = await this.getEntries();
-    const seen = new Set();
+    const seen = new Map();
     return entries.flatMap((entry) => normalizeHistoryEntry(entry, seen));
   }
 
@@ -1526,7 +1551,7 @@ export class ClaudeAgentProcess {
         destDir,
         context.forkCwd,
       );
-      const seen = new Set();
+      const seen = new Map();
       const messages = forked.entries.flatMap((entry) => normalizeHistoryEntry(entry, seen));
       const state = await this.getState();
       return {
@@ -1820,7 +1845,7 @@ export class ClaudeAgentProcess {
       data: {
         totalTokens: total,
         maxTokens: max,
-        percent: Number(usage.percentage ?? Math.round((total / max) * 100)),
+        percent: Math.round((total / max) * 100),
         model: String(usage.model ?? ""),
         autoCompactThreshold: Number(usage.autoCompactThreshold) || 0,
         isAutoCompactEnabled: usage.isAutoCompactEnabled === true,
@@ -2191,9 +2216,13 @@ export class ClaudeAgentProcess {
           args: part.input ?? {},
         });
       });
-      this.usageSeen ??= new Set();
+      // Every content block arrives as its own assistant event repeating the
+      // message_start usage snapshot (output_tokens near zero; the final
+      // count only lands later on message_delta). Billing it here counted each
+      // response once per block, wrong. The turn's result ledger bills instead.
+      const { usage: _snapshot, ...streamed } = event.message;
       const message = {
-        ...withClaudeUsage(event.message, this.usageSeen),
+        ...streamed,
         content: content.map((part) =>
           part?.type === "tool_use"
             ? {
@@ -2266,7 +2295,9 @@ export class ClaudeAgentProcess {
         requestKind: pending?.kind ?? "unknown",
         ok,
         result: event.result,
+        usage: claudeTurnUsage(event, this.lastResult),
       });
+      this.lastResult = event;
       if (this.pendingTurns.length === 0) {
         this.setStatus("ready");
         this.emit({ type: "agent_settled", sessionKey: this.sessionKey });
@@ -2317,6 +2348,22 @@ export class ClaudeAgentProcess {
         });
       }
       this.beginMessageStream(source);
+      (this.callUsage ??= new Map()).set(source, streamEvent.message?.usage);
+      return;
+    }
+    if (streamEvent.type === "message_delta" && streamEvent.usage) {
+      // One model call's final count (measured 2026-10-05: each delta carries
+      // the full input/cache/output set, and the deltas of a turn sum exactly
+      // to its result ledger). Billed live so the card moves mid-run; the
+      // turn_result ledger replaces these provisional stamps.
+      const usage = claudeUsage({ ...this.callUsage?.get(source), ...streamEvent.usage });
+      this.callUsage?.delete(source);
+      this.emit({
+        type: "usage_progress",
+        sessionKey: this.sessionKey,
+        usage,
+        ...(parentToolUseId ? { parentToolUseId } : {}),
+      });
       return;
     }
     const index = typeof streamEvent.index === "number" ? streamEvent.index : 0;

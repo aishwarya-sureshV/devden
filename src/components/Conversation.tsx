@@ -42,6 +42,7 @@ import {
 import {
   isolateSession as isolateSessionImpl,
   forkOutput as forkOutputImpl,
+  stopTurn,
 } from "./conversationSession";
 import { useModelPicker } from "./useModelPicker";
 import { useSessionStatus } from "./useSessionStatus";
@@ -501,6 +502,7 @@ export function Conversation({
     browseBackend, currentModelLabel, effort, trackLevels, supportedLevels,
     visibleOptions,
     currentModel, pickListedModel, setEffort, onModelMenuKey,
+    contextChoices, currentContext, defaultContext, onContext,
   } = useModelPicker({
     models, tab, state, timeline, setLevels, setPreferredModel, refreshUsage,
     pickerBackend, pickerModels, modelQuery, levels, pickerLevels, modelIndex,
@@ -510,8 +512,8 @@ export function Conversation({
   });
 
   const interrupt = useCallback(() => {
-    void api.abort(tab.key);
-  }, [tab.key]);
+    void stopTurn(tab.key, timeline);
+  }, [tab.key, timeline]);
 
   /**
    * Move this session into its own checkout. Snapshots, the Changes panel and
@@ -570,6 +572,7 @@ export function Conversation({
         visibleOptions, modelIndex, modelQuery, currentModel, setUsageOpen,
         setModeMenuOpen, setModelMenuOpen, setPickerBackend, setModelQuery,
         setModelIndex, pickListedModel, setEffort, setEffortHover,
+        contextChoices, currentContext, defaultContext, onContext,
         onModelMenuKey, loadModelMetadata, modeMenuRef, modeMenuOpen,
         switchAgentMode, dismissRoutePick, usagePopRef, usageOpen,
         providerUsage, backendUsage, currentReset, agentBusy,

@@ -4,18 +4,18 @@ A local web workbench for the coding agents already on your machine: **pi**, **C
 
 ## Install
 
-macOS or Linux, with [Node.js](https://nodejs.org) 22.13 or newer. Windows is not supported. The first screen detects your existing agent logins. Choose **Install & connect** for a missing agent or **Connect** to sign in with your subscription. DevDen handles installation without sudo and opens the provider's sign-in link; you approve access in your browser. The same flow is available in Settings → Agents. Pi's subscription chooser requires the current official Pi release (Node.js 22.19 or newer).
+macOS or Linux, with [Node.js](https://nodejs.org) 22.13 or newer, `git`, `curl`, and `lsof`. Windows is not supported. The first screen detects your existing agent logins. Choose **Install & connect** for a missing agent or **Connect** to sign in with your subscription. DevDen handles installation without sudo and opens the provider's sign-in link; you approve access in your browser. The same flow is available in Settings → Agents. Pi's subscription chooser requires the current official Pi release (Node.js 22.19 or newer).
 
 ```bash
-npx devden
-```
-
-Or install the command and keep it:
-
-```bash
-npm install -g devden
+git clone https://github.com/aishwarya-sureshV/devden.git
+cd devden
+npm ci
+npm run build
+npm install -g .
 devden
 ```
+
+Once the package is on npm, `npx devden` or `npm install -g devden` will do the same.
 
 That starts a server on `127.0.0.1:4319` and opens the workbench. Run it again later and it reuses the server that is already up.
 
@@ -26,17 +26,9 @@ devden --backend codex
 devden --stop
 ```
 
-From a checkout of this repo, `npm install` then `npm install -g .` does the same thing.
-
 On macOS, `node-pty` 1.1.0 installs a prebuilt binary for `darwin-arm64` and `darwin-x64`. A fresh Mac does not need Xcode command-line tools. On Linux that version has no prebuilt binary, so the install compiles it and needs Python, make, and a C++ compiler.
 
 The npm package named `pi-web` is a different project (`ravshansbox/pi-web`). This project's old local data in `~/.pi-web` is still read if `~/.devden` does not exist yet.
-
-If an older install of this repo replaced your Homebrew `pi` binary, put the stock one back:
-
-```bash
-ln -sfn ../lib/node_modules/@earendil-works/pi-coding-agent/dist/cli.js /opt/homebrew/bin/pi
-```
 
 ## Self-hosted cloud work
 
@@ -107,6 +99,7 @@ Add `?backend=claude`, `?backend=grok`, or `?backend=codex` to start a new sessi
 | `DEVDEN_TOKEN` | unset | Bearer token. When set, the API, the event stream, and the terminal socket require it. The lock screen trades it for an HttpOnly cookie and a one-time ticket, so the token never lands in a URL or a log line. |
 | `DEVDEN_UI_ORIGIN` | unset | Exact origin of a hosted UI that may call this API. Localhost is always allowed. Suffixes such as `*.pages.dev` are not. |
 | `DEVDEN_WORKSPACE_ROOTS` | unset | Colon-separated extra directories the explorer may edit. Writes, renames, deletes, copies, moves, and git stay inside these roots plus the launch directory and open session folders. Read-only browsing stays inside your home directory. |
+| `DEVDEN_HOME` | `~/.devden` | Where sessions, settings, and snapshots are stored |
 | `DEVDEN_LOG` | `$TMPDIR/devden.log` | Launcher log |
 
 ## Security
@@ -130,42 +123,13 @@ Check `http://127.0.0.1:4319/api/health` before starting another server. Port 43
 
 `devden` is the `bin` entry in `package.json`. It runs `bin/lib/devden-launcher.sh`. The server spawns each agent by name from `PATH`.
 
-## Keeping your local changes across `npm update`
-
-`node_modules` is disposable: every `npm install` / `npm update` replaces the package and **wipes any edits you made inside it**. If you've customized devden files directly in `node_modules`, use [patch-package](https://github.com/ds300/patch-package) to make your changes survive updates. It works with npm and yarn, and requires no Git.
-
-### Setup (one time)
+## Uninstall
 
 ```bash
-npm install --save-dev patch-package
+devden --stop
+npm rm -g devden
+rm -rf ~/.devden   # sessions, settings, snapshots (and ~/.pi-web if it exists)
 ```
 
-Then add to the `scripts` section of your `package.json` (create `scripts` if missing):
+Agents keep their own logins and history in `~/.claude`, `~/.codex`, `~/.pi`, and `~/.grok`; DevDen does not remove them. If you used local Ollama models, DevDen added entries to `~/.pi/agent/models.json`.
 
-```json
-{
-  "scripts": {
-    "postinstall": "patch-package"
-  }
-}
-```
-
-### Save your changes (after editing files in `node_modules/devden`)
-
-```bash
-npx patch-package devden
-```
-
-This creates `patches/devden+<version>.patch` **in your project root** (outside `node_modules`, so it's safe). Commit it if you use Git.
-
-### What happens on update
-
-Run `npm update` (or `npm install devden@latest`) as usual. The `postinstall` script re-applies your patch automatically — your changes and the new upstream version end up together.
-
-### If a patch fails
-
-If the new devden version changed the same lines you patched, you'll see the patch fail during install. Re-apply:
-
-1. re-apply your edits to `node_modules/devden`,
-2. delete `patches/devden+<old-version>.patch`,
-3. run `npx patch-package devden` again to regenerate it for the new version.

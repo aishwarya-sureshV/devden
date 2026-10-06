@@ -4,7 +4,6 @@ import {
   exhaustedWindow,
   formatResetAt,
   isUsageLimitError,
-  limitResumePrompt,
   limitScope,
   pendingLimitTurn,
 } from "./usageLimit.ts";
@@ -291,11 +290,4 @@ test("formatResetAt drops the weekday for a same-day reset", () => {
     `${new Date(later).toLocaleDateString(undefined, { weekday: "short" })} ${new Date(later).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })}`,
   );
   assert.equal(formatResetAt(Number.NaN), "");
-});
-
-test("limitResumePrompt carries the request without re-asking the user", () => {
-  const prompt = limitResumePrompt("add the reset banner", "weekly");
-  assert.match(prompt, /add the reset banner/);
-  assert.match(prompt, /weekly limit/);
-  assert.match(prompt, /Do not start over/);
 });

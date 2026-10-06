@@ -7,6 +7,7 @@ import { TurnCompleteBar } from "./TurnCompleteBar";
 import { turnStats } from "../lib/turnReview";
 import { WorkspacePicker, type WorkspacePickerHandle } from "./WorkspacePicker";
 import { RouteSetup } from "./RouteSetup";
+import { ProsecutorSetup } from "./ProsecutorSetup";
 import { TodoTracker } from "./TodoTracker";
 import { AskCard } from "./AskCard";
 import {
@@ -34,6 +35,7 @@ import type { Timeline, TimelineItem } from "../lib/timeline";
 import type { ToolFileView } from "../lib/toolCards";
 import type { SessionRoute } from "../lib/route";
 import type { TodoTask } from "../lib/todos";
+import { stopTurn } from "./conversationSession";
 
 export type ConversationComposerProps = {
   contextUsage: { percent: number | null; label: string };
@@ -126,6 +128,11 @@ export type ConversationComposerProps = {
   pickListedModel: (option: ModelOption) => void;
   setEffort: (level: string) => void;
   setEffortHover: React.Dispatch<React.SetStateAction<number | null>>;
+  /** Context-window choices for the session's model; null hides the row. */
+  contextChoices: number[] | null;
+  currentContext?: number;
+  defaultContext?: number;
+  onContext: (tokens: number | null) => void | Promise<void>;
   onModelMenuKey: (event: React.KeyboardEvent<HTMLDivElement>) => void;
   loadModelMetadata: () => void;
   modeMenuRef: React.RefObject<HTMLDivElement | null>;
@@ -222,6 +229,10 @@ export function ConversationComposer({ contextUsage,
   pickListedModel,
   setEffort,
   setEffortHover,
+  contextChoices,
+  currentContext,
+  defaultContext,
+  onContext,
   onModelMenuKey,
   loadModelMetadata,
   modeMenuRef,
@@ -303,6 +314,13 @@ export function ConversationComposer({ contextUsage,
           onChange={(next) => persistRoute({ ...next, enabled: true })}
           onPick={pickRoute}
           onChangeRoute={() => setRoutePicking(true)}
+        />
+      )}
+      {agentMode === "prosecutor" && (
+        <ProsecutorSetup
+          sessionKey={tab.key}
+          executorBackend={tab.backend}
+          executorModel={currentModelLabel}
         />
       )}
       {editingMessageId !== null && (
@@ -699,6 +717,10 @@ export function ConversationComposer({ contextUsage,
               onPick={pickListedModel}
               onEffort={setEffort}
               onEffortHover={setEffortHover}
+              contextChoices={contextChoices}
+              currentContext={currentContext}
+              defaultContext={defaultContext}
+              onContext={onContext}
               onKeyDown={onModelMenuKey}
               onWarm={loadModelMetadata}
             >
@@ -743,8 +765,8 @@ export function ConversationComposer({ contextUsage,
               popRef={usagePopRef}
               open={usageOpen}
               split={split}
-              hour={usagePair(providerUsage ?? undefined).hour}
-              week={usagePair(providerUsage ?? undefined).week}
+              hour={usagePair(providerUsage ?? backendUsage[tab.backend]).hour}
+              week={usagePair(providerUsage ?? backendUsage[tab.backend]).week}
               current={tab.backend}
               usage={{ ...backendUsage, ...(providerUsage ? { [tab.backend]: providerUsage } : {}) }}
               context={contextUsage}
@@ -761,7 +783,7 @@ export function ConversationComposer({ contextUsage,
                 type="button"
                 className="composer__primary is-stop"
                 aria-label="Stop"
-                onClick={() => void api.abort(tab.key)}
+                onClick={() => void stopTurn(tab.key, timeline)}
               >
                 <IconStop />
               </button>

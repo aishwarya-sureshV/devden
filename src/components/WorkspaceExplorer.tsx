@@ -30,6 +30,7 @@ import { ExplorerGit } from "./ExplorerGit";
 import { DiffView } from "./DiffView";
 import { parseUnifiedDiff } from "./ChangesPanel";
 import { WorkbenchIcon } from "./WorkbenchIcon";
+import { MaterialIcon } from "./MaterialIcon";
 import { fmtCount } from "../lib/workbenchLook";
 import { RichText } from "./RichText";
 import {
@@ -1147,7 +1148,6 @@ function TreeNode({
   const isDirectory = entry.type === "directory";
   const isOpen = isDirectory && expanded.has(entry.path);
   const badge = gitBadge(git, entry.path);
-  const mark = isDirectory ? null : fileBadge(entry.name);
   const children = isOpen
     ? visibleEntries(listings[entry.path] ?? [], query, listings).filter(child => showHidden || !child.name.startsWith("."))
     : [];
@@ -1209,14 +1209,8 @@ function TreeNode({
               <WorkbenchIcon kind="folders" name={entry.name} />
             </span>
           ) : (
-            <span
-              className={`workspace-tree__badge${mark && mark.glyph.length > 1 && !mark.glyph.endsWith("\uFE0E") ? " is-text" : ""}`}
-              style={{
-                background: mark?.bg,
-                color: mark?.fg,
-              }}
-            >
-              {mark?.glyph}
+            <span className="workspace-tree__folder">
+              <MaterialIcon name={entry.name} />
             </span>
           )}
           <span className="workspace-tree__name">{entry.name}</span>

@@ -21,26 +21,19 @@ body .sidebar__brand-row .sidebar__backend-menu {
  display: none;
 }
 
-/* ---- Session tabs: one thin context line, active tab only ---- */
-body .session-tab-content__context small {
+/* The header context meter hung below the tab and painted on the transcript. */
+body .session-tab-content__context {
  display: none;
 }
-body .session-tabstrip__tab:not(:has([aria-selected="true"])) .session-tab-content__context {
- visibility: hidden;
+body .session-tabstrip {
+ overflow-x: auto;
+ overflow-y: hidden;
 }
-body .session-tab-content__context {
- position: absolute;
- left: 0;
- right: 0;
- bottom: -5px;
- height: 2px;
-}
-body .session-tab-content__context > span {
- height: 2px;
- background: rgb(var(--ink) / 0.06);
+body .session-tabstrip__tab {
+ overflow: hidden;
 }
 body .session-tab-content__workspace {
- margin-bottom: 4px;
+ margin-bottom: 0;
 }
 
 /* ---- Pane grip: tight to the left edge ---- */
@@ -703,21 +696,17 @@ body .turn-files__head {
  align-items: center;
 }
 
-/* ---- Dropdowns: compact. Scaled from the edge they hang off. ---- */
+/* Dropdowns hang off the control that opened them. A scale transform
+   moves the painted box off that point, so these menus stay at 1:1. */
 body .composer__model-menu,
-body .composer__mode-menu {
- transform: scale(0.84);
- transform-origin: bottom left;
-}
+body .composer__mode-menu,
 body :is(.sidebar__session-popover, .sidebar__filters, .session-header__menu, .tab-menu, .workspace-picker__menu) {
- transform: scale(0.9);
- transform-origin: top left;
+ transform: none;
 }
-body .sidebar__filters {
- transform-origin: top right;
-}
-body .workspace-picker__menu.is-upwards {
- transform-origin: bottom left;
+body[data-glass][data-ds-dark-theme] .sidebar__session-popover {
+ background: rgb(from var(--g-pop, #17171b) r g b / 1);
+ backdrop-filter: none;
+ -webkit-backdrop-filter: none;
 }
 
 /* ---- Tool rows sit below the prose: dimmer and lighter than body text ---- */

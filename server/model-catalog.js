@@ -25,5 +25,7 @@ export function cachedModels(agent) {
       return result;
     });
   catalogs.set(key, row);
-  return row.promise;
+  // Stale-while-revalidate: an expired catalog answers now while the refresh
+  // runs, so the picker never waits on pi's spawn or a provider round trip.
+  return row.result ? Promise.resolve(row.result) : row.promise;
 }

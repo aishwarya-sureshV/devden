@@ -1,4 +1,4 @@
-import type { KeyboardEvent, ReactNode, RefObject } from "react";
+import { useRef, useState, useEffect, type KeyboardEvent, type ReactNode, type RefObject } from "react";
 import {
   backendLabel,
   backendMark,
@@ -16,9 +16,10 @@ export type ModelOption = {
   context?: number;
   /** Thinking levels this model supports, when the catalog knows them. */
   levels?: string[];
+  backend?: AgentBackend;
 };
 
-type AgentMode = "standard" | "plan" | "routed" | "manual" | "auto-edit";
+type AgentMode = "standard" | "plan" | "routed" | "prosecutor" | "manual" | "auto-edit";
 
 const MODE_COPY: Record<
   AgentMode,
@@ -41,11 +42,18 @@ const MODE_COPY: Record<
     label: "Routed",
     blurb: "Pass the turn through a chain of agents",
   },
+  prosecutor: {
+    icon: "⚖",
+    label: "Prosecutor",
+    blurb: "A second agent must fail to break the fix",
+  },
 };
 
 function formatContext(tokens?: number): string {
   if (!tokens) return "";
-  if (tokens >= 1000) return `${Math.round(tokens / 1000)}k`;
+  if (tokens >= 1_000_000 && tokens % 1_000_000 === 0)
+    return `${tokens / 1_000_000}M`;
+  if (tokens >= 1000) return `${tokens / 1000}k`;
   return String(tokens);
 }
 
@@ -81,6 +89,8 @@ export function UsageChip({ popRef, open, hour, week, current, usage, reset, onT
   </div>;
 }
 
+const RECENT_KEY = "devden.picker.recent";
+
 export function ModelChip({
   menuRef,
   searchRef,
@@ -106,6 +116,10 @@ export function ModelChip({
   onPick,
   onEffort,
   onEffortHover,
+  contextChoices,
+  currentContext,
+  defaultContext,
+  onContext,
   onKeyDown,
   onWarm,
   children,
@@ -135,34 +149,63 @@ export function ModelChip({
   onPick: (option: ModelOption) => void;
   onEffort: (level: string) => void;
   onEffortHover: (index: number | null) => void;
+  /** Context-window choices for the session's model; null hides the row. */
+  contextChoices?: number[] | null;
+  /** Effective window for the session's model right now. */
+  currentContext?: number;
+  /** The model's catalog default (what the Default choice restores). */
+  defaultContext?: number;
+  onContext: (tokens: number | null) => void | Promise<void>;
   onKeyDown: (event: KeyboardEvent<HTMLDivElement>) => void;
   onWarm: () => void;
   /** Rendered on the second line beside effort (the mode chip). */
   children?: ReactNode;
 }) {
-  const trackIndex = Math.max(0, levels.indexOf(effort));
-  const offered = (level: string) =>
-    !supported?.length || supported.includes(level) || level === effort;
-  const hovered =
-    effortHover != null && offered(levels[effortHover] ?? "")
-      ? effortHover
-      : null;
-  const shown = hovered ?? trackIndex;
-  const shownLevel = levels[shown] ?? effort;
-  const providers = new Set(options.map((option) => option.provider));
-  const groups: {
-    name: string;
-    items: { option: ModelOption; index: number }[];
-  }[] = [];
+  // Recents outlive the menu and the page (mock 2a: the last few backends you
+  // used stay on top), most recent first, capped at three.
+  const [recentBackends, setRecentBackends] = useState<AgentBackend[]>(() => {
+    try { return JSON.parse(localStorage.getItem(RECENT_KEY) ?? "[]"); } catch { return []; }
+  });
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    setRecentBackends(previous => {
+      if (previous[0] === browseBackend) return previous;
+      const next = [browseBackend, ...previous.filter(id => id !== browseBackend)].slice(0, 3);
+      try { localStorage.setItem(RECENT_KEY, JSON.stringify(next)); } catch { /* private mode */ }
+      return next;
+    });
+  }, [browseBackend]);
+  const choices = [...new Set([...(contextChoices ?? []), ...(currentContext ? [currentContext] : [])])];
+  const changeContext = async (tokens: number | null) => {
+    setBusy(true);
+    try { await onContext(tokens); } finally { setBusy(false); }
+  };
+  const shownLevel = effortHover != null ? levels[effortHover] ?? effort : effort;
+  const effortIndex = levels.indexOf(shownLevel);
+  const recent = [...new Set([...recentBackends, backend])].filter(id => backends.includes(id));
+  const railGroups = [
+    { label: "RECENT", ids: recent },
+    { label: "ALL", ids: backends.filter(id => !recent.includes(id)) },
+  ].filter(group => group.ids.length);
+  const groups: { name: string; items: { option: ModelOption; index: number }[] }[] = [];
+  const providers = new Set(options.map(option => option.provider));
   options.forEach((option, index) => {
-    const name = providers.size > 1 ? option.provider : "Models";
-    const last = groups[groups.length - 1];
-    if (last && last.name === name) last.items.push({ option, index });
+    const name = query ? backendLabel(option.backend ?? browseBackend)
+      : browseBackend === "pi" && providers.size === 1 ? option.provider : "Models";
+    const group = groups.find(group => group.name === name);
+    if (group) group.items.push({ option, index });
     else groups.push({ name, items: [{ option, index }] });
   });
-  const stopAt = (index: number) =>
-    levels.length <= 1 ? 0 : index / (levels.length - 1);
-  const popoverRef = useAnchoredPopover<HTMLDivElement>(open);
+  const browse = (id: AgentBackend) => onBrowse(id);
+  const anchorRef = useRef<HTMLElement | null>(null);
+  const popoverRef = useAnchoredPopover<HTMLDivElement>(open, "start", {
+    anchor: anchorRef,
+    prefer: "above",
+  });
+  const openFrom = (event: { currentTarget: HTMLElement }) => {
+    anchorRef.current = event.currentTarget;
+    onToggle();
+  };
   return (
     <div
       className="native-model-controls composer__stack"
@@ -173,11 +216,11 @@ export function ModelChip({
       <button
         type="button"
         className={`composer__chip${open ? " is-open" : ""}`}
-        aria-haspopup="menu"
+        aria-haspopup="dialog"
         aria-expanded={open}
         disabled={disabled}
         title={`${backendLabel(backend)} · ${modelLabel}`}
-        onClick={onToggle}
+        onClick={openFrom}
       >
         <BackendLogo backend={backend} size={14} />
         <span className="composer__chip-name"><ModelName name={modelLabel} /></span>
@@ -187,11 +230,11 @@ export function ModelChip({
           <button
             type="button"
             className="composer__chip-effort"
-            aria-haspopup="menu"
+            aria-haspopup="dialog"
             aria-expanded={open}
             disabled={disabled}
             title="Effort"
-            onClick={onToggle}
+            onClick={openFrom}
           >
             {effortLabel(effort)}
           </button>
@@ -199,193 +242,89 @@ export function ModelChip({
         {children}
       </div>
       {open && (
-        <div
-          ref={popoverRef}
-          className="composer__mode-menu composer__model-menu"
-          role="menu"
-          onKeyDown={onKeyDown}
-        >
-          <label className="composer__model-search">
+        <div ref={popoverRef} className="composer__mode-menu composer__model-menu compact-picker" role="dialog" aria-label="Choose model"
+          onKeyDown={event => {
+            if (event.key === "Escape" || event.target === searchRef.current) onKeyDown(event);
+          }}>
+          <div className="compact-picker__head">
             <IconSearch size={14} />
-            <input
-              ref={searchRef}
-              value={query}
-              placeholder={`Search ${backendLabel(browseBackend)} models`}
-              aria-label="Search models"
-              onChange={(event) => onQuery(event.target.value)}
-            />
-            <kbd className="composer__model-search-kbd">⇥</kbd>
-            <span className="composer__model-search-hint">agent</span>
-          </label>
-          <div className="composer__model-columns">
-            <div className="composer__model-backends">
-              <div className="composer__model-colhead">AGENT</div>
-              {backends.map((id) => (
-                <button
-                  type="button"
-                  key={id}
-                  className={id === browseBackend ? "is-active" : undefined}
-                  onClick={() => onBrowse(id)}
-                >
-                  <span
-                    className="composer__model-glyph"
-                    style={{ color: backendMark(id).color }}
-                  >
-                    <BackendLogo backend={id} size={14} />
-                  </span>
-                  {backendLabel(id).toLowerCase()}
-                </button>
-              ))}
+            <input ref={searchRef} value={query} placeholder="Search models and backends"
+              aria-label="Search models and backends" onChange={event => onQuery(event.target.value)} />
+            <kbd>⇥</kbd><span>backend</span>
+          </div>
+          <div className="compact-picker__body">
+            <div className="compact-picker__rail" aria-label="Backends">
+              {railGroups.map(group => <div key={group.label}>
+                <div className="compact-picker__rail-heading"><span>{group.label}</span>{group.label === "ALL" && <span>{group.ids.length}</span>}</div>
+                {group.ids.map(id => {
+                  const hits = options.filter(option => (option.backend ?? browseBackend) === id).length;
+                  return <button type="button" key={id} aria-pressed={id === browseBackend}
+                    className={`${id === browseBackend ? "is-active" : ""} ${query && !hits ? "is-dimmed" : ""}`}
+                    onClick={() => { browse(id); onQuery(""); onHighlight(0); }}>
+                    <span className="compact-picker__glyph" style={{ color: backendMark(id).color }} aria-hidden="true"><BackendLogo backend={id} size={14} /></span><span>{backendLabel(id).toLowerCase()}</span>
+                    {query && hits > 0 && <small>{hits}</small>}
+                  </button>;
+                })}
+              </div>)}
             </div>
-            <div className="composer__model-models">
+            <div className="compact-picker__pane">
               <div className="composer__model-list">
-                {options.length === 0 && (
-                  <div className="composer__model-empty">
-                    {query
-                      ? `No ${backendLabel(browseBackend)} models match “${query}”`
-                      : "Loading models…"}
-                  </div>
-                )}
-                {groups.map((group) => (
-                  <div
-                    className="composer__model-group-block"
-                    key={`${group.name}-${group.items[0]?.index ?? 0}`}
-                  >
-                    <div className="composer__model-group">
-                      <span>{group.name}</span>
-                      <span>Context</span>
-                    </div>
-                    {group.items.map(({ option, index }) => {
-                      const value = `${option.provider}/${option.id}`;
-                      const selected =
-                        browseBackend === backend && value === currentModel;
-                      const hot = index === highlight;
-                      return (
-                        <button
-                          type="button"
-                          key={value}
-                          className={
-                            selected
-                              ? hot
-                                ? "is-active is-highlighted"
-                                : "is-active"
-                              : hot
-                                ? "is-highlighted"
-                                : undefined
-                          }
-                          onMouseEnter={() => onHighlight(index)}
-                          onClick={() => onPick(option)}
-                        >
-                          <span className="composer__model-name">
-                            <ModelName name={option.label} />
-                          </span>
-                          <span className="composer__model-context">
-                            {option.context
-                              ? formatContext(option.context)
-                              : ""}
-                          </span>
-                          <span className="composer__model-check">
-                            {selected ? "✓" : ""}
-                          </span>
-                        </button>
-                      );
-                    })}
-                  </div>
-                ))}
-              </div>
-              {levels.length > 0 && (
-                <div
-                  className="think-track"
-                  onMouseLeave={() => onEffortHover(null)}
-                >
-                  <div className="think-track__label">
-                    <span>Thinking time</span>
-                    <span className="think-track__est">
-                      {effortEstimate(shownLevel)}
-                    </span>
-                    <span>per reply</span>
-                  </div>
-                  <div className="think-track__rail">
-                    <div className="think-track__base" />
-                    <div
-                      className="think-track__fill"
-                      style={{
-                        width: `calc((100% - 14px) * ${stopAt(shown)})`,
-                      }}
-                    />
-                    <div
-                      className="think-track__thumb"
-                      style={{
-                        left: `calc((100% - 14px) * ${stopAt(shown)})`,
-                      }}
-                    />
-                    <div className="think-track__stops">
-                      {levels.map((level, index) => {
-                        const open = offered(level);
-                        return (
-                          <button
-                            type="button"
-                            key={level}
-                            className={`think-track__stop${index < shown ? " is-on" : ""}${index === shown ? " is-current" : ""}${open ? "" : " is-unavailable"}`}
-                            style={{
-                              left: `calc((100% - 14px) * ${stopAt(index)})`,
-                            }}
-                            aria-label={level}
-                            aria-disabled={!open}
-                            onMouseEnter={() => {
-                              if (open) onEffortHover(index);
-                            }}
-                            onClick={() => {
-                              if (open) onEffort(level);
-                            }}
-                          >
-                            <i />
-                          </button>
-                        );
-                      })}
-                    </div>
-                  </div>
-                  <div className="think-track__names">
-                    {levels.map((level, index) => {
-                      const open = offered(level);
-                      return (
-                        <button
-                          type="button"
-                          key={level}
-                          className={`think-track__name${index === 0 ? " is-first" : ""}${index === levels.length - 1 && index !== 0 ? " is-last" : ""}${index === shown ? " is-current" : ""}${open ? "" : " is-unavailable"}`}
-                          style={{
-                            left: `calc((100% - 14px) * ${stopAt(index)})`,
-                          }}
-                          onMouseEnter={() => {
-                            if (open) onEffortHover(index);
-                          }}
-                          onClick={() => {
-                            if (open) onEffort(level);
-                          }}
-                        >
-                          {level}
-                        </button>
-                      );
-                    })}
-                  </div>
+              {options.length === 0 && <div className="composer__model-empty">{query ? "No models match" : "Loading models…"}</div>}
+              {groups.map(group => <div className="composer__model-group-block" key={group.name}>
+                <div className={`composer__model-group${query ? " compact-picker__result-heading" : ""}`}>
+                  {query && <span className="compact-picker__glyph" style={{ color: backendMark(group.items[0].option.backend ?? browseBackend).color }} aria-hidden="true"><BackendLogo backend={group.items[0].option.backend ?? browseBackend} size={14} /></span>}
+                  <span>{group.name}</span>{!query && <span>Context</span>}
                 </div>
-              )}
+                {group.items.map(({ option, index }) => {
+                  const value = `${option.provider}/${option.id}`;
+                  const selected = (option.backend ?? browseBackend) === backend && value === currentModel;
+                  return <button type="button" key={value} aria-pressed={selected}
+                    className={`${selected && !query ? "is-active" : ""} ${index === highlight ? "is-highlighted" : ""} ${query ? "is-search-result" : ""}`}
+                    title={`${option.label}${option.context ? ` · ${option.context.toLocaleString()} tokens` : ""}`}
+                    onMouseEnter={() => onHighlight(index)} onClick={() => onPick(option)}>
+                    <span className="composer__model-name"><ModelName name={option.label} truncate /></span>
+                    <span className="composer__model-context">{formatContext(option.context)}</span>
+                    {!query && <span className="composer__model-check">{selected ? "✓" : ""}</span>}
+                  </button>;
+                })}
+              </div>)}
+              </div>
+          {!query && <div className="compact-picker__settings">
+            {browseBackend === backend && (currentContext || defaultContext) && <div className="compact-picker__setting">
+              <span title="How much this session’s model can read at once, in tokens">Context</span>
+              {contextChoices ? <div className="compact-picker__segments" role="group" aria-label="Session context window" aria-busy={busy}>
+                <button type="button" disabled={busy} aria-pressed={currentContext == null || currentContext === defaultContext}
+                  className={currentContext == null || currentContext === defaultContext ? "is-current" : undefined}
+                  title={defaultContext ? `Backend default: ${defaultContext.toLocaleString()} tokens` : "Backend default"}
+                  onClick={() => void changeContext(null)}>Default</button>
+                {choices.filter(tokens => tokens !== defaultContext).map(tokens => <button type="button" key={tokens} disabled={busy}
+                  aria-pressed={tokens === currentContext} className={tokens === currentContext ? "is-current" : undefined}
+                  title={`${tokens.toLocaleString()} tokens`} onClick={() => void changeContext(tokens)}>{formatContext(tokens)}</button>)}
+              </div> : <span title="The backend manages this model’s context window">{formatContext(currentContext ?? defaultContext)}</span>}
+            </div>}
+            {levels.length > 0 && <>
+              <div className="compact-picker__setting" onMouseLeave={() => onEffortHover(null)}><span>Thinking</span>
+                <div className="compact-picker__thinking" role="group" aria-label="Thinking effort">
+                  {levels.map((level, index) => {
+                    const offered = browseBackend === backend && (!supported?.length || supported.includes(level) || level === effort);
+                    return <button type="button" key={level} disabled={!offered} aria-label={effortLabel(level)} aria-pressed={level === effort}
+                      className={`${index === effortIndex ? "is-current" : ""} ${index <= effortIndex ? "is-on" : ""}`}
+                      onMouseEnter={() => { if (offered) onEffortHover(index); }} onClick={() => onEffort(level)}>
+                      <span className="compact-picker__stop" aria-hidden="true"><i className={index > 0 && index <= effortIndex ? "is-on" : ""} /><b /><i className={index < levels.length - 1 && index < effortIndex ? "is-on" : ""} /></span>
+                      <span>{level}</span>
+                    </button>;
+                  })}
+                </div>
+              </div>
+              <div className="compact-picker__eta" title="Approximate thinking time; actual reply time varies"><span>{effortEstimate(shownLevel)}</span> per reply</div>
+            </>}
+
+          </div>}
             </div>
           </div>
-          {browseBackend !== backend && (
-            <div className="composer__handoff-note">
-              <span
-                className="composer__model-glyph"
-                style={{ color: backendMark(browseBackend).color }}
-              >
-                <BackendLogo backend={browseBackend} size={13} />
-              </span>
-              <span>
-                Your next message continues this session in{" "}
-                {backendLabel(browseBackend)}.
-              </span>
-            </div>
-          )}
+          <div className="compact-picker__note"><span className="compact-picker__glyph" style={{ color: backendMark(browseBackend).color }} aria-hidden="true"><BackendLogo backend={browseBackend} size={14} /></span>
+            <span>Your next message continues this session in {backendLabel(browseBackend)}.</span>
+          </div>
         </div>
       )}
     </div>
@@ -418,6 +357,7 @@ export function ModeChip({
     "plan",
     "standard",
     "routed",
+    "prosecutor",
   ];
   const popoverRef = useAnchoredPopover<HTMLDivElement>(open);
   return (

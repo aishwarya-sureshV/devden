@@ -3,7 +3,7 @@
 import type { SessionRoute } from "./route";
 
 export type RunStatus = "stopped" | "starting" | "ready" | "working" | "error";
-export const AGENT_BACKENDS = ["pi", "claude", "grok", "codex"] as const;
+export const AGENT_BACKENDS = ["pi", "claude", "grok", "codex", "zcode"] as const;
 export type BuiltinBackend = (typeof AGENT_BACKENDS)[number];
 /** Backend ids arrive as plain strings from the server; built-ins are the known ones. */
 export type AgentBackend = BuiltinBackend | (string & {});
@@ -40,6 +40,7 @@ export function backendLabel(backend: AgentBackend): string {
   if (backend === "claude") return "Claude";
   if (backend === "grok") return "Grok";
   if (backend === "codex") return "Codex";
+  if (backend === "zcode") return "ZCode";
   if (backend === "pi") return "Pi";
   return backend || "Pi";
 }
@@ -63,6 +64,8 @@ export function backendMark(backend: AgentBackend): {
       color: "var(--glyph-pi, #5fd49a)",
       blurb: "local shell agent",
     };
+  if (backend === "zcode")
+    return { glyph: "ⓩ", color: "var(--glyph-zcode, #7ec8e3)", blurb: "z.ai harness" };
   return { glyph: "✦", color: "var(--pw-teal)", blurb: "acp" };
 }
 
@@ -71,6 +74,10 @@ export interface ModelInfo {
   name?: string;
   provider: string;
   contextWindow?: number;
+  /** Largest window this model accepts, when the catalog knows it (codex). */
+  maxContextWindow?: number;
+  /** Optional context budgets supplied by the backend configuration. */
+  contextWindowOptions?: number[];
   /** Thinking levels this model supports, from the pi model catalog. */
   levels?: string[];
 }
@@ -344,7 +351,8 @@ export interface ContextUsageReport {
     cacheRead: number;
     cacheWrite: number;
     /** Model time across completed turns, excluding tool waits. */
-    durationMs: number;
+    durationMs?: number;
+    durationKind?: "api" | "turn";
   };
 }
 
@@ -634,8 +642,32 @@ async function post<T = unknown>(
   });
 }
 
-async function get<T = unknown>(url: string): Promise<T> {
-  return request<T>(url);
+// Last good model catalog / thinking ladder per backend. A deploy restarts the
+// server with cold catalogs (pi's list is a process spawn), so the picker
+// shows these immediately and the live fetch replaces them when it lands.
+const catalogKey = (kind: "models" | "levels", backend: AgentBackend) =>
+  `devden.catalog.${kind}.${backend}`;
+function remember<T extends { ok: boolean }>(kind: "models" | "levels", backend: AgentBackend | undefined, result: T, list: unknown) {
+  if (backend && result.ok && Array.isArray(list) && list.length)
+    try { localStorage.setItem(catalogKey(kind, backend), JSON.stringify(list)); } catch { /* quota/private mode */ }
+  return result;
+}
+export function cachedCatalog(kind: "models", backend: AgentBackend): ModelInfo[] | undefined;
+export function cachedCatalog(kind: "levels", backend: AgentBackend): string[] | undefined;
+export function cachedCatalog(kind: "models" | "levels", backend: AgentBackend) {
+  try {
+    const list = JSON.parse(localStorage.getItem(catalogKey(kind, backend)) ?? "null");
+    return Array.isArray(list) && list.length ? list : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+async function get<T = unknown>(url: string, timeoutMs?: number): Promise<T> {
+  return request<T>(
+    url,
+    timeoutMs ? { signal: AbortSignal.timeout(timeoutMs) } : {},
+  );
 }
 
 async function del<T = unknown>(url: string): Promise<T> {
@@ -664,6 +696,7 @@ export const api = {
   deployStatus: (cwd?: string) =>
     get<DeployStatusResponse>(
       `/api/deploy/status${cwd ? `?cwd=${encodeURIComponent(cwd)}` : ""}`,
+      8_000,
     ),
   deploy: (mode: "local" | "cloud", cwd?: string) =>
     post<{ ok: boolean; mode?: string; self?: boolean; error?: string }>(
@@ -817,7 +850,7 @@ export const api = {
     warmOnly?: boolean,
     independent?: boolean,
     accessMode?: "workspace-write" | "read-only",
-    agentMode?: "standard" | "plan" | "manual" | "routed" | "auto-edit",
+    agentMode?: "standard" | "plan" | "manual" | "routed" | "prosecutor" | "auto-edit",
   ) =>
     post<{
       ok: boolean;
@@ -918,7 +951,7 @@ export const api = {
       model?: ModelInfo | null;
       thinkingLevel?: string | null;
       accessMode?: "workspace-write" | "read-only";
-      agentMode?: "standard" | "plan" | "manual" | "routed" | "auto-edit";
+      agentMode?: "standard" | "plan" | "manual" | "routed" | "prosecutor" | "auto-edit";
     } = {},
   ) =>
     post<SessionSnapshotResponse>(`/api/${key}/fork`, {
@@ -952,11 +985,6 @@ export const api = {
       `/api/${key}/truncate`,
       { userTimestamp, sessionPath },
       30_000,
-    ),
-  goal: (key: string, text: string) =>
-    post<{ ok: boolean; text?: string; cleared?: boolean; error?: string }>(
-      `/api/${key}/goal`,
-      { text },
     ),
   remoteStart: () =>
     post<{
@@ -1128,6 +1156,24 @@ export const api = {
       state?: SessionState;
       error?: string;
     }>(`/api/${key}/set-model`, { provider, modelId }),
+  /** Choose the context window for the session's model (pi, codex).
+   * `null` restores the model's default. */
+  setContext: (
+    key: string,
+    provider: string,
+    modelId: string,
+    contextWindow: number | null,
+  ) =>
+    post<{
+      ok: boolean;
+      data?: ModelInfo;
+      state?: SessionState;
+      error?: string;
+    }>(`/api/${key}/set-session-context`, {
+      provider,
+      modelId,
+      contextWindow,
+    }),
   setThinking: (key: string, level: string) =>
     post<{ ok: boolean; state?: SessionState; error?: string }>(`/api/${key}/set-thinking`, {
       level,
@@ -1144,6 +1190,15 @@ export const api = {
     put<{ ok: boolean; route?: SessionRoute; error?: string }>(
       `/api/${key}/route`,
       { route, sessionFile },
+    ),
+  /** Arm prosecutor mode for this session, or disarm it with `null`. */
+  putProsecutor: (
+    key: string,
+    prosecutor: { backend: AgentBackend; model?: { provider: string; id: string } } | null,
+  ) =>
+    put<{ ok: boolean; error?: string }>(
+      `/api/${key}/prosecutor`,
+      prosecutor ?? { off: true },
     ),
   stop: (key: string) =>
     post<{ ok: boolean; error?: string }>(`/api/${key}/stop`, {}),
@@ -1206,7 +1261,7 @@ export const api = {
   models: (key: string, backend?: AgentBackend) =>
     get<{ ok: boolean; models: ModelInfo[] }>(
       `/api/${key}/models${backend ? `?backend=${backend}` : ""}`,
-    ),
+    ).then(result => remember("models", backend, result, result.models)),
   /** Account-level quota for every backend at once (status footer, model picker). */
   backendUsage: () =>
     get<{
@@ -1217,7 +1272,7 @@ export const api = {
   thinkingLevels: (key: string, backend?: AgentBackend) =>
     get<{ ok: boolean; levels: string[] }>(
       `/api/${key}/thinking-levels${backend ? `?backend=${backend}` : ""}`,
-    ),
+    ).then(result => remember("levels", backend, result, result.levels)),
   usage: (
     key: string,
     backend?: AgentBackend,
@@ -1242,10 +1297,14 @@ export const api = {
     post<{ ok: boolean; enabled?: boolean; ticket?: string }>("/api/auth", {
       token,
     }),
+  // Detection spawns each CLI (worst case ~15s); cap it so a stalled server
+  // surfaces as an error instead of an endless "Looking…".
   backends: () =>
-    get<{ ok: boolean; backends: BackendInfo[] }>("/api/backends"),
+    request<{ ok: boolean; backends: BackendInfo[] }>("/api/backends", { signal: AbortSignal.timeout(30_000) }),
+  zcodeUseOllama: () =>
+    post<{ ok: boolean; backends?: BackendInfo[]; error?: string }>("/api/zcode/ollama", {}, 15_000),
   recheckBackends: () =>
-    post<{ ok: boolean; backends: BackendInfo[] }>("/api/backends/recheck", {}),
+    post<{ ok: boolean; backends: BackendInfo[] }>("/api/backends/recheck", {}, 30_000),
   harnessUpdates: () =>
     get<{
       ok: boolean;

@@ -1,5 +1,5 @@
 import { memo, useState, type JSX, type ReactNode } from "react";
-import { highlightCode, NumberedCode } from "../lib/highlight";
+import { NumberedCode } from "../lib/highlight";
 import { clipOutput, isShellLanguage } from "../lib/runInTerminal";
 import { useTerminalRuns, type TerminalRun } from "../lib/terminalRuns";
 import { CopyButton } from "./CopyButton";
@@ -8,6 +8,8 @@ import { SkillDraftCard } from "./SkillDraftCard";
 import { IconPlay } from "./icons";
 import { askIncoming, messageAsk, parseAsk } from "../lib/askBlock";
 import { parseSkillDraft } from "../lib/skilldraft";
+import { isFileToken } from "../lib/fileToken";
+import { FileIcon } from "./FileIcon";
 
 type Segment =
   | { type: "prose"; text: string }
@@ -205,6 +207,19 @@ const MarkdownBlocks = memo(function MarkdownBlocks({
       continue;
     }
 
+    // A bare "Wiring:" label (optionally bolded) in a subagent file report
+    // becomes a heading like any other, dropping the trailing colon.
+    const wiring = /^\*{0,2}Wiring:\*{0,2}$/.exec(trimmed);
+    if (wiring) {
+      nodes.push(
+        <h3 key={`heading-${index}`} className="md-heading md-heading--tight">
+          Wiring
+        </h3>,
+      );
+      index += 1;
+      continue;
+    }
+
     const heading = /^(#{1,4})\s+(.+)$/.exec(trimmed);
     if (heading) {
       const level = (heading[1] ?? "").length;
@@ -258,7 +273,7 @@ const MarkdownBlocks = memo(function MarkdownBlocks({
               key={`${itemIndex}-${item}`}
               data-n={start === undefined ? undefined : start + itemIndex}
             >
-              {inline(item)}
+              <span className="md-list__content">{inline(item)}</span>
             </li>
           ))}
         </ListTag>,
@@ -458,12 +473,7 @@ function inline(text: string): ReactNode {
         if (code.length >= 2 && code.startsWith(" ") && code.endsWith(" "))
           code = code.slice(1, -1);
         flush();
-        const language = inlineLanguage(code);
-        nodes.push(
-          <code key={key++} className="md-inline-code">
-            {language ? highlightCode(code, language) : code}
-          </code>,
-        );
+        nodes.push(renderCodeSpan(code, key++));
         i = end + ticks;
         continue;
       }
@@ -564,18 +574,64 @@ function findEmClose(text: string, from: number, marker: "*" | "_"): number {
   return -1;
 }
 
-function inlineLanguage(code: string): string | undefined {
-  const trimmed = code.trim();
-  if (
-    /^(?:const|let|var|function|class|interface|type|import|export)\b/.test(
-      trimmed,
-    )
-  )
-    return "ts";
-  if (/^(?:def|class|from|import|print)\b/.test(trimmed)) return "python";
-  if (/^(?:SELECT|INSERT|UPDATE|DELETE|CREATE)\b/i.test(trimmed)) return "sql";
-  if (/^(?:npm|pnpm|yarn|git|cd|ls|rg|grep|curl)\b/.test(trimmed))
-    return "bash";
-  if (/^[{[]/.test(trimmed)) return "json";
-  return undefined;
+/** A long, space-containing token (e.g. a shell command) wraps instead of
+ *  forcing the pane wide; short tokens stay on one line. */
+function wrapsChip(code: string): boolean {
+  return code.length > 40 && code.includes(" ");
+}
+
+/** File tokens get a plain white chip, basename shown with the directory
+ *  dimmed and the full path in the tooltip. Everything else is a code chip
+ *  with a light punctuation/string tint — not a full highlighter. */
+function renderCodeSpan(code: string, key: number): ReactNode {
+  const wrap = wrapsChip(code) ? " md-inline-code--wrap" : "";
+  if (isFileToken(code)) {
+    const slash = code.lastIndexOf("/");
+    const dir = slash >= 0 ? code.slice(0, slash + 1) : "";
+    const base = slash >= 0 ? code.slice(slash + 1) : code;
+    return (
+      <code
+        key={key}
+        className={`md-inline-code md-inline-code--file${wrap}`}
+        title={code}
+      >
+        <FileIcon path={code} />
+        {dir && <span className="md-chip-dir">{dir}</span>}
+        {base}
+      </code>
+    );
+  }
+  return (
+    <code key={key} className={`md-inline-code${wrap}`}>
+      {tintChip(code)}
+    </code>
+  );
+}
+
+const CHIP_TINT_RE = /('(?:[^'\\]|\\.)*'|"(?:[^"\\]|\\.)*")|(===|=>|\.\.\.|[()[\]{}:|])/g;
+
+function tintChip(code: string): ReactNode[] {
+  const nodes: ReactNode[] = [];
+  let last = 0;
+  let key = 0;
+  for (const match of code.matchAll(CHIP_TINT_RE)) {
+    const index = match.index ?? 0;
+    if (index > last) nodes.push(code.slice(last, index));
+    if (match[1]) {
+      nodes.push(
+        <span key={key++} className="md-chip-string">
+          {match[1]}
+        </span>,
+      );
+    } else {
+      nodes.push(
+        <span key={key++} className="md-chip-punct">
+          {match[2]}
+        </span>,
+      );
+    }
+    last = index + match[0].length;
+  }
+  if (last < code.length) nodes.push(code.slice(last));
+  return nodes;
 }

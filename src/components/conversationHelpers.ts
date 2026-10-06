@@ -142,7 +142,7 @@ export async function collectReviewDiff(
 
 export type AccessMode = "workspace-write" | "read-only";
 
-export type AgentMode = "standard" | "plan" | "routed" | "manual" | "auto-edit";
+export type AgentMode = "standard" | "plan" | "routed" | "prosecutor" | "manual" | "auto-edit";
 
 export const DESIGN_MODES: AgentMode[] = [
   "manual",
@@ -162,7 +162,7 @@ export const apiAgentMode = (
         ? "auto-edit"
         : "standard";
 
-export const USAGE_IDLE_REFRESH_INTERVAL_MS = 5 * 60_000 + 30_000;
+export const USAGE_IDLE_REFRESH_INTERVAL_MS = 30_000;
 
 export const USAGE_RUNNING_REFRESH_INTERVAL_MS = 30_000;
 
@@ -205,12 +205,6 @@ export const LOCAL_COMMANDS: SlashCommand[] = [
   {
     name: "fork",
     description: "Fork the latest reply into a side chat with its own worktree",
-    source: "local",
-  },
-  {
-    name: "goal",
-    description:
-      "Park a background goal with automatic check-ins (/goal off clears)",
     source: "local",
   },
   {

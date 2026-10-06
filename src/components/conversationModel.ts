@@ -87,6 +87,55 @@ export function setModel(ctx: SetModelCtx, value: string) {
   });
 }
 
+export type SetContextCtx = {
+  tab: ConversationTab;
+  timeline: Timeline;
+  /** Catalog default for the model, so `null` (Default) has a value to show. */
+  fallbackContext?: number;
+};
+
+/**
+ * Choose the context window for the session's current model (pi, codex).
+ * `null` restores the model's catalog default. The server applies it to the
+ * backend (pi: session model budget; codex: thread config
+ * override) and answers with fresh state when a live agent restarted.
+ */
+export function setContext(
+  ctx: SetContextCtx,
+  provider: string,
+  modelId: string,
+  contextWindow: number | null,
+) {
+  const { tab, timeline, fallbackContext } = ctx;
+  return api
+    .setContext(tab.key, provider, modelId, contextWindow)
+    .then((result) => {
+      if (!result.ok) {
+        timeline.appendNotice(
+          result.error ?? "Could not set context window",
+          "error",
+        );
+        return;
+      }
+      const effective = contextWindow ?? fallbackContext;
+      const applied = Boolean(result.state);
+      if (result.state) timeline.setState(result.state);
+      else if (timeline.state?.model)
+        timeline.setState({
+          ...timeline.state,
+          model: { ...timeline.state.model, ...result.data, contextWindow: result.data?.contextWindow ?? effective },
+        });
+      timeline.appendNotice(
+        contextWindow == null
+          ? `Context window reset to ${effective ? `${Math.round(effective / 1000)}k` : "the model default"}${applied ? "" : " (next start)"}.`
+          : `Context window set to ${Math.round(contextWindow / 1000)}k${applied ? " — compaction and the context gauge now follow it" : " — applies when the session next starts"}.`,
+        "info",
+      );
+    }).catch(error => {
+      timeline.appendNotice(error instanceof Error ? error.message : "Could not set context window", "error");
+    });
+}
+
 export type PickListedModelCtx = {
   setModelMenuOpen: React.Dispatch<React.SetStateAction<boolean>>;
   browseBackend: AgentBackend;
@@ -283,6 +332,18 @@ export async function switchAgentMode(
     tab,
     setConversationSessionPath,
   } = ctx;
+  // Prosecutor mode runs the executor fully automatic: nobody is there to
+  // approve its edits between rounds. The composer's ProsecutorSetup arms it.
+  if (nextMode === "prosecutor") {
+    if (agentMode === "routed") persistRoute({ ...route, enabled: false });
+    if (agentMode === "plan" || agentMode === "manual" || agentMode === "auto-edit") {
+      if (hasItems) await switchAgentMode("standard", true);
+      else await configureSession(accessMode, "standard");
+    }
+    setAgentMode("prosecutor");
+    return;
+  }
+  if (agentMode === "prosecutor") void api.putProsecutor(tab.key, null);
   if (nextMode === "routed") {
     if (agentMode === "plan") {
       if (hasItems) await switchAgentMode("standard", true);
