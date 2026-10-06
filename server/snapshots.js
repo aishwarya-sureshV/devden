@@ -196,6 +196,25 @@ export async function listSnapshots(cwd) {
     .sort((left, right) => right.at - left.at);
 }
 
+/**
+ * A brand-new session's first turn is snapshotted before its session file
+ * exists, so it is filed under the tab key. Once the file is known, move
+ * those refs under the file's tag: tab keys change on refresh, the file
+ * doesn't, and revert/fork look a session up by its file.
+ */
+export async function retagSnapshots(cwd, from, to) {
+  if (!cwd || !from || !to || from === to) return 0;
+  const fromTag = sessionTag(from);
+  const toTag = sessionTag(to);
+  const snaps = (await listSnapshots(cwd)).filter((snap) => snap.session === fromTag);
+  for (const snap of snaps) {
+    const moved = await git(cwd, ["update-ref", `${REF_PREFIX}/${toTag}/${snap.at}`, snap.commit]);
+    if (moved.ok) await git(cwd, ["update-ref", "-d", snap.ref]);
+  }
+  if (snaps.length) await prune(cwd, toTag);
+  return snaps.length;
+}
+
 async function prune(cwd, tag) {
   const snaps = (await listSnapshots(cwd)).filter((snap) => snap.session === tag);
   for (const snap of snaps.slice(KEEP))

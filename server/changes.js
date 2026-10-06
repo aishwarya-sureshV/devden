@@ -43,7 +43,7 @@ import {
 } from "node:path";
 import { promisify } from "node:util";
 import { db, docSet, transaction } from "./db.js";
-import { git, withScratchIndex } from "./snapshots.js";
+import { git, retagSnapshots, withScratchIndex } from "./snapshots.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -97,12 +97,21 @@ export function noteSessionContext(sessionKey, { cwd, sessionPath } = {}) {
   // A brand-new conversation's first turns can end before its session file
   // exists; claim them now so the session view still finds them. `state`
   // events are frequent, so only when the path is new.
-  if (learned)
+  if (learned) {
     db()
       .prepare(
         "UPDATE turns SET session_path = ? WHERE session_key = ? AND session_path IS NULL",
       )
       .run(sessionPath, sessionKey);
+    // Their snapshots were filed under the tab key too. Wait for this turn's
+    // own snapshot, which may still be running, so it moves with the rest.
+    const repo = known.get(sessionKey)?.cwd;
+    if (repo)
+      void Promise.resolve(turn?.snapshot)
+        .catch(() => {})
+        .then(() => retagSnapshots(repo, sessionKey, sessionPath))
+        .catch(() => {});
+  }
 }
 
 /**

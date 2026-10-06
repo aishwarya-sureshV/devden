@@ -12,6 +12,7 @@ import {
   listSnapshots,
   pickSnapshot,
   restoreSnapshot,
+  retagSnapshots,
   sessionTag,
   takeSnapshot,
 } from "./snapshots.js";
@@ -208,5 +209,23 @@ test("changedSince lists modified and brand-new files without touching the real 
   assert.equal(await changedSince(dir, snap.commit), "A\tadded.txt\nM\tkept.txt");
   assert.equal(git("diff", "--cached", "--name-only").trim(), "", "user's index untouched");
   assert.equal(await changedSince(dir, ""), null);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("a first-turn snapshot filed under the tab key moves to the session file once known", async () => {
+  const { dir } = repo();
+  const first = await takeSnapshot(dir, "first turn", "tab-key-1");
+  writeFileSync(join(dir, "kept.txt"), "edited in turn 1\n");
+  assert.equal(await retagSnapshots(dir, "tab-key-1", "/sessions/new.jsonl"), 1);
+  assert.deepEqual(
+    (await listSnapshots(dir)).map((entry) => entry.session),
+    [sessionTag("/sessions/new.jsonl")],
+  );
+  // After a refresh the tab key differs; the session file alone finds turn 1.
+  const done = await restoreSnapshot(dir, first.at, false, ["/sessions/new.jsonl", "tab-key-2"]);
+  assert.equal(done.ok, true);
+  assert.equal(done.data.snapshotAt, first.at);
+  assert.equal(readFileSync(join(dir, "kept.txt"), "utf8"), "original\n");
+  assert.equal(await retagSnapshots(dir, "tab-key-1", "/sessions/new.jsonl"), 0, "nothing left to move");
   rmSync(dir, { recursive: true, force: true });
 });

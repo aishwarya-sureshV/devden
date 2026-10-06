@@ -7,6 +7,7 @@
  * PiAgentProcess.
  */
 import { trackAgentProcess } from "./agent-pids.js";
+import { randomUUID } from "node:crypto";
 import { execFile, execFileSync, spawn } from "node:child_process";
 import {
   existsSync,
@@ -1251,6 +1252,12 @@ export class ClaudeAgentProcess {
     }
     if (this.sessionId) args.push("--resume", this.sessionId);
     this.resumedSessionId = this.sessionId || undefined;
+    // A new session gets its id from us, so its file is known when the first
+    // turn starts -- not only at the init message mid-turn, which a server
+    // killed in between never sees. Exposed at agent_start, not here: a warm
+    // process that never gets a prompt has no file to resume.
+    this.pendingSessionId = this.sessionId ? undefined : randomUUID();
+    if (this.pendingSessionId) args.push("--session-id", this.pendingSessionId);
     if (this.model?.id) args.push("--model", this.model.id);
     if (this.thinkingLevel) args.push("--effort", this.thinkingLevel);
     args.push(...extraArgs);
@@ -1343,6 +1350,8 @@ export class ClaudeAgentProcess {
     const startsRun = this.pendingTurns.length === 0;
     if (startsRun) {
       this.setStatus("working");
+      if (!this.sessionFile && this.pendingSessionId)
+        this.sessionFile = expectedSessionPath(this.cwd, this.pendingSessionId);
       this.emit({ type: "agent_start", sessionKey: this.sessionKey });
     }
     return new Promise((resolve) => {

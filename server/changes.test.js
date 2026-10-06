@@ -7,7 +7,7 @@ import test from "node:test";
 
 process.env.DEVDEN_HOME = mkdtempSync(join(tmpdir(), "devden-changes-home-"));
 const changes = await import("./changes.js");
-const { takeSnapshot } = await import("./snapshots.js");
+const { listSnapshots, sessionTag, takeSnapshot } = await import("./snapshots.js");
 const { db } = await import("./db.js");
 
 function repo() {
@@ -139,4 +139,31 @@ test("pruning drops old turns and the content only they referenced", async () =>
   assert.equal(db().prepare("SELECT COUNT(*) AS n FROM turns").get().n, 0);
   assert.ok(blobs() < before);
   assert.equal(blobs(), 0);
+});
+
+test("claude: no path at turn start, the path on a mid-turn state event still lists the session", () => {
+  // Claude learns its session file from the init message during the first
+  // turn and emits `state` then; a kill after that must not lose the row.
+  const path = join(mkdtempSync(join(tmpdir(), "devden-claude-first-")), "claude.jsonl");
+  changes.noteSessionActivity("claude-first-turn", "");
+  changes.noteSessionContext("claude-first-turn", { sessionPath: path });
+  const row = db().prepare("SELECT value FROM docs WHERE ns = 'devden-sessions' AND key = ?").get(path);
+  assert.equal(row?.value, '"activity"');
+});
+
+test("learning the session file moves the first turn's tab-keyed snapshot under it", async () => {
+  const cwd = repo();
+  changes.noteSessionContext("fresh-tab", { cwd });
+  start("fresh-tab", cwd);
+  const path = join(cwd, "late-session.jsonl");
+  changes.noteSessionContext("fresh-tab", { sessionPath: path });
+  let sessions = [];
+  // Wait for the move to finish (new ref written, old one deleted), not
+  // just begin; git is slow when the whole suite runs in parallel.
+  for (let i = 0; i < 250 && !(sessions.length === 1 && sessions[0] === sessionTag(path)); i++) {
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    sessions = (await listSnapshots(cwd)).map((snap) => snap.session);
+  }
+  assert.deepEqual(sessions, [sessionTag(path)]);
+  await changes.endTurn("fresh-tab");
 });
